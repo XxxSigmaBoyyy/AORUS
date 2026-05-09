@@ -1,1 +1,1 @@
-*.ipa filter=lfs diff=lfs merge=lfs -text
+releases/*.ipa.zip filter=lfs diff=lfs merge=lfs -text
