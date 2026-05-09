@@ -5,6 +5,14 @@ on:
     branches: [ main, "claude/**", "cursor/**" ]
   workflow_dispatch:
 
+# One active build per branch: parallel pushes were stacking 5+ hour-long macOS jobs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: macos-15
