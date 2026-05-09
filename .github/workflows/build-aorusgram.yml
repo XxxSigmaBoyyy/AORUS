@@ -441,12 +441,12 @@ jobs:
           echo "=== Signing identities ==="
           security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null || true
 
-      - name: Build (no signing)
+      - name: Build release (device, unsigned IPA artifact)
         working-directory: telegram-ios
         run: |
           echo "=== Python version ==="
           python3 --version
-          echo "=== Starting build ==="
+          echo "=== Starting release_arm64 build (unsigned IPA for download) ==="
           set -o pipefail
           python3 build-system/Make/Make.py \
             --overrideXcodeVersion \
@@ -455,7 +455,7 @@ jobs:
             --configurationPath build-system/appstore-configuration.json \
             --codesigningInformationPath $RUNNER_TEMP/signing \
             --buildNumber=${{ github.run_number }} \
-            --configuration=debug_sim_arm64 \
+            --configuration=release_arm64 \
             --outputBuildArtifactsPath $RUNNER_TEMP/artifacts \
             --continueOnError \
             2>&1 | tee $RUNNER_TEMP/build.log | tail -100
@@ -495,7 +495,7 @@ jobs:
           find $RUNNER_TEMP/artifacts -type f 2>/dev/null >> $RUNNER_TEMP/found_files.txt || true
           cat $RUNNER_TEMP/found_files.txt
 
-      - name: Package unsigned IPA
+      - name: Package release unsigned IPA
         run: |
           # 1. Проверяем --outputBuildArtifactsPath
           IPA=$(find $RUNNER_TEMP/artifacts -name "*.ipa" 2>/dev/null | head -1 || true)
@@ -507,7 +507,7 @@ jobs:
 
           if [ -n "$IPA" ]; then
             echo "Found IPA: $IPA"
-            cp "$IPA" $RUNNER_TEMP/AorusGram-unsigned.ipa
+            cp "$IPA" $RUNNER_TEMP/AorusGram-release-unsigned.ipa
           else
             # 3. Ищем .app — сначала в bazel-bin с симлинками, потом везде
             APP=$(find -L telegram-ios/bazel-bin -name "Telegram.app" -type d 2>/dev/null \
@@ -540,16 +540,16 @@ jobs:
             echo "Packaging $APP → IPA"
             mkdir -p $RUNNER_TEMP/Payload
             cp -r "$APP" $RUNNER_TEMP/Payload/AorusGram.app
-            cd $RUNNER_TEMP && zip -qr AorusGram-unsigned.ipa Payload/
+            cd $RUNNER_TEMP && zip -qr AorusGram-release-unsigned.ipa Payload/
           fi
 
-          ls -lh $RUNNER_TEMP/AorusGram-unsigned.ipa
+          ls -lh $RUNNER_TEMP/AorusGram-release-unsigned.ipa
 
-      - name: Upload unsigned IPA
+      - name: Upload release unsigned IPA
         uses: actions/upload-artifact@v4
         with:
-          name: AorusGram-unsigned-${{ github.run_number }}
-          path: ${{ runner.temp }}/AorusGram-unsigned.ipa
+          name: AorusGram-release-unsigned-${{ github.run_number }}
+          path: ${{ runner.temp }}/AorusGram-release-unsigned.ipa
           retention-days: 14
 
       - name: Upload build log
