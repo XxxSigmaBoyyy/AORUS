@@ -359,7 +359,7 @@ jobs:
           print('All Make.py patches applied')
           MPEOF
 
-      - name: Prepare codesigning
+      - name: Prepare codesigning (profiles for Make.py only, unsigned)
         run: |
           mkdir -p $RUNNER_TEMP/signing/profiles
           python3 << 'CSEOF'
@@ -437,33 +437,13 @@ jobs:
               )
               print(('Created: ' if r.returncode == 0 else 'Error: ') + name + '.mobileprovision')
 
-          # Override main app profile with the REAL provisioning profile
-          import shutil
-          real_profile = 'aorusgram/Profile-1.mobileprovision'
-          if os.path.exists(real_profile):
-              shutil.copy(real_profile, out_dir + '/Telegram.mobileprovision')
-              print('Used REAL provisioning profile for main Telegram target')
-
-          print('Profiles done')
+          print('Profiles done (unsigned: fake profiles only for Make.py)')
           for f in sorted(os.listdir(out_dir)):
               print('  ', f, os.path.getsize(os.path.join(out_dir, f)), 'bytes')
           CSEOF
 
-          # Import fake certificate into a temporary keychain so Xcode can sign.
-          # Without this Xcode 16 fails with "Unable to find identity in keychain".
-          KEYCHAIN=/tmp/aorus-build.keychain-db
-          security create-keychain -p aorusbuild "$KEYCHAIN" 2>/dev/null || true
-          security set-keychain-settings -lut 21600 "$KEYCHAIN"
-          security unlock-keychain -p aorusbuild "$KEYCHAIN"
-          # Import REAL developer certificate (from repo, password: 1)
-          security import aorusgram/Certificate.p12 -P "1" -A \
-            -t cert -f pkcs12 -k "$KEYCHAIN" 2>&1 || true
-          # Add keychain to search list
-          security list-keychain -d user -s "$KEYCHAIN" \
-            "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null || true
-          security set-key-partition-list -S apple-tool:,apple: -s -k aorusbuild "$KEYCHAIN" 2>/dev/null || true
-          echo "=== Signing identities ==="
-          security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null || true
+          # Unsigned release: no keychain, no Certificate.p12. Bazel uses
+          # disableProvisioningProfiles (Make.py patch); do not install identities.
 
       - name: Build (Bazel)
         working-directory: telegram-ios
