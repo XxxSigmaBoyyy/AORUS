@@ -4,21 +4,10 @@ on:
   push:
     branches: [ main, "claude/**", "cursor/**" ]
   workflow_dispatch:
-    inputs:
-      build_configuration:
-        description: "release_arm64 = iPhone (optimized IPA for sideload). release_sim_arm64 / debug_sim_arm64 = simulator only."
-        type: choice
-        default: release_arm64
-        options:
-          - release_arm64
-          - release_sim_arm64
-          - debug_sim_arm64
 
 jobs:
   build:
     runs-on: macos-15
-    env:
-      BUILD_CONFIGURATION: ${{ github.event_name == 'workflow_dispatch' && inputs.build_configuration || 'release_arm64' }}
 
     steps:
       - name: Checkout
@@ -26,25 +15,12 @@ jobs:
         with:
           path: aorusgram
 
-      - name: Signing files from GitHub secrets (optional)
-        run: |
-          # If repo has no Certificate.p12 / Profile-1.mobileprovision, set secrets:
-          # IOS_CERTIFICATE_P12_BASE64, IOS_PROVISION_PROFILE_BASE64
-          if [ -n "${{ secrets.IOS_CERTIFICATE_P12_BASE64 }}" ]; then
-            echo "${{ secrets.IOS_CERTIFICATE_P12_BASE64 }}" | base64 -d > aorusgram/Certificate.p12
-            echo "Wrote Certificate.p12 from secret"
-          fi
-          if [ -n "${{ secrets.IOS_PROVISION_PROFILE_BASE64 }}" ]; then
-            echo "${{ secrets.IOS_PROVISION_PROFILE_BASE64 }}" | base64 -d > aorusgram/Profile-1.mobileprovision
-            echo "Wrote Profile-1.mobileprovision from secret"
-          fi
-
       - name: Cache Telegram iOS source
         id: tg-cache
         uses: actions/cache@v4
         with:
           path: telegram-ios
-          key: tg-ios-src-v8-release-arm64
+          key: tg-ios-src-v6-xcode16
 
       - name: Clone Telegram iOS
         if: steps.tg-cache.outputs.cache-hit != 'true'
@@ -359,7 +335,7 @@ jobs:
           print('All Make.py patches applied')
           MPEOF
 
-      - name: Prepare codesigning (profiles for Make.py only, unsigned)
+      - name: Prepare codesigning
         run: |
           mkdir -p $RUNNER_TEMP/signing/profiles
           python3 << 'CSEOF'
@@ -437,20 +413,39 @@ jobs:
               )
               print(('Created: ' if r.returncode == 0 else 'Error: ') + name + '.mobileprovision')
 
-          print('Profiles done (unsigned: fake profiles only for Make.py)')
+          # Override main app profile with the REAL provisioning profile
+          import shutil
+          real_profile = 'aorusgram/Profile-1.mobileprovision'
+          if os.path.exists(real_profile):
+              shutil.copy(real_profile, out_dir + '/Telegram.mobileprovision')
+              print('Used REAL provisioning profile for main Telegram target')
+
+          print('Profiles done')
           for f in sorted(os.listdir(out_dir)):
               print('  ', f, os.path.getsize(os.path.join(out_dir, f)), 'bytes')
           CSEOF
 
-          # Unsigned release: no keychain, no Certificate.p12. Bazel uses
-          # disableProvisioningProfiles (Make.py patch); do not install identities.
+          # Import fake certificate into a temporary keychain so Xcode can sign.
+          # Without this Xcode 16 fails with "Unable to find identity in keychain".
+          KEYCHAIN=/tmp/aorus-build.keychain-db
+          security create-keychain -p aorusbuild "$KEYCHAIN" 2>/dev/null || true
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p aorusbuild "$KEYCHAIN"
+          # Import REAL developer certificate (from repo, password: 1)
+          security import aorusgram/Certificate.p12 -P "1" -A \
+            -t cert -f pkcs12 -k "$KEYCHAIN" 2>&1 || true
+          # Add keychain to search list
+          security list-keychain -d user -s "$KEYCHAIN" \
+            "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null || true
+          security set-key-partition-list -S apple-tool:,apple: -s -k aorusbuild "$KEYCHAIN" 2>/dev/null || true
+          echo "=== Signing identities ==="
+          security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null || true
 
-      - name: Build (Bazel)
+      - name: Build (no signing)
         working-directory: telegram-ios
         run: |
           echo "=== Python version ==="
           python3 --version
-          echo "=== Configuration: $BUILD_CONFIGURATION ==="
           echo "=== Starting build ==="
           set -o pipefail
           python3 build-system/Make/Make.py \
@@ -460,7 +455,7 @@ jobs:
             --configurationPath build-system/appstore-configuration.json \
             --codesigningInformationPath $RUNNER_TEMP/signing \
             --buildNumber=${{ github.run_number }} \
-            --configuration=$BUILD_CONFIGURATION \
+            --configuration=debug_sim_arm64 \
             --outputBuildArtifactsPath $RUNNER_TEMP/artifacts \
             --continueOnError \
             2>&1 | tee $RUNNER_TEMP/build.log | tail -100
@@ -500,7 +495,7 @@ jobs:
           find $RUNNER_TEMP/artifacts -type f 2>/dev/null >> $RUNNER_TEMP/found_files.txt || true
           cat $RUNNER_TEMP/found_files.txt
 
-      - name: Package IPA for download
+      - name: Package unsigned IPA
         run: |
           # 1. Проверяем --outputBuildArtifactsPath
           IPA=$(find $RUNNER_TEMP/artifacts -name "*.ipa" 2>/dev/null | head -1 || true)
@@ -512,7 +507,7 @@ jobs:
 
           if [ -n "$IPA" ]; then
             echo "Found IPA: $IPA"
-            cp "$IPA" $RUNNER_TEMP/AorusGram-release.ipa
+            cp "$IPA" $RUNNER_TEMP/AorusGram-unsigned.ipa
           else
             # 3. Ищем .app — сначала в bazel-bin с симлинками, потом везде
             APP=$(find -L telegram-ios/bazel-bin -name "Telegram.app" -type d 2>/dev/null \
@@ -545,17 +540,17 @@ jobs:
             echo "Packaging $APP → IPA"
             mkdir -p $RUNNER_TEMP/Payload
             cp -r "$APP" $RUNNER_TEMP/Payload/AorusGram.app
-            cd $RUNNER_TEMP && zip -qr AorusGram-release.ipa Payload/
+            cd $RUNNER_TEMP && zip -qr AorusGram-unsigned.ipa Payload/
           fi
 
-          ls -lh $RUNNER_TEMP/AorusGram-release.ipa
+          ls -lh $RUNNER_TEMP/AorusGram-unsigned.ipa
 
-      - name: Upload IPA (Artifacts → download)
+      - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:
-          name: AorusGram-${{ github.run_number }}-${{ env.BUILD_CONFIGURATION }}
-          path: ${{ runner.temp }}/AorusGram-release.ipa
-          retention-days: 30
+          name: AorusGram-unsigned-${{ github.run_number }}
+          path: ${{ runner.temp }}/AorusGram-unsigned.ipa
+          retention-days: 14
 
       - name: Upload build log
         if: always()
