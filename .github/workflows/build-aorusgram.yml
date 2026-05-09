@@ -441,12 +441,12 @@ jobs:
           echo "=== Signing identities ==="
           security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null || true
 
-      - name: Build release (device, unsigned IPA artifact)
+      - name: Build release (simulator — opt; device release_arm64 blocked by rules_apple without per-extension profiles)
         working-directory: telegram-ios
         run: |
           echo "=== Python version ==="
           python3 --version
-          echo "=== Starting release_arm64 build (unsigned IPA for download) ==="
+          echo "=== Starting release_sim_arm64 (-c opt, sim_arm64 — same signing path as debug_sim) ==="
           set -o pipefail
           python3 build-system/Make/Make.py \
             --overrideXcodeVersion \
@@ -455,7 +455,7 @@ jobs:
             --configurationPath build-system/appstore-configuration.json \
             --codesigningInformationPath $RUNNER_TEMP/signing \
             --buildNumber=${{ github.run_number }} \
-            --configuration=release_arm64 \
+            --configuration=release_sim_arm64 \
             --outputBuildArtifactsPath $RUNNER_TEMP/artifacts \
             --continueOnError \
             2>&1 | tee $RUNNER_TEMP/build.log | tail -100
@@ -472,6 +472,7 @@ jobs:
 
       - name: Commit error log to repo
         if: failure()
+        continue-on-error: true
         run: |
           cd aorusgram
           mkdir -p build-errors
@@ -495,7 +496,7 @@ jobs:
           find $RUNNER_TEMP/artifacts -type f 2>/dev/null >> $RUNNER_TEMP/found_files.txt || true
           cat $RUNNER_TEMP/found_files.txt
 
-      - name: Package release unsigned IPA
+      - name: Package release unsigned IPA (simulator binary)
         run: |
           # 1. Проверяем --outputBuildArtifactsPath
           IPA=$(find $RUNNER_TEMP/artifacts -name "*.ipa" 2>/dev/null | head -1 || true)
@@ -548,7 +549,7 @@ jobs:
       - name: Upload release unsigned IPA
         uses: actions/upload-artifact@v4
         with:
-          name: AorusGram-release-unsigned-${{ github.run_number }}
+          name: AorusGram-release-sim-unsigned-${{ github.run_number }}
           path: ${{ runner.temp }}/AorusGram-release-unsigned.ipa
           retention-days: 14
 
