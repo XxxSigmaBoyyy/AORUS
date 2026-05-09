@@ -1,0 +1,572 @@
+name: Build AorusGram IPA
+
+on:
+  push:
+    branches: [ main, "claude/**", "cursor/**" ]
+  workflow_dispatch:
+    inputs:
+      build_configuration:
+        description: "Make.py --configuration (release_sim_arm64 = optimized simulator build, no app code changes)"
+        type: choice
+        default: release_sim_arm64
+        options:
+          - release_sim_arm64
+          - debug_sim_arm64
+
+jobs:
+  build:
+    runs-on: macos-15
+    env:
+      BUILD_CONFIGURATION: ${{ github.event_name == 'workflow_dispatch' && inputs.build_configuration || 'release_sim_arm64' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: aorusgram
+
+      - name: Cache Telegram iOS source
+        id: tg-cache
+        uses: actions/cache@v4
+        with:
+          path: telegram-ios
+          key: tg-ios-src-v7-release-sim
+
+      - name: Clone Telegram iOS
+        if: steps.tg-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth=1 \
+            https://github.com/TelegramMessenger/Telegram-iOS.git telegram-ios
+          cd telegram-ios
+          git submodule update --init --depth=1 --jobs=4 || true
+
+      - name: Ensure rlottie submodule
+        run: |
+          cd telegram-ios
+          CPP_COUNT=$(find submodules/rlottie/rlottie/src -name "*.cpp" 2>/dev/null | wc -l)
+          echo "rlottie .cpp files found: $CPP_COUNT"
+          if [ "$CPP_COUNT" -eq 0 ]; then
+            echo "rlottie empty — cloning directly..."
+            rm -rf submodules/rlottie/rlottie
+            git clone --depth=1 https://github.com/TelegramMessenger/rlottie.git submodules/rlottie/rlottie
+          fi
+          echo "rlottie .cpp count after: $(find submodules/rlottie/rlottie/src -name '*.cpp' | wc -l)"
+
+      - name: Patch Telegram/BUILD bundle IDs to AorusGram
+        run: |
+          python3 << 'PYEOF'
+          import os
+
+          # Replacements — order matters: specific suffixes before the base ID
+          replacements = [
+              ('ph.telegra.Telegraph.Share',                   'com.Xdd.23723ab.Share'),
+              ('ph.telegra.Telegraph.SiriIntents',             'com.Xdd.23723ab.SiriIntents'),
+              ('ph.telegra.Telegraph.Widget',                  'com.Xdd.23723ab.Widget'),
+              ('ph.telegra.Telegraph.BroadcastUpload',         'com.Xdd.23723ab.BroadcastUpload'),
+              ('ph.telegra.Telegraph.NotificationServiceExtension', 'com.Xdd.23723ab.NotificationService'),
+              ('ph.telegra.Telegraph.NotificationService',     'com.Xdd.23723ab.NotificationService'),
+              ('ph.telegra.Telegraph.NotificationContent',     'com.Xdd.23723ab.NotificationContent'),
+              ('ph.telegra.Telegraph.WatchkitApp',             'com.Xdd.23723ab.watchkitapp'),
+              ('ph.telegra.Telegraph.WatchkitExtension',       'com.Xdd.23723ab.watchkitapp.watchkitextension'),
+              ('ph.telegra.Telegraph.SiriIntentsUI',           'com.Xdd.23723ab.SiriIntentsUI'),
+              ('ph.telegra.Telegraph',                         'com.Xdd.23723ab'),
+              ('C67CF9S4VU',                                   'R9Q5YYQM2M'),
+          ]
+
+          # 1. Patch Telegram/BUILD
+          build_path = 'telegram-ios/Telegram/BUILD'
+          if os.path.exists(build_path):
+              t = open(build_path).read()
+              for old, new in replacements:
+                  n = t.count(old)
+                  if n:
+                      t = t.replace(old, new)
+                      print(f'BUILD: replaced {n}x "{old}"')
+              # After replacing bundle IDs, store_bundle_ids now contains our ID,
+              # which triggers com.apple.developer.applesignin entitlement.
+              # Clear the list so none of the App-Store-only entitlements are added.
+              import re as _re
+              t = _re.sub(r'store_bundle_ids\s*=\s*\[.*?\]', 'store_bundle_ids = []', t, flags=_re.DOTALL)
+              # Also clear official_bundle_ids to skip VoIP/CarPlay/associated-domains
+              t = _re.sub(r'official_bundle_ids\s*=\s*\[.*?\]', 'official_bundle_ids = []', t, flags=_re.DOTALL)
+              open(build_path, 'w').write(t)
+              print('BUILD file patched: store_bundle_ids and official_bundle_ids cleared')
+          else:
+              print('WARNING: Telegram/BUILD not found')
+
+          # 2. Patch all *.entitlements files in telegram-ios/Telegram/
+          ent_dir = 'telegram-ios/Telegram'
+          if os.path.isdir(ent_dir):
+              for fname in sorted(os.listdir(ent_dir)):
+                  if fname.endswith('.entitlements'):
+                      fpath = os.path.join(ent_dir, fname)
+                      t2 = open(fpath).read()
+                      changed = False
+                      for old, new in replacements:
+                          if old in t2:
+                              t2 = t2.replace(old, new)
+                              changed = True
+                      if changed:
+                          open(fpath, 'w').write(t2)
+                          print(f'Entitlements patched: {fname}')
+          PYEOF
+
+      - name: Setup Xcode (newest available, prefer iOS 26 SDK)
+        id: xcode_setup
+        run: |
+          echo "=== All installed Xcodes ==="
+          ls -d /Applications/Xcode*.app 2>/dev/null || echo "(no Xcode_*.app found, only default)"
+
+          # Pick the newest Xcode by version. Order: 26 > 17 > 16 > fallback.
+          XCODE=""
+          for cand in $(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V -r); do
+            XCODE="$cand"; break
+          done
+          if [ -z "$XCODE" ] && [ -d /Applications/Xcode.app ]; then
+            XCODE=/Applications/Xcode.app
+          fi
+          if [ -z "$XCODE" ]; then
+            echo "FATAL: no Xcode installation found"
+            exit 1
+          fi
+
+          echo "Selected Xcode: $XCODE"
+          sudo xcode-select -s "$XCODE/Contents/Developer"
+          xcodebuild -version
+
+          echo "=== iOS SDKs ==="
+          xcodebuild -showsdks 2>/dev/null | grep -iE "iphoneos|ios" || true
+
+          # Detect iOS SDK major version to gate compatibility patches.
+          IOS_SDK=$(xcodebuild -showsdks 2>/dev/null | grep -oE 'iphoneos[0-9]+' | sort -V | tail -1 | grep -oE '[0-9]+')
+          if [ -z "$IOS_SDK" ]; then IOS_SDK=0; fi
+          echo "Detected iOS SDK major: $IOS_SDK"
+          echo "ios_sdk_major=$IOS_SDK" >> "$GITHUB_OUTPUT"
+
+          # Detect Swift compiler version
+          SWIFT_VER=$(swift --version 2>/dev/null | grep -oE 'Swift version [0-9]+\.[0-9]+' | head -1 | awk '{print $3}')
+          echo "Swift compiler: $SWIFT_VER"
+          echo "swift_version=$SWIFT_VER" >> "$GITHUB_OUTPUT"
+
+      - name: Fix Icon Composer bundles (only if SDK < iOS 26)
+        if: ${{ steps.xcode_setup.outputs.ios_sdk_major < 26 }}
+        run: |
+          python3 -c "import base64; exec(base64.b64decode('aW1wb3J0IG9zLCBzaHV0aWwsIHN0cnVjdCwgemxpYiwganNvbgpkZWYgY3JlYXRlX3BuZygpOgogICAgdywgaCA9IDEwMjQsIDEwMjQKICAgIGRlZiBtayh0LCBkKToKICAgICAgICBjID0gdCArIGQKICAgICAgICByZXR1cm4gc3RydWN0LnBhY2soJz5JJywgbGVuKGQpKSArIGMgKyBzdHJ1Y3QucGFjaygnPkknLCB6bGliLmNyYzMyKGMpICYgMHhmZmZmZmZmZikKICAgIHJvdyA9IGJ5dGVzKFswXSkgKyBieXRlcyhbMzMsIDE1MCwgMjQzXSAqIHcpCiAgICBpZGF0ID0gemxpYi5jb21wcmVzcyhyb3cgKiBoLCA5KQogICAgaWhkciA9IHN0cnVjdC5wYWNrKCc+SUlCQkJCQicsIHcsIGgsIDgsIDIsIDAsIDAsIDApCiAgICByZXR1cm4gYidceDg5UE5HXHJcblx4MWFcbicgKyBtayhiJ0lIRFInLCBpaGRyKSArIG1rKGInSURBVCcsIGlkYXQpICsgbWsoYidJRU5EJywgYicnKQpwbmdfYnl0ZXMgPSBjcmVhdGVfcG5nKCkKaWNvbl9kaXJzID0gW10KZm9yIHJvb3QsIGRpcnMsIGZpbGVzIGluIG9zLndhbGsoJ3RlbGVncmFtLWlvcycpOgogICAgZm9yIGQgaW4gZGlyczoKICAgICAgICBpZiBkLmVuZHN3aXRoKCcuaWNvbicpOgogICAgICAgICAgICBpY29uX2RpcnMuYXBwZW5kKG9zLnBhdGguam9pbihyb290LCBkKSkKcHJpbnQoJ0ZvdW5kJywgbGVuKGljb25fZGlycyksICcuaWNvbiBidW5kbGUocyknKQpmb3IgaWNvbl9wYXRoIGluIGljb25fZGlyczoKICAgIG5hbWUgPSBvcy5wYXRoLmJhc2VuYW1lKGljb25fcGF0aClbOi01XQogICAgcGFyZW50ID0gb3MucGF0aC5kaXJuYW1lKGljb25fcGF0aCkKICAgIGFwcGljb25zZXQgPSBvcy5wYXRoLmpvaW4ocGFyZW50LCBuYW1lICsgJy5hcHBpY29uc2V0JykKICAgIG9zLm1ha2VkaXJzKGFwcGljb25zZXQsIGV4aXN0X29rPVRydWUpCiAgICBvcGVuKG9zLnBhdGguam9pbihhcHBpY29uc2V0LCAnQXBwSWNvbi5wbmcnKSwgJ3diJykud3JpdGUocG5nX2J5dGVzKQogICAgb3Blbihvcy5wYXRoLmpvaW4oYXBwaWNvbnNldCwgJ0NvbnRlbnRzLmpzb24nKSwgJ3cnKS53cml0ZShqc29uLmR1bXBzKHsnaW1hZ2VzJzogW3snZmlsZW5hbWUnOiAnQXBwSWNvbi5wbmcnLCAnaWRpb20nOiAndW5pdmVyc2FsJywgJ3BsYXRmb3JtJzogJ2lvcycsICdzaXplJzogJzEwMjR4MTAyNCd9XSwgJ2luZm8nOiB7J2F1dGhvcic6ICd4Y29kZScsICd2ZXJzaW9uJzogMX19KSkKICAgIHNodXRpbC5ybXRyZWUoaWNvbl9wYXRoKQogICAgcHJpbnQoJ1JlcGxhY2VkOicsIGljb25fcGF0aCkKcHJpbnQoJ0RvbmU6JywgbGVuKGljb25fZGlycyksICdidW5kbGUocykgcmVwbGFjZWQnKQo=').decode())"
+          # Telegram/BUILD globs for .icon/**/* — allow empty so removed dirs don't fail
+          echo "build --incompatible_disallow_empty_glob=false" >> telegram-ios/.bazelrc
+          # Disable swift index-while-building: it tries to download index-import binary
+          # from GitHub releases which times out on CI. Disabling saves ~2min per build.
+          echo "build --features=-swift.index_while_building" >> telegram-ios/.bazelrc
+          echo "build --features=-swift.use_global_index_store" >> telegram-ios/.bazelrc
+          # Note: disableProvisioningProfiles is set via Make.py patch (set_disable_provisioning_profiles)
+          # NOT via .bazelrc — Make.py builds its own bazel command line ignoring .bazelrc flags
+          echo "Updated .bazelrc"
+
+      - name: Patch SDK compatibility (only if SDK < iOS 26)
+        if: ${{ steps.xcode_setup.outputs.ios_sdk_major < 26 }}
+        run: |
+          python3 << 'SDKEOF'
+          import re, os, glob
+
+          def patch_file(path, fn):
+              if not os.path.exists(path):
+                  print(f'Not found: {path}'); return
+              try:
+                  c = open(path, encoding='utf-8', errors='ignore').read()
+                  n = fn(c)
+                  if n != c:
+                      open(path, 'w', encoding='utf-8').write(n)
+                      print(f'Patched: {path}')
+              except Exception as e:
+                  print(f'Error {path}: {e}')
+
+          # Detect Swift compiler version (Xcode 16 = Swift 6.0+)
+          # We use #if compiler(>=6.0) as the gate. iOS 26 (UIGlassEffect,
+          # WindowingControlStyle) is NOT in any released Xcode yet — keep stubs
+          # for compiler < 6.2; the runtime #available guards still work on iOS 26 devices.
+
+          # ── 1. NativeWindowHostView.swift — iOS 26 WindowingControlStyle ──────
+          # Xcode 16 (compiler 6.0) does NOT have iOS 26 SDK either. Wrap with
+          # #if compiler(>=6.2) so it compiles on Xcode 16, runtime-guards on iOS 26.
+          def fix_nativewindow(c):
+              if 'WindowingControlStyle' not in c: return c
+              lines = c.split('\n'); result = []; i = 0; n = 0
+              while i < len(lines):
+                  ln = lines[i]
+                  if ('@available(iOS 26' in ln and i+1 < len(lines) and
+                      'func ' in lines[i+1] and 'WindowingControlStyle' in lines[i+1]):
+                      sp = ' ' * (len(ln) - len(ln.lstrip()))
+                      result.append(sp + '#if compiler(>=6.2)')
+                      result.append(ln); result.append(lines[i+1])
+                      depth = lines[i+1].count('{') - lines[i+1].count('}'); i += 2
+                      while i < len(lines) and depth > 0:
+                          result.append(lines[i])
+                          depth += lines[i].count('{') - lines[i].count('}'); i += 1
+                      result.append(sp + '#endif'); n += 1
+                  else:
+                      result.append(ln); i += 1
+              if n: print(f'NativeWindowHostView: {n} iOS 26 block(s) wrapped')
+              return '\n'.join(result)
+
+          patch_file('telegram-ios/submodules/Display/Source/NativeWindowHostView.swift', fix_nativewindow)
+
+          # ── 2. GlassBackgroundComponent.swift — iOS 26 UIGlassEffect ──────────
+          # Stub the iOS 26 types when compiler doesn't have them.
+          def fix_glass(c):
+              stub = """#if !compiler(>=6.2)
+          @available(iOS 26.0, *)
+          class UIGlassEffect: UIVisualEffect {
+              enum Style { case regular, clear }
+              convenience init(style: Style) { self.init() }
+              var tintColor: UIColor?
+              var isInteractive: Bool = false
+          }
+          @available(iOS 26.0, *)
+          class UIGlassContainerEffect: UIVisualEffect {
+              var spacing: CGFloat = 0.0
+          }
+          #endif
+          """
+              if 'UIGlassEffect' in c and '#if !compiler(>=6.2)' not in c:
+                  # Remove any old #if !compiler(>=6.0) stubs
+                  c = re.sub(r'#if !compiler\(>=6\.0\)\n.*?#endif\n', '', c, flags=re.DOTALL)
+                  lines = c.split('\n'); ins = 0
+                  for j, ln in enumerate(lines):
+                      if ln.strip().startswith('import ') or ln.strip() == '': ins = j+1
+                      elif ins > 0: break
+                  lines.insert(ins, stub); c = '\n'.join(lines)
+                  print('GlassBackgroundComponent: UIGlassEffect stub inserted (compiler<6.2)')
+              return c
+
+          patch_file('telegram-ios/submodules/TelegramUI/Components/GlassBackgroundComponent/Sources/GlassBackgroundComponent.swift', fix_glass)
+
+          print('=== Done. Xcode 16 + iOS 18 SDK handles NSAdaptiveImageGlyph, .limited, supportsAdaptiveImageGlyph, trackConfiguration natively. ===')
+          SDKEOF
+
+      - name: Inject AorusGram sources
+        run: |
+          PATCHES=aorusgram/patches
+          TG=telegram-ios
+          PEER=$TG/submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen
+
+          # 1. Copy AorusGramUI module (all new code, no conflicts)
+          mkdir -p $TG/submodules/AorusGramUI/Sources
+          cp -r $PATCHES/submodules/AorusGramUI/. $TG/submodules/AorusGramUI/
+
+          # 2. Copy PeerInfoScreen BUILD (adds AorusGramUI dep)
+          cp $PATCHES/submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/BUILD $PEER/
+
+          # 3. Replace PeerInfoSettingsItems.swift (adds aorusGram menu item)
+          cp $PATCHES/submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoSettingsItems.swift $PEER/Sources/
+
+          # 4. Patch PeerInfoScreen.swift in-place (add case aorusGram to enum)
+          # 5. Patch PeerInfoScreenSettingsActions.swift in-place (add import + case)
+          python3 -c "import base64; exec(base64.b64decode('aW1wb3J0IHJlLCBvcwoKcGVlcl9kaXIgPSAndGVsZWdyYW0taW9zL3N1Ym1vZHVsZXMvVGVsZWdyYW1VSS9Db21wb25lbnRzL1BlZXJJbmZvL1BlZXJJbmZvU2NyZWVuL1NvdXJjZXMnCgojIDEuIFBhdGNoIFBlZXJJbmZvU2NyZWVuLnN3aWZ0IOKAlCBhZGQgYW9ydXNHcmFtIHRvIGVudW0gb25seQpzY3JlZW5fcGF0aCA9IG9zLnBhdGguam9pbihwZWVyX2RpciwgJ1BlZXJJbmZvU2NyZWVuLnN3aWZ0JykKdCA9IG9wZW4oc2NyZWVuX3BhdGgpLnJlYWQoKQppZiAnY2FzZSBhb3J1c0dyYW0nIG5vdCBpbiB0OgogICAgbSA9IHJlLnNlYXJjaChyJyhlbnVtIFBlZXJJbmZvU2V0dGluZ3NTZWN0aW9uIFx7KSguKj8pKFxuXH0pJywgdCwgcmUuRE9UQUxMKQogICAgaWYgbToKICAgICAgICB0ID0gdFs6bS5zdGFydCgzKV0gKyAnXG4gICAgY2FzZSBhb3J1c0dyYW0nICsgdFttLnN0YXJ0KDMpOl0KICAgICAgICBvcGVuKHNjcmVlbl9wYXRoLCAndycpLndyaXRlKHQpCiAgICAgICAgcHJpbnQoJ1BhdGNoZWQgUGVlckluZm9TY3JlZW4uc3dpZnQ6IGFkZGVkIGNhc2UgYW9ydXNHcmFtJykKICAgIGVsc2U6CiAgICAgICAgcHJpbnQoJ1dBUk5JTkc6IFBlZXJJbmZvU2V0dGluZ3NTZWN0aW9uIG5vdCBmb3VuZCcpCmVsc2U6CiAgICBwcmludCgnUGVlckluZm9TY3JlZW4uc3dpZnQ6IGFvcnVzR3JhbSBhbHJlYWR5IHByZXNlbnQnKQoKIyAyLiBQYXRjaCBQZWVySW5mb1NjcmVlblNldHRpbmdzQWN0aW9ucy5zd2lmdCDigJQgYWRkIGltcG9ydCArIG9uZSBjYXNlCmFjdGlvbnNfcGF0aCA9IG9zLnBhdGguam9pbihwZWVyX2RpciwgJ1BlZXJJbmZvU2NyZWVuU2V0dGluZ3NBY3Rpb25zLnN3aWZ0JykKdCA9IG9wZW4oYWN0aW9uc19wYXRoKS5yZWFkKCkKY2hhbmdlZCA9IEZhbHNlCgppZiAnaW1wb3J0IEFvcnVzR3JhbVVJJyBub3QgaW4gdDoKICAgIHQgPSByZS5zdWIocideKGltcG9ydCBcdyspJywgcidcMVxuaW1wb3J0IEFvcnVzR3JhbVVJJywgdCwgY291bnQ9MSwgZmxhZ3M9cmUuTVVMVElMSU5FKQogICAgY2hhbmdlZCA9IFRydWUKICAgIHByaW50KCdBZGRlZCBpbXBvcnQgQW9ydXNHcmFtVUknKQoKaWYgJ2Nhc2UgLmFvcnVzR3JhbScgbm90IGluIHQ6CiAgICBhb3J1c19jYXNlID0gJyAgICAgICAgY2FzZSAuYW9ydXNHcmFtOlxuICAgICAgICAgICAgcHVzaChhb3J1c0dyYW1Db250cm9sbGVyKGNvbnRleHQ6IHNlbGYuY29udGV4dCkpXG4nCiAgICBmb3IgdGFyZ2V0IGluIFsnICAgICAgICBjYXNlIC5mYXE6JywgJyAgICAgICAgY2FzZSAudGlwczonLCAnICAgICAgICBjYXNlIC5zdXBwb3J0OiddOgogICAgICAgIGlmIHRhcmdldCBpbiB0OgogICAgICAgICAgICB0ID0gdC5yZXBsYWNlKHRhcmdldCwgYW9ydXNfY2FzZSArIHRhcmdldCwgMSkKICAgICAgICAgICAgY2hhbmdlZCA9IFRydWUKICAgICAgICAgICAgcHJpbnQoJ0FkZGVkIGFvcnVzR3JhbSBjYXNlIGJlZm9yZScsIHRhcmdldC5zdHJpcCgpKQogICAgICAgICAgICBicmVhawoKaWYgY2hhbmdlZDoKICAgIG9wZW4oYWN0aW9uc19wYXRoLCAndycpLndyaXRlKHQpCiAgICBwcmludCgnU2F2ZWQgYWN0aW9ucyBmaWxlJykKZWxzZToKICAgIHByaW50KCdBY3Rpb25zIGZpbGU6IG5vIGNoYW5nZXMgbmVlZGVkJykK').decode())"
+
+          echo "Injection complete"
+          echo "--- AorusGramUI sources ---"
+          ls -la $TG/submodules/AorusGramUI/Sources/
+
+      - name: Patch app name
+        run: |
+          PLIST="telegram-ios/Telegram/Telegram-iOS/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName AorusGram" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Set :CFBundleName AorusGram" "$PLIST" 2>/dev/null || true
+
+      - name: Install Bazel
+        run: brew install bazel 2>/dev/null || true
+
+      - name: Prepare build config
+        working-directory: telegram-ios
+        run: |
+          echo "=== build-system contents ==="
+          ls build-system/ || echo "(no build-system dir)"
+          ls build-system/Make/ 2>/dev/null | head -20 || echo "(no Make dir)"
+          echo "=== Writing AorusGram appstore-configuration.json (always overwrite) ==="
+          python3 << 'CFEOF'
+          import json
+          config = {
+              "bundle_id": "com.Xdd.23723ab",
+              "api_id": "10840",
+              "api_hash": "33c45224029d59cb3ad0c16134215aeb",
+              "team_id": "R9Q5YYQM2M",
+              "app_center_id": "0",
+              "is_internal_build": "false",
+              "is_appstore_build": "false",
+              "appstore_id": "0",
+              "app_specific_url_scheme": "aorusgram",
+              "premium_iap_product_id": "",
+              "enable_siri": False,
+              "enable_icloud": False
+          }
+          open('build-system/appstore-configuration.json', 'w').write(json.dumps(config, indent=2))
+          print('Config written:')
+          print(json.dumps(config, indent=2))
+          CFEOF
+          python3 << 'MPEOF'
+          import os, shutil
+
+          p = 'build-system/Make/Make.py'
+          t = open(p).read()
+
+          # 1. Inject provisioning profiles copy before invoke_build()
+          inj = (
+              "\n"
+              "    import shutil as _sh, os as _os\n"
+              "    _ps = _os.environ.get('RUNNER_TEMP', '/tmp') + '/signing/profiles'\n"
+              "    _pd = _os.path.join(_os.getcwd(), 'build-input/configuration-repository/provisioning')\n"
+              "    _os.makedirs(_pd, exist_ok=True)\n"
+              "    _os.path.isdir(_ps) and [_sh.copy(_os.path.join(_ps,_f),_pd) for _f in _os.listdir(_ps) if _f.endswith('.mobileprovision')]\n"
+              "    _fl = sorted(f for f in _os.listdir(_pd) if f.endswith('.mobileprovision'))\n"
+              "    open(_os.path.join(_pd,'BUILD'),'w').write('exports_files([' + ','.join('\"'+f+'\"' for f in _fl) + '])')\n"
+              "    print('Provisioning:', _fl)\n"
+          )
+
+          OLD = '    bazel_command_line.invoke_build()'
+          if OLD in t:
+              t = t.replace(OLD, inj + OLD, 1)
+              print('Patched: invoke_build injection OK')
+          else:
+              print('WARNING: invoke_build not found')
+
+          # 2. Disable provisioning profiles signing — extensions have no matching cert
+          # This calls set_disable_provisioning_profiles() so Bazel skips code signing
+          DISABLE_OLD = '    bazel_command_line.invoke_build()'
+          DISABLE_NEW = '    bazel_command_line.set_disable_provisioning_profiles()\n    bazel_command_line.invoke_build()'
+          if DISABLE_OLD in t:
+              t = t.replace(DISABLE_OLD, DISABLE_NEW, 1)
+              print('Patched: disable_provisioning_profiles OK')
+
+          # 3. Skip aps_environment None check (our fake profiles have it)
+          t = t.replace('if codesigning_data.aps_environment is None:', 'if False and codesigning_data.aps_environment is None:', 1)
+          t = t.replace("aps_environment=codesigning_data.aps_environment,", "aps_environment=codesigning_data.aps_environment or 'development',", 1)
+
+          open(p, 'w').write(t)
+          print('All Make.py patches applied')
+          MPEOF
+
+      - name: Prepare codesigning
+        run: |
+          mkdir -p $RUNNER_TEMP/signing/profiles
+          python3 << 'CSEOF'
+          import subprocess, plistlib, uuid, os
+          from datetime import datetime, timezone
+
+          subprocess.run(
+              ['openssl', 'req', '-x509', '-newkey', 'rsa:2048',
+               '-keyout', '/tmp/fake-key.pem', '-out', '/tmp/fake-cert.pem',
+               '-days', '3650', '-nodes', '-subj', '/CN=FakeProvision'],
+              capture_output=True
+          )
+          cert_der = subprocess.check_output(
+              ['openssl', 'x509', '-in', '/tmp/fake-cert.pem', '-outform', 'DER']
+          )
+
+          team = 'R9Q5YYQM2M'
+          base = 'com.Xdd.23723ab'
+          out_dir = os.environ.get('RUNNER_TEMP', '/tmp') + '/signing/profiles'
+          os.makedirs(out_dir, exist_ok=True)
+
+          # Bundle suffixes match the Telegram/BUILD template patterns exactly.
+          # IntentsExtension uses .SiriIntents (BUILD: {telegram_bundle_id}.SiriIntents).
+          # Watch uses .watchkitapp / .watchkitapp.watchkitextension.
+          profiles = [
+              ('Telegram',             base),
+              ('Share',                base + '.Share'),
+              ('NotificationService',  base + '.NotificationService'),
+              ('NotificationContent',  base + '.NotificationContent'),
+              ('Intents',              base + '.SiriIntents'),
+              ('IntentsExtension',     base + '.SiriIntents'),
+              ('IntentsUIExtension',   base + '.IntentsUI'),
+              ('Widget',               base + '.Widget'),
+              ('BroadcastUpload',      base + '.BroadcastUpload'),
+              ('Watch',                base + '.watchkitapp'),
+              ('WatchExtension',       base + '.watchkitapp.watchkitextension'),
+          ]
+
+          for name, bundle_suffix in profiles:
+              plist = {
+                  'AppIDName': 'AorusGram',
+                  'ApplicationIdentifierPrefix': [team],
+                  'CreationDate': datetime(2025, 1, 1, tzinfo=timezone.utc),
+                  'DeveloperCertificates': [cert_der],
+                  'ExpirationDate': datetime(2030, 1, 1, tzinfo=timezone.utc),
+                  'IsXcodeManaged': False,
+                  'Name': 'AorusGram ' + name,
+                  'ProvisionsAllDevices': True,
+                  'TeamIdentifier': [team],
+                  'TeamName': 'AorusGram Team',
+                  'TimeToLive': 1826,
+                  'UUID': str(uuid.uuid4()),
+                  'Version': 1,
+                  'Platform': ['iOS'],
+                  'Entitlements': {
+                      'application-identifier': team + '.' + bundle_suffix,
+                      'aps-environment': 'development',
+                      'keychain-access-groups': [team + '.' + bundle_suffix, team + '.' + base],
+                      'com.apple.developer.team-identifier': team,
+                      # plisttool checks ALL entitlement keys in the generated
+                      # entitlements file against the provisioning profile.
+                      # The Telegram BUILD template includes app-groups for all targets.
+                      'com.apple.security.application-groups': ['group.' + base],
+                  }
+              }
+              plist_bytes = plistlib.dumps(plist, fmt=plistlib.FMT_XML)
+              tmp_plist = '/tmp/pp-' + name + '.plist'
+              open(tmp_plist, 'wb').write(plist_bytes)
+              out_path = out_dir + '/' + name + '.mobileprovision'
+              r = subprocess.run(
+                  ['openssl', 'smime', '-sign', '-in', tmp_plist,
+                   '-signer', '/tmp/fake-cert.pem', '-inkey', '/tmp/fake-key.pem',
+                   '-outform', 'DER', '-nodetach', '-out', out_path],
+                  capture_output=True
+              )
+              print(('Created: ' if r.returncode == 0 else 'Error: ') + name + '.mobileprovision')
+
+          # Override main app profile with the REAL provisioning profile
+          import shutil
+          real_profile = 'aorusgram/Profile-1.mobileprovision'
+          if os.path.exists(real_profile):
+              shutil.copy(real_profile, out_dir + '/Telegram.mobileprovision')
+              print('Used REAL provisioning profile for main Telegram target')
+
+          print('Profiles done')
+          for f in sorted(os.listdir(out_dir)):
+              print('  ', f, os.path.getsize(os.path.join(out_dir, f)), 'bytes')
+          CSEOF
+
+          # Import fake certificate into a temporary keychain so Xcode can sign.
+          # Without this Xcode 16 fails with "Unable to find identity in keychain".
+          KEYCHAIN=/tmp/aorus-build.keychain-db
+          security create-keychain -p aorusbuild "$KEYCHAIN" 2>/dev/null || true
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p aorusbuild "$KEYCHAIN"
+          # Import REAL developer certificate (from repo, password: 1)
+          security import aorusgram/Certificate.p12 -P "1" -A \
+            -t cert -f pkcs12 -k "$KEYCHAIN" 2>&1 || true
+          # Add keychain to search list
+          security list-keychain -d user -s "$KEYCHAIN" \
+            "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null || true
+          security set-key-partition-list -S apple-tool:,apple: -s -k aorusbuild "$KEYCHAIN" 2>/dev/null || true
+          echo "=== Signing identities ==="
+          security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null || true
+
+      - name: Build (release simulator — optimized, no device signing)
+        working-directory: telegram-ios
+        run: |
+          echo "=== Python version ==="
+          python3 --version
+          echo "=== Configuration: $BUILD_CONFIGURATION ==="
+          echo "=== Starting build ==="
+          set -o pipefail
+          python3 build-system/Make/Make.py \
+            --overrideXcodeVersion \
+            --cacheDir ~/tg-bazel-cache \
+            build \
+            --configurationPath build-system/appstore-configuration.json \
+            --codesigningInformationPath $RUNNER_TEMP/signing \
+            --buildNumber=${{ github.run_number }} \
+            --configuration=$BUILD_CONFIGURATION \
+            --outputBuildArtifactsPath $RUNNER_TEMP/artifacts \
+            --continueOnError \
+            2>&1 | tee $RUNNER_TEMP/build.log | tail -100
+
+      - name: Show compile errors
+        if: always()
+        run: |
+          echo "=== First 80 lines ==="
+          head -80 $RUNNER_TEMP/build.log 2>/dev/null || echo "(log not available)"
+          echo "=== Errors ==="
+          grep -E " error:" $RUNNER_TEMP/build.log | head -80 || echo "(none)"
+          echo "=== Last 80 lines ==="
+          tail -80 $RUNNER_TEMP/build.log 2>/dev/null || echo "(log not available)"
+
+      - name: Commit error log to repo
+        if: failure()
+        run: |
+          cd aorusgram
+          mkdir -p build-errors
+          cp $RUNNER_TEMP/build.log build-errors/last-build.log 2>/dev/null || echo "(no log)" > build-errors/last-build.log
+          git config user.email "ci@aorusgram"
+          git config user.name "AorusGram CI"
+          git add build-errors/last-build.log
+          git diff --cached --quiet || git commit -m "ci: save build log [skip ci]"
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:${{ github.ref_name }}
+
+      - name: Collect build artifacts info
+        if: always()
+        working-directory: telegram-ios
+        run: |
+          echo "=== All .app and .ipa files (with symlinks) ===" > $RUNNER_TEMP/found_files.txt
+          find -L . -name "*.app" -type d 2>/dev/null | grep -v ".dSYM" >> $RUNNER_TEMP/found_files.txt || true
+          find -L . -name "*.ipa" 2>/dev/null >> $RUNNER_TEMP/found_files.txt || true
+          echo "=== bazel-bin top-level ===" >> $RUNNER_TEMP/found_files.txt
+          ls -la bazel-bin/ 2>/dev/null >> $RUNNER_TEMP/found_files.txt || true
+          echo "=== artifacts ===" >> $RUNNER_TEMP/found_files.txt
+          find $RUNNER_TEMP/artifacts -type f 2>/dev/null >> $RUNNER_TEMP/found_files.txt || true
+          cat $RUNNER_TEMP/found_files.txt
+
+      - name: Package release IPA (simulator)
+        run: |
+          # 1. Проверяем --outputBuildArtifactsPath
+          IPA=$(find $RUNNER_TEMP/artifacts -name "*.ipa" 2>/dev/null | head -1 || true)
+
+          # 2. Ищем .ipa в bazel-bin (с -L для симлинков)
+          if [ -z "$IPA" ]; then
+            IPA=$(find -L telegram-ios/bazel-bin -name "*.ipa" 2>/dev/null | head -1 || true)
+          fi
+
+          if [ -n "$IPA" ]; then
+            echo "Found IPA: $IPA"
+            cp "$IPA" $RUNNER_TEMP/AorusGram-release.ipa
+          else
+            # 3. Ищем .app — сначала в bazel-bin с симлинками, потом везде
+            APP=$(find -L telegram-ios/bazel-bin -name "Telegram.app" -type d 2>/dev/null \
+              | grep -v ".dSYM" | head -1 || true)
+
+            if [ -z "$APP" ]; then
+              APP=$(find -L telegram-ios/bazel-out -name "Telegram.app" -type d 2>/dev/null \
+                | grep -v ".dSYM" | head -1 || true)
+            fi
+
+            if [ -z "$APP" ]; then
+              APP=$(find -L telegram-ios -name "*.app" -type d 2>/dev/null \
+                | grep -v ".dSYM" | head -1 || true)
+            fi
+
+            if [ -z "$APP" ]; then
+              APP=$(find -L $RUNNER_TEMP/artifacts -name "*.app" -type d 2>/dev/null \
+                | grep -v ".dSYM" | head -1 || true)
+            fi
+
+            if [ -z "$APP" ]; then
+              echo "ERROR: No .app found anywhere."
+              echo "=== bazel-bin contents ==="
+              ls -la telegram-ios/bazel-bin/ 2>/dev/null || echo "(empty or missing)"
+              echo "=== artifacts contents ==="
+              find $RUNNER_TEMP/artifacts -type f 2>/dev/null || echo "(empty)"
+              exit 1
+            fi
+
+            echo "Packaging $APP → IPA"
+            mkdir -p $RUNNER_TEMP/Payload
+            cp -r "$APP" $RUNNER_TEMP/Payload/AorusGram.app
+            cd $RUNNER_TEMP && zip -qr AorusGram-release.ipa Payload/
+          fi
+
+          ls -lh $RUNNER_TEMP/AorusGram-release.ipa
+
+      - name: Upload release IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: AorusGram-release-sim-${{ github.run_number }}
+          path: ${{ runner.temp }}/AorusGram-release.ipa
+          retention-days: 14
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ github.run_number }}
+          path: ${{ runner.temp }}/build.log
+          retention-days: 7
