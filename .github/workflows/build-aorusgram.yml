@@ -6,10 +6,11 @@ on:
   workflow_dispatch:
     inputs:
       build_configuration:
-        description: "Make.py --configuration (release_sim_arm64 = optimized simulator build, no app code changes)"
+        description: "release_arm64 = iPhone (optimized IPA for sideload). release_sim_arm64 / debug_sim_arm64 = simulator only."
         type: choice
-        default: release_sim_arm64
+        default: release_arm64
         options:
+          - release_arm64
           - release_sim_arm64
           - debug_sim_arm64
 
@@ -17,7 +18,7 @@ jobs:
   build:
     runs-on: macos-15
     env:
-      BUILD_CONFIGURATION: ${{ github.event_name == 'workflow_dispatch' && inputs.build_configuration || 'release_sim_arm64' }}
+      BUILD_CONFIGURATION: ${{ github.event_name == 'workflow_dispatch' && inputs.build_configuration || 'release_arm64' }}
 
     steps:
       - name: Checkout
@@ -25,12 +26,25 @@ jobs:
         with:
           path: aorusgram
 
+      - name: Signing files from GitHub secrets (optional)
+        run: |
+          # If repo has no Certificate.p12 / Profile-1.mobileprovision, set secrets:
+          # IOS_CERTIFICATE_P12_BASE64, IOS_PROVISION_PROFILE_BASE64
+          if [ -n "${{ secrets.IOS_CERTIFICATE_P12_BASE64 }}" ]; then
+            echo "${{ secrets.IOS_CERTIFICATE_P12_BASE64 }}" | base64 -d > aorusgram/Certificate.p12
+            echo "Wrote Certificate.p12 from secret"
+          fi
+          if [ -n "${{ secrets.IOS_PROVISION_PROFILE_BASE64 }}" ]; then
+            echo "${{ secrets.IOS_PROVISION_PROFILE_BASE64 }}" | base64 -d > aorusgram/Profile-1.mobileprovision
+            echo "Wrote Profile-1.mobileprovision from secret"
+          fi
+
       - name: Cache Telegram iOS source
         id: tg-cache
         uses: actions/cache@v4
         with:
           path: telegram-ios
-          key: tg-ios-src-v7-release-sim
+          key: tg-ios-src-v8-release-arm64
 
       - name: Clone Telegram iOS
         if: steps.tg-cache.outputs.cache-hit != 'true'
@@ -451,7 +465,7 @@ jobs:
           echo "=== Signing identities ==="
           security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null || true
 
-      - name: Build (release simulator — optimized, no device signing)
+      - name: Build (Bazel)
         working-directory: telegram-ios
         run: |
           echo "=== Python version ==="
@@ -506,7 +520,7 @@ jobs:
           find $RUNNER_TEMP/artifacts -type f 2>/dev/null >> $RUNNER_TEMP/found_files.txt || true
           cat $RUNNER_TEMP/found_files.txt
 
-      - name: Package release IPA (simulator)
+      - name: Package IPA for download
         run: |
           # 1. Проверяем --outputBuildArtifactsPath
           IPA=$(find $RUNNER_TEMP/artifacts -name "*.ipa" 2>/dev/null | head -1 || true)
@@ -556,12 +570,12 @@ jobs:
 
           ls -lh $RUNNER_TEMP/AorusGram-release.ipa
 
-      - name: Upload release IPA
+      - name: Upload IPA (Artifacts → download)
         uses: actions/upload-artifact@v4
         with:
-          name: AorusGram-release-sim-${{ github.run_number }}
+          name: AorusGram-${{ github.run_number }}-${{ env.BUILD_CONFIGURATION }}
           path: ${{ runner.temp }}/AorusGram-release.ipa
-          retention-days: 14
+          retention-days: 30
 
       - name: Upload build log
         if: always()
