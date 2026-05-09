@@ -457,7 +457,6 @@ jobs:
             --buildNumber=${{ github.run_number }} \
             --configuration=release_sim_arm64 \
             --outputBuildArtifactsPath $RUNNER_TEMP/artifacts \
-            --continueOnError \
             2>&1 | tee $RUNNER_TEMP/build.log | tail -100
 
       - name: Show compile errors
@@ -472,7 +471,6 @@ jobs:
 
       - name: Commit error log to repo
         if: failure()
-        continue-on-error: true
         run: |
           cd aorusgram
           mkdir -p build-errors
