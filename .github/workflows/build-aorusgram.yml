@@ -339,7 +339,7 @@ jobs:
         run: |
           mkdir -p $RUNNER_TEMP/signing/profiles
           python3 << 'CSEOF'
-          import subprocess, plistlib, uuid, os
+          import subprocess, plistlib, uuid, os, glob, shutil
           from datetime import datetime, timezone
 
           subprocess.run(
@@ -413,33 +413,22 @@ jobs:
               )
               print(('Created: ' if r.returncode == 0 else 'Error: ') + name + '.mobileprovision')
 
-          # Override main app profile with the REAL provisioning profile
-          import shutil
-          real_profile = 'aorusgram/Profile-1.mobileprovision'
-          if os.path.exists(real_profile):
-              shutil.copy(real_profile, out_dir + '/Telegram.mobileprovision')
-              print('Used REAL provisioning profile for main Telegram target')
+          # Main app: real .mobileprovision from repo (prefer Profile-1.mobileprovision).
+          paths = sorted([p for p in glob.glob('aorusgram/*.mobileprovision') if os.path.isfile(p)])
+          pref = 'aorusgram/Profile-1.mobileprovision'
+          real_profile = pref if pref in paths else (paths[0] if paths else None)
+          if real_profile:
+              shutil.copy(real_profile, os.path.join(out_dir, 'Telegram.mobileprovision'))
+              print('Applied app provisioning profile:', os.path.basename(real_profile))
+          else:
+              print('No profile in aorusgram/*.mobileprovision — main app keeps generated stub')
 
           print('Profiles done')
           for f in sorted(os.listdir(out_dir)):
               print('  ', f, os.path.getsize(os.path.join(out_dir, f)), 'bytes')
           CSEOF
 
-          # Import fake certificate into a temporary keychain so Xcode can sign.
-          # Without this Xcode 16 fails with "Unable to find identity in keychain".
-          KEYCHAIN=/tmp/aorus-build.keychain-db
-          security create-keychain -p aorusbuild "$KEYCHAIN" 2>/dev/null || true
-          security set-keychain-settings -lut 21600 "$KEYCHAIN"
-          security unlock-keychain -p aorusbuild "$KEYCHAIN"
-          # Import REAL developer certificate (from repo, password: 1)
-          security import aorusgram/Certificate.p12 -P "1" -A \
-            -t cert -f pkcs12 -k "$KEYCHAIN" 2>&1 || true
-          # Add keychain to search list
-          security list-keychain -d user -s "$KEYCHAIN" \
-            "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null || true
-          security set-key-partition-list -S apple-tool:,apple: -s -k aorusbuild "$KEYCHAIN" 2>/dev/null || true
-          echo "=== Signing identities ==="
-          security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null || true
+          # No .p12 / keychain: simulator build + disableProvisioningProfiles — not publishing signed IPA from CI.
 
       - name: Build release (simulator — opt; device release_arm64 blocked by rules_apple without per-extension profiles)
         working-directory: telegram-ios
