@@ -15,13 +15,6 @@ permissions:
 jobs:
   build:
     runs-on: macos-15
-    env:
-      # Export password for aorusgram/Certificate.p12 — if wrong, P12 import fails fast (no 1h Bazel).
-      P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
-      # Optional: base64-encoded .p12 / .mobileprovision when certs are not committed (forks / clean repos).
-      CERTIFICATE_BASE64: ${{ secrets.CERTIFICATE_BASE64 }}
-      PROVISIONING_PROFILE_BASE64: ${{ secrets.PROVISIONING_PROFILE_BASE64 }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -66,6 +59,8 @@ jobs:
           add "build --incompatible_disallow_empty_glob=false"
           add "build --features=-swift.index_while_building"
           add "build --features=-swift.use_global_index_store"
+          # Unsigned CI: rules_apple only documents skipping main-bundle codesign for *simulator* targets.
+          add "build --features=apple.skip_codesign_simulator_bundles"
           echo "=== tail $BC ==="; tail -5 "$BC"
 
       - name: Patch Telegram/BUILD bundle IDs to AorusGram
@@ -347,16 +342,11 @@ jobs:
           else:
               print('WARNING: invoke_build not found')
 
-          # 2. Disable extensions — no per-extension provisioning profiles needed.
-          # rules_apple requires non-None profile for EVERY extension on iphoneos.
-          # Excluding extensions lets us build release_arm64 with only one profile
-          # (main Telegram.mobileprovision). The IPA can then be re-signed via
-          # Sideloadly / AltStore with the user's real Apple Developer credentials.
+          # 2. Disable extensions — fewer targets; simulator unsigned build avoids device codesign.
           DISABLE_OLD = '    bazel_command_line.invoke_build()'
-          # disableExtensions: skip Watch + extensions (no per-target profiles).
-          # disableProvisioningProfiles: keep BUILD selects on profile labels.
-          # NOTE: do NOT add --apple_codesign=off here; current Bazel wrapper rejects it.
+          # Same feature is also in .bazelrc; duplicate on command line so Make.py invocations always get it.
           DISABLE_NEW = (
+              "    bazel_command_line.common_args.append('--features=apple.skip_codesign_simulator_bundles')\n"
               "    bazel_command_line.common_args.append('--//Telegram:disableExtensions')\n"
               "    bazel_command_line.set_disable_provisioning_profiles()\n"
               "    bazel_command_line.invoke_build()"
@@ -378,6 +368,8 @@ jobs:
         run: |
           python3 << 'VERIFY'
           t = open("build-system/Make/Make.py", encoding="utf-8", errors="replace").read()
+          assert "apple.skip_codesign_simulator_bundles" in t, \
+              "Make.py: missing skip_codesign_simulator_bundles (unsigned CI)"
           assert "common_args.append('--//Telegram:disableExtensions')" in t, \
               "Make.py: missing disableExtensions append (patch not applied)"
           assert "set_disable_provisioning_profiles()" in t, \
@@ -467,90 +459,33 @@ jobs:
               )
               print(('Created: ' if r.returncode == 0 else 'Error: ') + name + '.mobileprovision')
 
-          # Telegram.mobileprovision is overwritten in the shell step when Certificate.p12 exists
-          # so DeveloperCertificates in the profile match the imported signing identity.
-
           print('Profiles done')
           for f in sorted(os.listdir(out_dir)):
               print('  ', f, os.path.getsize(os.path.join(out_dir, f)), 'bytes')
           CSEOF
 
-          # Signing files may be absent on a mirror repo — restore from secrets or pick first match.
-          mkdir -p aorusgram
-          if [ ! -f aorusgram/Certificate.p12 ] && [ -n "${CERTIFICATE_BASE64:-}" ]; then
-            printf '%s' "${CERTIFICATE_BASE64}" | tr -d '\n\r ' | base64 -d > aorusgram/Certificate.p12
-            echo "Wrote aorusgram/Certificate.p12 from CERTIFICATE_BASE64 secret"
-          fi
-          if [ ! -f aorusgram/Profile-1.mobileprovision ] && [ -n "${PROVISIONING_PROFILE_BASE64:-}" ]; then
-            printf '%s' "${PROVISIONING_PROFILE_BASE64}" | tr -d '\n\r ' | base64 -d > aorusgram/Profile-1.mobileprovision
-            echo "Wrote aorusgram/Profile-1.mobileprovision from PROVISIONING_PROFILE_BASE64 secret"
-          fi
-          if [ ! -f aorusgram/Certificate.p12 ]; then
-            P12="$(ls aorusgram/*.p12 aorusgram/*.P12 2>/dev/null | head -1)"
-            if [ -n "$P12" ]; then
-              cp "$P12" aorusgram/Certificate.p12
-              echo "Using $P12 as Certificate.p12"
-            fi
-          fi
-          if [ ! -f aorusgram/Profile-1.mobileprovision ]; then
-            MP="$(ls aorusgram/*.mobileprovision 2>/dev/null | head -1)"
-            if [ -n "$MP" ]; then
-              cp "$MP" aorusgram/Profile-1.mobileprovision
-              echo "Using $MP as Profile-1.mobileprovision"
-            fi
-          fi
-
-          # Device release_arm64: rules_apple still runs process-and-sign and requires an identity
-          # whose certificate is listed in Telegram.mobileprovision (DeveloperCertificates).
-          # Self-signed fake PEM does not produce a usable codesign identity — use the repo P12 + profile.
+          # Simulator unsigned: optional keychain with fake PEM (some Bazel steps still probe keychain).
           KEYCHAIN=/tmp/aorus-build.keychain-db
           security delete-keychain "$KEYCHAIN" 2>/dev/null || true
           security create-keychain -p aorusbuild "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p aorusbuild "$KEYCHAIN"
-
-          if [ ! -f aorusgram/Certificate.p12 ]; then
-            echo "::error::No .p12 — commit aorusgram/Certificate.p12 or set GitHub secret CERTIFICATE_BASE64 (base64 of the file)."
-            exit 1
-          fi
-          if [ ! -f aorusgram/Profile-1.mobileprovision ]; then
-            echo "::error::No provisioning profile — commit aorusgram/Profile-1.mobileprovision (or any *.mobileprovision) or set PROVISIONING_PROFILE_BASE64."
-            exit 1
-          fi
-
-          IMPORTED=0
-          for pw in "${P12_PASSWORD}" "1" ""; do
-            if security import aorusgram/Certificate.p12 ${pw:+-P "$pw"} -A -t cert -f pkcs12 -k "$KEYCHAIN"; then
-              IMPORTED=1
-              break
-            fi
-          done
-          if [ "$IMPORTED" != "1" ]; then
-            echo "::error::Could not import Certificate.p12 — set repository secret P12_PASSWORD to the export password (or fix the file)."
-            exit 1
-          fi
-
-          cp -f aorusgram/Profile-1.mobileprovision "$RUNNER_TEMP/signing/profiles/Telegram.mobileprovision"
-          echo "Using real Telegram.mobileprovision from Profile-1.mobileprovision"
-
-          security list-keychain -d user -s "$KEYCHAIN" "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null || \
+          security import /tmp/fake-cert.pem -A -k "$KEYCHAIN" 2>/dev/null || true
+          security import /tmp/fake-key.pem  -A -k "$KEYCHAIN" 2>/dev/null || true
+          security list-keychain -d user -s "$KEYCHAIN" \
+            "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null || \
             security list-keychain -d user -s "$KEYCHAIN"
-          security set-key-partition-list -S apple-tool:,apple: -s -k aorusbuild "$KEYCHAIN" || true
+          security set-key-partition-list -S apple-tool:,apple: -s -k aorusbuild "$KEYCHAIN" 2>/dev/null || true
+          echo "=== Signing identities (informational; main app codesign skipped for sim) ==="
+          security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null || true
 
-          echo "=== Signing identities (must be non-empty) ==="
-          security find-identity -v -p codesigning "$KEYCHAIN"
-          NID="$(security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null | grep -E '^[[:space:]]+[0-9]+\)' | wc -l | tr -d ' ')"
-          if [ "${NID:-0}" -lt 1 ]; then
-            echo "::error::No codesigning identities in keychain after P12 import."
-            exit 1
-          fi
-
-      - name: Build release_arm64 (device, no extensions, unsigned IPA)
+      - name: Build release_sim_arm64 (opt, unsigned simulator — no Apple codesign on app bundle)
         working-directory: telegram-ios
         run: |
           echo "=== Python version ==="
           python3 --version
-          echo "=== Starting release_arm64 build (extensions disabled; P12 + Profile-1 codesign) ==="
+          echo "=== release_sim_arm64 + apple.skip_codesign_simulator_bundles (unsigned CI artifact) ==="
+          echo "NOTE: binary is for iOS Simulator. Install on a physical iPhone only after re-signing (e.g. AltStore)."
           set -o pipefail
           # PIPESTATUS[0] is Make.py — tail must not mask a failed build (last pipe cmd would be 0).
           python3 build-system/Make/Make.py \
@@ -560,7 +495,7 @@ jobs:
             --configurationPath build-system/appstore-configuration.json \
             --codesigningInformationPath $RUNNER_TEMP/signing \
             --buildNumber=${{ github.run_number }} \
-            --configuration=release_arm64 \
+            --configuration=release_sim_arm64 \
             --outputBuildArtifactsPath $RUNNER_TEMP/artifacts \
             2>&1 | tee "$RUNNER_TEMP/build.log" | tail -100
           exit "${PIPESTATUS[0]}"
@@ -600,7 +535,7 @@ jobs:
 
           if [ -n "$IPA" ]; then
             echo "Found IPA: $IPA"
-            cp "$IPA" $RUNNER_TEMP/AorusGram-unsigned.ipa
+            cp "$IPA" $RUNNER_TEMP/AorusGram-unsigned-sim.ipa
           else
             # 3. Ищем .app — сначала в bazel-bin с симлинками, потом везде
             APP=$(find -L telegram-ios/bazel-bin -name "Telegram.app" -type d 2>/dev/null \
@@ -633,16 +568,16 @@ jobs:
             echo "Packaging $APP → IPA"
             mkdir -p $RUNNER_TEMP/Payload
             cp -r "$APP" $RUNNER_TEMP/Payload/AorusGram.app
-            cd $RUNNER_TEMP && zip -qr AorusGram-unsigned.ipa Payload/
+            cd $RUNNER_TEMP && zip -qr AorusGram-unsigned-sim.ipa Payload/
           fi
 
-          ls -lh $RUNNER_TEMP/AorusGram-unsigned.ipa
+          ls -lh $RUNNER_TEMP/AorusGram-unsigned-sim.ipa
 
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:
-          name: AorusGram-unsigned-${{ github.run_number }}
-          path: ${{ runner.temp }}/AorusGram-unsigned.ipa
+          name: AorusGram-unsigned-sim-${{ github.run_number }}
+          path: ${{ runner.temp }}/AorusGram-unsigned-sim.ipa
           retention-days: 14
 
       - name: Upload build log
