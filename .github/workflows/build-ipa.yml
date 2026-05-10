@@ -58,6 +58,7 @@ jobs:
       # --- Build ---
       - name: Build (simulator, no signing needed)
         run: |
+          set -o pipefail
           xcodebuild \
             -project ios-app/ios-app.xcodeproj \
             -scheme "$SCHEME" \
@@ -65,31 +66,33 @@ jobs:
             -configuration Debug \
             -derivedDataPath build/DerivedData \
             build \
-            CODE_SIGNING_ALLOWED=NO | xcpretty || true
+            CODE_SIGNING_ALLOWED=NO
 
       - name: Archive (real device, requires signing secrets)
         if: ${{ secrets.CERTIFICATE_BASE64 != '' }}
         env:
           CERTIFICATE_BASE64: ${{ secrets.CERTIFICATE_BASE64 }}
         run: |
+          set -o pipefail
           xcodebuild \
             -project ios-app/ios-app.xcodeproj \
             -scheme "$SCHEME" \
             -sdk iphoneos \
             -configuration Release \
             -archivePath build/App.xcarchive \
-            archive | xcpretty
+            archive
 
       - name: Export IPA
         if: ${{ secrets.CERTIFICATE_BASE64 != '' }}
         env:
           CERTIFICATE_BASE64: ${{ secrets.CERTIFICATE_BASE64 }}
         run: |
+          set -o pipefail
           xcodebuild \
             -exportArchive \
             -archivePath build/App.xcarchive \
             -exportOptionsPlist ios-app/ExportOptions.plist \
-            -exportPath build/IPA | xcpretty
+            -exportPath build/IPA
 
       - name: Upload IPA artifact
         if: ${{ secrets.CERTIFICATE_BASE64 != '' }}

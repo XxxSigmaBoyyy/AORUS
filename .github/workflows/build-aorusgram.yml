@@ -489,6 +489,7 @@ jobs:
           python3 --version
           echo "=== Starting release_arm64 build (extensions disabled, fake-signed) ==="
           set -o pipefail
+          # PIPESTATUS[0] is Make.py — tail must not mask a failed build (last pipe cmd would be 0).
           python3 build-system/Make/Make.py \
             --overrideXcodeVersion \
             --cacheDir ~/tg-bazel-cache \
@@ -498,7 +499,8 @@ jobs:
             --buildNumber=${{ github.run_number }} \
             --configuration=release_arm64 \
             --outputBuildArtifactsPath $RUNNER_TEMP/artifacts \
-            2>&1 | tee $RUNNER_TEMP/build.log | tail -100
+            2>&1 | tee "$RUNNER_TEMP/build.log" | tail -100
+          exit "${PIPESTATUS[0]}"
 
       - name: Show compile errors
         if: always()
