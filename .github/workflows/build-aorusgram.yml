@@ -114,6 +114,27 @@ jobs:
               if nprov:
                   t = t2
                   print(f'BUILD: disableProvisioningProfiles → Telegram.mobileprovision ({nprov} branches)')
+              # Bazel merges plist_fragment() templates from this file — on-disk Info.plist is NOT enough.
+              build_brand = [
+                  (
+                      '<key>CFBundleDisplayName</key>\n    <string>Telegram</string>',
+                      '<key>CFBundleDisplayName</key>\n    <string>Aorusgram</string>',
+                  ),
+                  (
+                      '<key>CFBundleName</key>\n    <string>Telegram</string>',
+                      '<key>CFBundleName</key>\n    <string>Aorusgram</string>',
+                  ),
+                  (
+                      '<key>CFBundleURLSchemes</key>\n            <array>\n                <string>telegram</string>\n            </array>',
+                      '<key>CFBundleURLSchemes</key>\n            <array>\n                <string>aorusgram</string>\n            </array>',
+                  ),
+              ]
+              for old_b, new_b in build_brand:
+                  if old_b in t:
+                      t = t.replace(old_b, new_b, 1)
+                      print('BUILD branding: patched', old_b.split()[0:2])
+                  else:
+                      print('WARNING: BUILD branding pattern missing:', old_b[:70].replace('\n', ' '))
               open(build_path, 'w').write(t)
               print('BUILD file patched: store_bundle_ids and official_bundle_ids cleared')
           else:
@@ -289,6 +310,18 @@ jobs:
           MASTER=aorusgram/patches/assets/AorusGramAppIcon.png
           bash aorusgram/scripts/fill_blue_icon_appiconset.sh "$MASTER" \
             telegram-ios/Telegram/Telegram-iOS/AppIcons.xcassets/BlueIcon.appiconset
+          # Alternate icon "Blue" uses BlueIcon.alticon PNGs (not AppIcon.appiconset).
+          ALT="telegram-ios/Telegram/Telegram-iOS/BlueIcon.alticon"
+          if [ -d "$ALT" ]; then
+            for png in "$ALT"/*.png; do
+              [ -f "$png" ] || continue
+              W=$(sips -g pixelWidth "$png" 2>/dev/null | awk '/pixelWidth:/ {print $2}')
+              H=$(sips -g pixelHeight "$png" 2>/dev/null | awk '/pixelHeight:/ {print $2}')
+              if [ -n "$W" ] && [ -n "$H" ]; then
+                sips -z "$H" "$W" "$MASTER" --out "$png" >/dev/null && echo "  alticon $(basename "$png") -> ${W}x${H}"
+              fi
+            done
+          fi
           # Belt-and-suspenders (xcconfig APP_NAME + explicit plist literals)
           PLIST="telegram-ios/Telegram/Telegram-iOS/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Aorusgram" "$PLIST" 2>/dev/null || true

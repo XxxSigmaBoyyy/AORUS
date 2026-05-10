@@ -50,10 +50,24 @@ def main() -> None:
 
     ad = tg / "submodules" / "TelegramUI" / "Sources" / "AppDelegate.swift"
     t = ad.read_text(encoding="utf-8")
-    if "guard let appGroupUrl = maybeAppGroupUrl else {\n            self.window?.makeKeyAndVisible()" not in t:
-        err.append("AppDelegate: missing makeKeyAndVisible before Error 2 guard")
+    if "AorusgramGroupFallback" not in t:
+        err.append("AppDelegate: missing App Group sandbox fallback (AltStore / no shared container)")
+    if 'setAlternateIconName("Blue"' not in t:
+        err.append('AppDelegate: missing setAlternateIconName("Blue") for branded home-screen icon')
     if "self.nativeWindow = window\n        self.window?.makeKeyAndVisible()" not in t:
         err.append("AppDelegate: missing early makeKeyAndVisible after window wiring")
+
+    build_path = tg / "Telegram" / "BUILD"
+    if build_path.is_file():
+        bt = build_path.read_text(encoding="utf-8")
+        needle = "<key>CFBundleDisplayName</key>\n    <string>Telegram</string>"
+        if needle in bt:
+            err.append("Telegram/BUILD: CFBundleDisplayName still Telegram (Bazel plist_fragment not patched)")
+        want_scheme = (
+            "<key>CFBundleURLSchemes</key>\n            <array>\n                <string>aorusgram</string>\n            </array>"
+        )
+        if want_scheme not in bt:
+            err.append("Telegram/BUILD: primary URL scheme should be aorusgram (UrlTypesInfoPlist template)")
 
     nw = tg / "submodules" / "Display" / "Source" / "NativeWindowHostView.swift"
     if nw.is_file():

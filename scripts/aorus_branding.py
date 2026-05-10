@@ -292,11 +292,18 @@ def patch_app_delegate_launch_fixes(tg: Path) -> None:
         t = t.replace(old_black, new_bg, 1)
         print("AppDelegate: dark-mode pre-Metal background not pure black")
 
-    err2 = (
-        "        guard let appGroupUrl = maybeAppGroupUrl else {\n"
-        "            self.mainWindow?.presentNative(UIAlertController(title: nil, message: \"Error 2\", preferredStyle: .alert))\n"
-        "            return true\n"
-        "        }"
+    # AltStore / ad-hoc resign often drops App Group entitlement → containerURL is nil → "Error 2".
+    # Use Application Support fallback (extensions disabled in CI build; data stays in sandbox).
+    app_group_resolved = (
+        "        let appGroupUrl: URL\n"
+        "        if let sharedUrl = maybeAppGroupUrl {\n"
+        "            appGroupUrl = sharedUrl\n"
+        "        } else {\n"
+        "            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!\n"
+        "                .appendingPathComponent(\"AorusgramGroupFallback\", isDirectory: true)\n"
+        "            try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)\n"
+        "            appGroupUrl = base\n"
+        "        }\n"
     )
     err2_new = (
         "        guard let appGroupUrl = maybeAppGroupUrl else {\n"
@@ -305,9 +312,18 @@ def patch_app_delegate_launch_fixes(tg: Path) -> None:
         "            return true\n"
         "        }"
     )
-    if err2 in t:
-        t = t.replace(err2, err2_new, 1)
-        print("AppDelegate: makeKeyAndVisible before App Group Error 2 alert")
+    err2_orig = (
+        "        guard let appGroupUrl = maybeAppGroupUrl else {\n"
+        "            self.mainWindow?.presentNative(UIAlertController(title: nil, message: \"Error 2\", preferredStyle: .alert))\n"
+        "            return true\n"
+        "        }"
+    )
+    if err2_new in t:
+        t = t.replace(err2_new, app_group_resolved, 1)
+        print("AppDelegate: App Group fallback (replaces Error 2 guard, AltStore-safe)")
+    elif err2_orig in t:
+        t = t.replace(err2_orig, app_group_resolved, 1)
+        print("AppDelegate: App Group fallback (replaces Error 2 guard, AltStore-safe)")
 
     disk = (
         "        if !writeAbilityTestSuccess {\n"
@@ -335,6 +351,32 @@ def patch_app_delegate_launch_fixes(tg: Path) -> None:
     if disk in t:
         t = t.replace(disk, disk_new, 1)
         print("AppDelegate: makeKeyAndVisible before disk-space alert")
+
+    # Primary icon is compiled from Telegram.icon (SVG); plist CFBundleIconName alone does not
+    # change the home-screen icon. AlternateIcons.plist key "Blue" → BlueIcon set (filled in CI).
+    alt_icon_anchor = (
+        "        if !isUITest {\n"
+        "            performAppGroupUpgrades(appGroupPath: appGroupUrl.path, rootPath: rootPath)\n"
+        "        }\n"
+        "        \n"
+        "        let deviceSpecificEncryptionParameters = BuildConfig.deviceSpecificEncryptionParameters(rootPath, baseAppBundleId: baseAppBundleId)"
+    )
+    alt_icon_new = (
+        "        if !isUITest {\n"
+        "            performAppGroupUpgrades(appGroupPath: appGroupUrl.path, rootPath: rootPath)\n"
+        "        }\n"
+        "        \n"
+        "        if #available(iOS 10.3, *) {\n"
+        "            DispatchQueue.main.async {\n"
+        "                UIApplication.shared.setAlternateIconName(\"Blue\", completionHandler: { _ in })\n"
+        "            }\n"
+        "        }\n"
+        "        \n"
+        "        let deviceSpecificEncryptionParameters = BuildConfig.deviceSpecificEncryptionParameters(rootPath, baseAppBundleId: baseAppBundleId)"
+    )
+    if alt_icon_anchor in t and 'setAlternateIconName("Blue"' not in t:
+        t = t.replace(alt_icon_anchor, alt_icon_new, 1)
+        print("AppDelegate: request alternate icon \"Blue\" (custom BlueIcon.appiconset) at launch")
 
     if t != orig:
         path.write_text(t, encoding="utf-8")
