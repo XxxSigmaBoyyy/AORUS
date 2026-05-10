@@ -15,6 +15,9 @@ permissions:
 jobs:
   build:
     runs-on: macos-15
+    env:
+      # Export password for aorusgram/Certificate.p12 — if wrong, P12 import fails fast (no 1h Bazel).
+      P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
 
     steps:
       - name: Checkout
@@ -461,53 +464,65 @@ jobs:
               )
               print(('Created: ' if r.returncode == 0 else 'Error: ') + name + '.mobileprovision')
 
-          # Do NOT replace Telegram.mobileprovision with a repo "real" profile on CI.
-          # process-and-sign matches DeveloperCertificates in the profile to keychain
-          # identities; the runner only guarantees the generated fake PEM/key matches the
-          # fake Telegram.mobileprovision created above. Copying Profile-1 breaks signing
-          # with: "Unable to find an identity matching ... Telegram.mobileprovision".
-          # Re-sign the produced IPA with your real cert/profile (AltStore / Sideloadly).
-          import os as _os_ci
-          if _os_ci.environ.get('CI_USE_REAL_APP_PROVISIONING') == '1':
-              import shutil
-              real_profile = 'aorusgram/Profile-1.mobileprovision'
-              if os.path.exists(real_profile):
-                  shutil.copy(real_profile, out_dir + '/Telegram.mobileprovision')
-                  print('CI_USE_REAL_APP_PROVISIONING=1: copied real profile to Telegram.mobileprovision')
-          else:
-              print('CI: keeping generated Telegram.mobileprovision (matches fake keychain)')
+          # Telegram.mobileprovision is overwritten in the shell step when Certificate.p12 exists
+          # so DeveloperCertificates in the profile match the imported signing identity.
 
           print('Profiles done')
           for f in sorted(os.listdir(out_dir)):
               print('  ', f, os.path.getsize(os.path.join(out_dir, f)), 'bytes')
           CSEOF
 
-          # Import the self-signed fake cert (generated above) into a temp keychain
-          # so codesign can sign the IPA on the runner. The IPA will be re-signed
-          # by the user with real credentials via Sideloadly / AltStore.
+          # Device release_arm64: rules_apple still runs process-and-sign and requires an identity
+          # whose certificate is listed in Telegram.mobileprovision (DeveloperCertificates).
+          # Self-signed fake PEM does not produce a usable codesign identity — use the repo P12 + profile.
           KEYCHAIN=/tmp/aorus-build.keychain-db
-          security create-keychain -p aorusbuild "$KEYCHAIN" 2>/dev/null || true
+          security delete-keychain "$KEYCHAIN" 2>/dev/null || true
+          security create-keychain -p aorusbuild "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p aorusbuild "$KEYCHAIN"
-          # Import the fake PEM cert generated above into the keychain
-          security import /tmp/fake-cert.pem -A -k "$KEYCHAIN" 2>/dev/null || true
-          security import /tmp/fake-key.pem  -A -k "$KEYCHAIN" 2>/dev/null || true
-          # If real Certificate.p12 is present in repo — use it (optional).
-          security import aorusgram/Certificate.p12 -P "1" -A \
-            -t cert -f pkcs12 -k "$KEYCHAIN" 2>/dev/null || true
-          # Add keychain to search list
-          security list-keychain -d user -s "$KEYCHAIN" \
-            "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null || true
-          security set-key-partition-list -S apple-tool:,apple: -s -k aorusbuild "$KEYCHAIN" 2>/dev/null || true
-          echo "=== Signing identities ==="
-          security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null || true
+
+          if [ ! -f aorusgram/Certificate.p12 ]; then
+            echo "::error::aorusgram/Certificate.p12 is missing — add your Apple Distribution / Development .p12 to the repo (or submodule path aorusgram/)."
+            exit 1
+          fi
+          if [ ! -f aorusgram/Profile-1.mobileprovision ]; then
+            echo "::error::aorusgram/Profile-1.mobileprovision is missing — add the provisioning profile that matches the P12 (same team + app id)."
+            exit 1
+          fi
+
+          IMPORTED=0
+          for pw in "${P12_PASSWORD}" "1" ""; do
+            if security import aorusgram/Certificate.p12 ${pw:+-P "$pw"} -A -t cert -f pkcs12 -k "$KEYCHAIN"; then
+              IMPORTED=1
+              break
+            fi
+          done
+          if [ "$IMPORTED" != "1" ]; then
+            echo "::error::Could not import Certificate.p12 — set repository secret P12_PASSWORD to the export password (or fix the file)."
+            exit 1
+          fi
+
+          cp -f aorusgram/Profile-1.mobileprovision "$RUNNER_TEMP/signing/profiles/Telegram.mobileprovision"
+          echo "Using real Telegram.mobileprovision from Profile-1.mobileprovision"
+
+          security list-keychain -d user -s "$KEYCHAIN" "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null || \
+            security list-keychain -d user -s "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -s -k aorusbuild "$KEYCHAIN" || true
+
+          echo "=== Signing identities (must be non-empty) ==="
+          security find-identity -v -p codesigning "$KEYCHAIN"
+          NID="$(security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null | grep -E '^[[:space:]]+[0-9]+\)' | wc -l | tr -d ' ')"
+          if [ "${NID:-0}" -lt 1 ]; then
+            echo "::error::No codesigning identities in keychain after P12 import."
+            exit 1
+          fi
 
       - name: Build release_arm64 (device, no extensions, unsigned IPA)
         working-directory: telegram-ios
         run: |
           echo "=== Python version ==="
           python3 --version
-          echo "=== Starting release_arm64 build (extensions disabled, fake-signed) ==="
+          echo "=== Starting release_arm64 build (extensions disabled; P12 + Profile-1 codesign) ==="
           set -o pipefail
           # PIPESTATUS[0] is Make.py — tail must not mask a failed build (last pipe cmd would be 0).
           python3 build-system/Make/Make.py \
