@@ -349,11 +349,9 @@ jobs:
           DISABLE_OLD = '    bazel_command_line.invoke_build()'
           # disableExtensions: skip Watch + extensions (no per-target profiles).
           # disableProvisioningProfiles: keep BUILD selects on profile labels.
-          # apple_codesign=off: force unsigned packaging on CI to avoid runner identity
-          # matching errors; resulting IPA is re-signed by user credentials afterward.
+          # NOTE: do NOT add --apple_codesign=off here; current Bazel wrapper rejects it.
           DISABLE_NEW = (
               "    bazel_command_line.common_args.append('--//Telegram:disableExtensions')\n"
-              "    bazel_command_line.common_args.append('--apple_codesign=off')\n"
               "    bazel_command_line.set_disable_provisioning_profiles()\n"
               "    bazel_command_line.invoke_build()"
           )
@@ -378,8 +376,6 @@ jobs:
               "Make.py: missing disableExtensions append (patch not applied)"
           assert "set_disable_provisioning_profiles()" in t, \
               "Make.py: missing set_disable_provisioning_profiles (signing will fail at end)"
-          assert "common_args.append('--apple_codesign=off')" in t, \
-              "Make.py: missing apple_codesign=off (device CI will fail identity matching)"
           assert "_ps = _os.environ.get('RUNNER_TEMP'" in t, \
               "Make.py: missing provisioning copy injection"
           assert "if self.disable_provisioning_profiles:" in t, \
