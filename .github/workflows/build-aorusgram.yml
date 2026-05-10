@@ -49,6 +49,19 @@ jobs:
           fi
           echo "rlottie .cpp count after: $(find submodules/rlottie/rlottie/src -name '*.cpp' | wc -l)"
 
+      # Must run on every SDK: on iOS 26+ the "Fix Icon Composer" step is skipped and
+      # these lines were never appended — Bazel then enables index-while-building (slow,
+      # extra GitHub downloads) and can hit 502/timeouts during repo fetch.
+      - name: Bazel CI tuning (.bazelrc, always)
+        run: |
+          BC=telegram-ios/.bazelrc
+          touch "$BC"
+          add() { grep -qxF "$1" "$BC" 2>/dev/null || echo "$1" >> "$BC"; }
+          add "build --incompatible_disallow_empty_glob=false"
+          add "build --features=-swift.index_while_building"
+          add "build --features=-swift.use_global_index_store"
+          echo "=== tail $BC ==="; tail -5 "$BC"
+
       - name: Patch Telegram/BUILD bundle IDs to AorusGram
         run: |
           python3 << 'PYEOF'
@@ -149,15 +162,6 @@ jobs:
         if: ${{ steps.xcode_setup.outputs.ios_sdk_major < 26 }}
         run: |
           python3 -c "import base64; exec(base64.b64decode('aW1wb3J0IG9zLCBzaHV0aWwsIHN0cnVjdCwgemxpYiwganNvbgpkZWYgY3JlYXRlX3BuZygpOgogICAgdywgaCA9IDEwMjQsIDEwMjQKICAgIGRlZiBtayh0LCBkKToKICAgICAgICBjID0gdCArIGQKICAgICAgICByZXR1cm4gc3RydWN0LnBhY2soJz5JJywgbGVuKGQpKSArIGMgKyBzdHJ1Y3QucGFjaygnPkknLCB6bGliLmNyYzMyKGMpICYgMHhmZmZmZmZmZikKICAgIHJvdyA9IGJ5dGVzKFswXSkgKyBieXRlcyhbMzMsIDE1MCwgMjQzXSAqIHcpCiAgICBpZGF0ID0gemxpYi5jb21wcmVzcyhyb3cgKiBoLCA5KQogICAgaWhkciA9IHN0cnVjdC5wYWNrKCc+SUlCQkJCQicsIHcsIGgsIDgsIDIsIDAsIDAsIDApCiAgICByZXR1cm4gYidceDg5UE5HXHJcblx4MWFcbicgKyBtayhiJ0lIRFInLCBpaGRyKSArIG1rKGInSURBVCcsIGlkYXQpICsgbWsoYidJRU5EJywgYicnKQpwbmdfYnl0ZXMgPSBjcmVhdGVfcG5nKCkKaWNvbl9kaXJzID0gW10KZm9yIHJvb3QsIGRpcnMsIGZpbGVzIGluIG9zLndhbGsoJ3RlbGVncmFtLWlvcycpOgogICAgZm9yIGQgaW4gZGlyczoKICAgICAgICBpZiBkLmVuZHN3aXRoKCcuaWNvbicpOgogICAgICAgICAgICBpY29uX2RpcnMuYXBwZW5kKG9zLnBhdGguam9pbihyb290LCBkKSkKcHJpbnQoJ0ZvdW5kJywgbGVuKGljb25fZGlycyksICcuaWNvbiBidW5kbGUocyknKQpmb3IgaWNvbl9wYXRoIGluIGljb25fZGlyczoKICAgIG5hbWUgPSBvcy5wYXRoLmJhc2VuYW1lKGljb25fcGF0aClbOi01XQogICAgcGFyZW50ID0gb3MucGF0aC5kaXJuYW1lKGljb25fcGF0aCkKICAgIGFwcGljb25zZXQgPSBvcy5wYXRoLmpvaW4ocGFyZW50LCBuYW1lICsgJy5hcHBpY29uc2V0JykKICAgIG9zLm1ha2VkaXJzKGFwcGljb25zZXQsIGV4aXN0X29rPVRydWUpCiAgICBvcGVuKG9zLnBhdGguam9pbihhcHBpY29uc2V0LCAnQXBwSWNvbi5wbmcnKSwgJ3diJykud3JpdGUocG5nX2J5dGVzKQogICAgb3Blbihvcy5wYXRoLmpvaW4oYXBwaWNvbnNldCwgJ0NvbnRlbnRzLmpzb24nKSwgJ3cnKS53cml0ZShqc29uLmR1bXBzKHsnaW1hZ2VzJzogW3snZmlsZW5hbWUnOiAnQXBwSWNvbi5wbmcnLCAnaWRpb20nOiAndW5pdmVyc2FsJywgJ3BsYXRmb3JtJzogJ2lvcycsICdzaXplJzogJzEwMjR4MTAyNCd9XSwgJ2luZm8nOiB7J2F1dGhvcic6ICd4Y29kZScsICd2ZXJzaW9uJzogMX19KSkKICAgIHNodXRpbC5ybXRyZWUoaWNvbl9wYXRoKQogICAgcHJpbnQoJ1JlcGxhY2VkOicsIGljb25fcGF0aCkKcHJpbnQoJ0RvbmU6JywgbGVuKGljb25fZGlycyksICdidW5kbGUocykgcmVwbGFjZWQnKQo=').decode())"
-          # Telegram/BUILD globs for .icon/**/* — allow empty so removed dirs don't fail
-          echo "build --incompatible_disallow_empty_glob=false" >> telegram-ios/.bazelrc
-          # Disable swift index-while-building: it tries to download index-import binary
-          # from GitHub releases which times out on CI. Disabling saves ~2min per build.
-          echo "build --features=-swift.index_while_building" >> telegram-ios/.bazelrc
-          echo "build --features=-swift.use_global_index_store" >> telegram-ios/.bazelrc
-          # Note: Make.py is patched with disableExtensions + set_disable_provisioning_profiles (see below).
-          # NOT via .bazelrc — Make.py builds its own bazel command line ignoring .bazelrc flags
-          echo "Updated .bazelrc"
 
       - name: Patch SDK compatibility (only if SDK < iOS 26)
         if: ${{ steps.xcode_setup.outputs.ios_sdk_major < 26 }}
@@ -505,19 +509,6 @@ jobs:
           grep -iE " error:|^ERROR:|FAILED:" $RUNNER_TEMP/build.log | head -120 || echo "(none)"
           echo "=== Last 80 lines ==="
           tail -80 $RUNNER_TEMP/build.log 2>/dev/null || echo "(log not available)"
-
-      - name: Commit error log to repo
-        if: failure()
-        continue-on-error: true
-        run: |
-          cd aorusgram
-          mkdir -p build-errors
-          cp $RUNNER_TEMP/build.log build-errors/last-build.log 2>/dev/null || echo "(no log)" > build-errors/last-build.log
-          git config user.email "ci@aorusgram"
-          git config user.name "AorusGram CI"
-          git add build-errors/last-build.log
-          git diff --cached --quiet || git commit -m "ci: save build log [skip ci]"
-          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:${{ github.ref_name }}
 
       - name: Collect build artifacts info
         if: always()
