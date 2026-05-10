@@ -291,8 +291,8 @@ jobs:
             telegram-ios/Telegram/Telegram-iOS/AppIcons.xcassets/BlueIcon.appiconset
           # Belt-and-suspenders (xcconfig APP_NAME + explicit plist literals)
           PLIST="telegram-ios/Telegram/Telegram-iOS/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName AorusGram" "$PLIST" 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c "Set :CFBundleName AorusGram" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Aorusgram" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Set :CFBundleName Aorusgram" "$PLIST" 2>/dev/null || true
           python3 aorusgram/scripts/verify_aorus_branding.py telegram-ios
 
       - name: Install Bazel

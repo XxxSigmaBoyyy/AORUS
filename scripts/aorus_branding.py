@@ -342,6 +342,82 @@ def patch_app_delegate_launch_fixes(tg: Path) -> None:
         print("AppDelegate: no launch patches applied (already patched or upstream drift)")
 
 
+def patch_native_window_host_scene(tg: Path) -> None:
+    """Prefer UIWindow(windowScene:) on iOS 13+ when a scene exists — avoids a known
+    class of launch black screens when the window is not attached to a UIWindowScene
+    (see TN3187 / common UIKit guidance for scene-based lifecycle)."""
+    path = tg / "submodules/Display/Source/NativeWindowHostView.swift"
+    if not path.is_file():
+        print("NativeWindowHostView.swift not found, skip")
+        return
+    t = path.read_text(encoding="utf-8")
+    orig = t
+
+    init_marker = (
+        "            }\n"
+        "        }\n"
+        "    }\n"
+        "    \n"
+        "    required init?(coder aDecoder: NSCoder) {\n"
+        '        fatalError("init(coder:) has not been implemented")\n'
+        "    }\n"
+    )
+    init_new = (
+        "            }\n"
+        "        }\n"
+        "    }\n"
+        "    \n"
+        "    @available(iOS 13.0, *)\n"
+        "    init(windowScene: UIWindowScene) {\n"
+        "        super.init(windowScene: windowScene)\n"
+        "        if let gestureRecognizers = self.gestureRecognizers {\n"
+        "            for recognizer in gestureRecognizers {\n"
+        "                recognizer.delaysTouchesBegan = false\n"
+        "            }\n"
+        "        }\n"
+        "    }\n"
+        "    \n"
+        "    required init?(coder aDecoder: NSCoder) {\n"
+        '        fatalError("init(coder:) has not been implemented")\n'
+        "    }\n"
+    )
+    if init_marker in t:
+        t = t.replace(init_marker, init_new, 1)
+        print("Patched NativeWindow: init(windowScene:) for scene-attached windows")
+
+    host_marker = (
+        "public func nativeWindowHostView() -> (UIWindow & WindowHost, WindowHostView) {\n"
+        "    let window = NativeWindow(frame: UIScreen.main.bounds)\n"
+    )
+    host_new = (
+        "public func nativeWindowHostView() -> (UIWindow & WindowHost, WindowHostView) {\n"
+        "    let window: NativeWindow\n"
+        "    if #available(iOS 13.0, *) {\n"
+        "        let windowScenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }\n"
+        "        if let windowScene = windowScenes.first(where: { $0.activationState == .foregroundActive })\n"
+        "            ?? windowScenes.first(where: { $0.activationState == .foregroundInactive })\n"
+        "            ?? windowScenes.first {\n"
+        "            window = NativeWindow(windowScene: windowScene)\n"
+        "        } else {\n"
+        "            window = NativeWindow(frame: UIScreen.main.bounds)\n"
+        "        }\n"
+        "    } else {\n"
+        "        window = NativeWindow(frame: UIScreen.main.bounds)\n"
+        "    }\n"
+    )
+    if host_marker in t:
+        t = t.replace(host_marker, host_new, 1)
+        print("Patched nativeWindowHostView: UIWindowScene when available")
+
+    if t != orig:
+        path.write_text(t, encoding="utf-8")
+    else:
+        if init_marker not in orig and host_marker not in orig:
+            print("NativeWindowHostView: markers not found (upstream drift)")
+        elif init_marker in orig or host_marker in orig:
+            print("NativeWindowHostView: patch did not apply (upstream drift?)")
+
+
 def main() -> None:
     tg = Path(sys.argv[1]).resolve()
     if not tg.is_dir():
@@ -350,6 +426,7 @@ def main() -> None:
     patch_launch_screen(tg)
     patch_xcconfig(tg)
     patch_app_delegate_launch_fixes(tg)
+    patch_native_window_host_scene(tg)
     patch_presentation_theme_intro_gold(tg)
     for name in ("Info.plist", "InfoBazel.plist"):
         patch_plist_icons_and_urls(tg / "Telegram/Telegram-iOS" / name)

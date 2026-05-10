@@ -43,10 +43,10 @@ def main() -> None:
     if schemes != ["aorusgram"]:
         err.append(f"First CFBundleURLSchemes expected ['aorusgram'], got {schemes}")
 
-    if pl.get("CFBundleDisplayName") != "AorusGram":
-        err.append(f"CFBundleDisplayName expected AorusGram, got {pl.get('CFBundleDisplayName')!r}")
-    if pl.get("CFBundleName") != "AorusGram":
-        err.append(f"CFBundleName expected AorusGram, got {pl.get('CFBundleName')!r}")
+    if pl.get("CFBundleDisplayName") != "Aorusgram":
+        err.append(f"CFBundleDisplayName expected Aorusgram, got {pl.get('CFBundleDisplayName')!r}")
+    if pl.get("CFBundleName") != "Aorusgram":
+        err.append(f"CFBundleName expected Aorusgram, got {pl.get('CFBundleName')!r}")
 
     ad = tg / "submodules" / "TelegramUI" / "Sources" / "AppDelegate.swift"
     t = ad.read_text(encoding="utf-8")
@@ -55,9 +55,17 @@ def main() -> None:
     if "self.nativeWindow = window\n        self.window?.makeKeyAndVisible()" not in t:
         err.append("AppDelegate: missing early makeKeyAndVisible after window wiring")
 
+    nw = tg / "submodules" / "Display" / "Source" / "NativeWindowHostView.swift"
+    if nw.is_file():
+        nt = nw.read_text(encoding="utf-8")
+        if "init(windowScene: UIWindowScene)" not in nt:
+            err.append("NativeWindowHostView: missing init(windowScene:) (scene-attached window)")
+        if "windowScenes.first(where: { $0.activationState == .foregroundActive })" not in nt:
+            err.append("NativeWindowHostView: missing UIWindowScene selection in nativeWindowHostView()")
+
     xc = (tg / "Telegram" / "Telegram-iOS" / "Config-AppStoreLLC.xcconfig").read_text(encoding="utf-8")
-    if "APP_NAME=AorusGram" not in xc:
-        err.append("Config-AppStoreLLC.xcconfig missing APP_NAME=AorusGram")
+    if "APP_NAME=Aorusgram" not in xc:
+        err.append("Config-AppStoreLLC.xcconfig missing APP_NAME=Aorusgram")
 
     if err:
         print("VERIFY FAILED:", file=sys.stderr)
