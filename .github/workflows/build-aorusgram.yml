@@ -148,7 +148,7 @@ jobs:
           # from GitHub releases which times out on CI. Disabling saves ~2min per build.
           echo "build --features=-swift.index_while_building" >> telegram-ios/.bazelrc
           echo "build --features=-swift.use_global_index_store" >> telegram-ios/.bazelrc
-          # Note: disableProvisioningProfiles is set via Make.py patch (set_disable_provisioning_profiles)
+          # Note: Make.py is patched with disableExtensions + set_disable_provisioning_profiles (see below).
           # NOT via .bazelrc — Make.py builds its own bazel command line ignoring .bazelrc flags
           echo "Updated .bazelrc"
 
@@ -325,10 +325,17 @@ jobs:
           # (main Telegram.mobileprovision). The IPA can then be re-signed via
           # Sideloadly / AltStore with the user's real Apple Developer credentials.
           DISABLE_OLD = '    bazel_command_line.invoke_build()'
-          DISABLE_NEW = "    bazel_command_line.common_args.append('--//Telegram:disableExtensions')\n    bazel_command_line.invoke_build()"
+          # disableExtensions: skip Watch + extensions (no per-target profiles).
+          # disableProvisioningProfiles: skip strict "identity must match profile" at
+          # process-and-sign (fake PEM in keychain never matches real/DER profile).
+          DISABLE_NEW = (
+              "    bazel_command_line.common_args.append('--//Telegram:disableExtensions')\n"
+              "    bazel_command_line.set_disable_provisioning_profiles()\n"
+              "    bazel_command_line.invoke_build()"
+          )
           if DISABLE_OLD in t:
               t = t.replace(DISABLE_OLD, DISABLE_NEW, 1)
-              print('Patched: disableExtensions OK')
+              print('Patched: disableExtensions + disableProvisioningProfiles OK')
 
           # 3. Skip aps_environment None check (our fake profiles have it)
           t = t.replace('if codesigning_data.aps_environment is None:', 'if False and codesigning_data.aps_environment is None:', 1)
@@ -486,7 +493,7 @@ jobs:
           git config user.name "AorusGram CI"
           git add build-errors/last-build.log
           git diff --cached --quiet || git commit -m "ci: save build log [skip ci]"
-          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/ClaudeSigma/AorusGram.git HEAD:main
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:${{ github.ref_name }}
 
       - name: Collect build artifacts info
         if: always()
