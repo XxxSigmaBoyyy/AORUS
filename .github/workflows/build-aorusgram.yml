@@ -99,6 +99,17 @@ jobs:
               t = _re.sub(r'store_bundle_ids\s*=\s*\[.*?\]', 'store_bundle_ids = []', t, flags=_re.DOTALL)
               # Also clear official_bundle_ids to skip VoIP/CarPlay/associated-domains
               t = _re.sub(r'official_bundle_ids\s*=\s*\[.*?\]', 'official_bundle_ids = []', t, flags=_re.DOTALL)
+              # Device + --disableProvisioningProfiles: main ios_application had provisioning_profile=None;
+              # rules_apple fails analysis ("no provisioning_profile attribute"). Keep real profile label.
+              t2, nprov = _re.subn(
+                  r'(":disableProvisioningProfilesSetting"\s*:\s*)None(\s*,)',
+                  r'\1"@build_configuration//provisioning:Telegram.mobileprovision"\2',
+                  t,
+                  count=1,
+              )
+              if nprov:
+                  t = t2
+                  print('BUILD: disableProvisioningProfiles branch → Telegram.mobileprovision (device CI)')
               open(build_path, 'w').write(t)
               print('BUILD file patched: store_bundle_ids and official_bundle_ids cleared')
           else:
