@@ -461,12 +461,21 @@ jobs:
               )
               print(('Created: ' if r.returncode == 0 else 'Error: ') + name + '.mobileprovision')
 
-          # Override main app profile with the REAL provisioning profile
-          import shutil
-          real_profile = 'aorusgram/Profile-1.mobileprovision'
-          if os.path.exists(real_profile):
-              shutil.copy(real_profile, out_dir + '/Telegram.mobileprovision')
-              print('Used REAL provisioning profile for main Telegram target')
+          # Do NOT replace Telegram.mobileprovision with a repo "real" profile on CI.
+          # process-and-sign matches DeveloperCertificates in the profile to keychain
+          # identities; the runner only guarantees the generated fake PEM/key matches the
+          # fake Telegram.mobileprovision created above. Copying Profile-1 breaks signing
+          # with: "Unable to find an identity matching ... Telegram.mobileprovision".
+          # Re-sign the produced IPA with your real cert/profile (AltStore / Sideloadly).
+          import os as _os_ci
+          if _os_ci.environ.get('CI_USE_REAL_APP_PROVISIONING') == '1':
+              import shutil
+              real_profile = 'aorusgram/Profile-1.mobileprovision'
+              if os.path.exists(real_profile):
+                  shutil.copy(real_profile, out_dir + '/Telegram.mobileprovision')
+                  print('CI_USE_REAL_APP_PROVISIONING=1: copied real profile to Telegram.mobileprovision')
+          else:
+              print('CI: keeping generated Telegram.mobileprovision (matches fake keychain)')
 
           print('Profiles done')
           for f in sorted(os.listdir(out_dir)):
