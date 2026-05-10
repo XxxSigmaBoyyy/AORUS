@@ -18,6 +18,9 @@ jobs:
     env:
       # Export password for aorusgram/Certificate.p12 — if wrong, P12 import fails fast (no 1h Bazel).
       P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+      # Optional: base64-encoded .p12 / .mobileprovision when certs are not committed (forks / clean repos).
+      CERTIFICATE_BASE64: ${{ secrets.CERTIFICATE_BASE64 }}
+      PROVISIONING_PROFILE_BASE64: ${{ secrets.PROVISIONING_PROFILE_BASE64 }}
 
     steps:
       - name: Checkout
@@ -472,6 +475,31 @@ jobs:
               print('  ', f, os.path.getsize(os.path.join(out_dir, f)), 'bytes')
           CSEOF
 
+          # Signing files may be absent on a mirror repo — restore from secrets or pick first match.
+          mkdir -p aorusgram
+          if [ ! -f aorusgram/Certificate.p12 ] && [ -n "${CERTIFICATE_BASE64:-}" ]; then
+            printf '%s' "${CERTIFICATE_BASE64}" | tr -d '\n\r ' | base64 -d > aorusgram/Certificate.p12
+            echo "Wrote aorusgram/Certificate.p12 from CERTIFICATE_BASE64 secret"
+          fi
+          if [ ! -f aorusgram/Profile-1.mobileprovision ] && [ -n "${PROVISIONING_PROFILE_BASE64:-}" ]; then
+            printf '%s' "${PROVISIONING_PROFILE_BASE64}" | tr -d '\n\r ' | base64 -d > aorusgram/Profile-1.mobileprovision
+            echo "Wrote aorusgram/Profile-1.mobileprovision from PROVISIONING_PROFILE_BASE64 secret"
+          fi
+          if [ ! -f aorusgram/Certificate.p12 ]; then
+            P12="$(ls aorusgram/*.p12 aorusgram/*.P12 2>/dev/null | head -1)"
+            if [ -n "$P12" ]; then
+              cp "$P12" aorusgram/Certificate.p12
+              echo "Using $P12 as Certificate.p12"
+            fi
+          fi
+          if [ ! -f aorusgram/Profile-1.mobileprovision ]; then
+            MP="$(ls aorusgram/*.mobileprovision 2>/dev/null | head -1)"
+            if [ -n "$MP" ]; then
+              cp "$MP" aorusgram/Profile-1.mobileprovision
+              echo "Using $MP as Profile-1.mobileprovision"
+            fi
+          fi
+
           # Device release_arm64: rules_apple still runs process-and-sign and requires an identity
           # whose certificate is listed in Telegram.mobileprovision (DeveloperCertificates).
           # Self-signed fake PEM does not produce a usable codesign identity — use the repo P12 + profile.
@@ -482,11 +510,11 @@ jobs:
           security unlock-keychain -p aorusbuild "$KEYCHAIN"
 
           if [ ! -f aorusgram/Certificate.p12 ]; then
-            echo "::error::aorusgram/Certificate.p12 is missing — add your Apple Distribution / Development .p12 to the repo (or submodule path aorusgram/)."
+            echo "::error::No .p12 — commit aorusgram/Certificate.p12 or set GitHub secret CERTIFICATE_BASE64 (base64 of the file)."
             exit 1
           fi
           if [ ! -f aorusgram/Profile-1.mobileprovision ]; then
-            echo "::error::aorusgram/Profile-1.mobileprovision is missing — add the provisioning profile that matches the P12 (same team + app id)."
+            echo "::error::No provisioning profile — commit aorusgram/Profile-1.mobileprovision (or any *.mobileprovision) or set PROVISIONING_PROFILE_BASE64."
             exit 1
           fi
 
