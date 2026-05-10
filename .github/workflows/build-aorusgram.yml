@@ -343,17 +343,27 @@ jobs:
           else:
               print('WARNING: invoke_build not found')
 
-          # 2. Device release without matching Apple cert: disable_legacy_signing (vendored rules_apple).
-          DISABLE_OLD = '    bazel_command_line.invoke_build()'
-          DISABLE_NEW = (
-              "    bazel_command_line.common_args.append('--features=disable_legacy_signing')\n"
-              "    bazel_command_line.common_args.append('--//Telegram:disableExtensions')\n"
-              "    bazel_command_line.set_disable_provisioning_profiles()\n"
-              "    bazel_command_line.invoke_build()"
+          # 2. Unsigned device IPA — inject Bazel flags into BazelCommandLine.__init__ so every
+          #    `bazel build` sees them. (A second replace on invoke_build() was fragile: upstream
+          #    line numbers / duplicate matches could skip appending — CI then omitted
+          #    disable_legacy_signing while still adding disableExtensions.)
+          CA_MARKER = (
+              "        self.common_args = [\n"
+              "            # https://docs.bazel.build/versions/master/command-line-reference.html\n"
           )
-          if DISABLE_OLD in t:
-              t = t.replace(DISABLE_OLD, DISABLE_NEW, 1)
-              print('Patched: disable_legacy_signing + disableExtensions + disableProvisioningProfiles OK')
+          CA_INJECT = (
+              "        self.common_args = [\n"
+              "            # CI: unsigned iphoneos artifact (rules_apple disable_legacy_signing).\n"
+              "            '--features=disable_legacy_signing',\n"
+              "            '--//Telegram:disableExtensions',\n"
+              "            '--//Telegram:disableProvisioningProfiles',\n"
+              "            # https://docs.bazel.build/versions/master/command-line-reference.html\n"
+          )
+          if CA_MARKER in t:
+              t = t.replace(CA_MARKER, CA_INJECT, 1)
+              print('Patched: common_args CI signing flags OK')
+          else:
+              print('WARNING: common_args marker not found — disable_legacy_signing not injected')
 
           # 3. Skip aps_environment None check (our fake profiles have it)
           t = t.replace('if codesigning_data.aps_environment is None:', 'if False and codesigning_data.aps_environment is None:', 1)
@@ -368,12 +378,12 @@ jobs:
         run: |
           python3 << 'VERIFY'
           t = open("build-system/Make/Make.py", encoding="utf-8", errors="replace").read()
-          assert "disable_legacy_signing" in t, \
-              "Make.py: missing disable_legacy_signing (unsigned device CI)"
-          assert "common_args.append('--//Telegram:disableExtensions')" in t, \
-              "Make.py: missing disableExtensions append (patch not applied)"
-          assert "set_disable_provisioning_profiles()" in t, \
-              "Make.py: missing set_disable_provisioning_profiles (signing will fail at end)"
+          assert "'--features=disable_legacy_signing'," in t, \
+              "Make.py: disable_legacy_signing not in common_args"
+          assert "'--//Telegram:disableExtensions'," in t, \
+              "Make.py: disableExtensions not in common_args"
+          assert "'--//Telegram:disableProvisioningProfiles'," in t, \
+              "Make.py: disableProvisioningProfiles not in common_args"
           assert "_ps = _os.environ.get('RUNNER_TEMP'" in t, \
               "Make.py: missing provisioning copy injection"
           assert "if self.disable_provisioning_profiles:" in t, \
