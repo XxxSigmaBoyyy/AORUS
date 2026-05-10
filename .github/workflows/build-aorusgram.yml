@@ -5,6 +5,13 @@ on:
     branches: [ main, "claude/**", "cursor/**" ]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: macos-15
@@ -345,6 +352,22 @@ jobs:
           print('All Make.py patches applied')
           MPEOF
 
+      - name: Fail fast — verify Make.py patches (saves ~1h if patch breaks)
+        working-directory: telegram-ios
+        run: |
+          python3 << 'VERIFY'
+          t = open("build-system/Make/Make.py", encoding="utf-8", errors="replace").read()
+          assert "common_args.append('--//Telegram:disableExtensions')" in t, \
+              "Make.py: missing disableExtensions append (patch not applied)"
+          assert "set_disable_provisioning_profiles()" in t, \
+              "Make.py: missing set_disable_provisioning_profiles (signing will fail at end)"
+          assert "_ps = _os.environ.get('RUNNER_TEMP'" in t, \
+              "Make.py: missing provisioning copy injection"
+          assert "if self.disable_provisioning_profiles:" in t, \
+              "Make.py: invoke_build missing disable_provisioning_profiles branch"
+          print("Make.py patch sanity checks: OK")
+          VERIFY
+
       - name: Prepare codesigning
         run: |
           mkdir -p $RUNNER_TEMP/signing/profiles
@@ -485,6 +508,7 @@ jobs:
 
       - name: Commit error log to repo
         if: failure()
+        continue-on-error: true
         run: |
           cd aorusgram
           mkdir -p build-errors
