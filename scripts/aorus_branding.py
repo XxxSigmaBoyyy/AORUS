@@ -7,6 +7,10 @@ import re
 import sys
 from pathlib import Path
 
+# Match http(s), tg://, and t.me/… segments so we never edit URLs inside .strings values.
+_URL_GUARD = re.compile(r"(https?://[^\s\"]+)|(tg://[^\s\"]+)|(t\.me/[^\s\"]+)", re.IGNORECASE)
+_TELEGRAM_WORD = re.compile(r"\bTelegram\b")
+
 
 def patch_launch_screen(tg: Path) -> None:
     xib = tg / "Telegram/Telegram-iOS/Base.lproj/LaunchScreen.xib"
@@ -33,7 +37,7 @@ def patch_xcconfig(tg: Path) -> None:
     out = []
     for line in lines:
         if line.startswith("APP_NAME="):
-            out.append("APP_NAME=AorusGram")
+            out.append("APP_NAME=Aorusgram")
         else:
             out.append(line)
     cfg.write_text("\n".join(out) + ("\n" if lines else ""), encoding="utf-8")
@@ -44,14 +48,14 @@ def _scrub_user_visible_strings(pl: dict) -> None:
     for k, v in list(pl.items()):
         if isinstance(v, str) and "Telegram" in v:
             if k.endswith("UsageDescription") or k in ("NSSiriUsageDescription",):
-                pl[k] = v.replace("Telegram", "AorusGram")
+                pl[k] = v.replace("Telegram", "Aorusgram")
     ut = pl.get("UTImportedTypeDeclarations")
     if isinstance(ut, list):
         for item in ut:
             if isinstance(item, dict):
                 desc = item.get("UTTypeDescription")
                 if isinstance(desc, str) and "Telegram" in desc:
-                    item["UTTypeDescription"] = desc.replace("Telegram", "AorusGram")
+                    item["UTTypeDescription"] = desc.replace("Telegram", "Aorusgram")
 
 
 def patch_plist_icons_and_urls(path: Path) -> None:
@@ -81,6 +85,149 @@ def patch_plist_icons_and_urls(path: Path) -> None:
     print(f"Patched {path.name}: BlueIcon primary, aorusgram:// URL scheme, usage strings")
 
 
+def _mask_urls(s: str) -> tuple[str, list[str]]:
+    tokens: list[str] = []
+    out: list[str] = []
+    pos = 0
+    for m in _URL_GUARD.finditer(s):
+        out.append(s[pos : m.start()])
+        tok = f"\x00URL{len(tokens)}\x00"
+        tokens.append(m.group(0))
+        out.append(tok)
+        pos = m.end()
+    out.append(s[pos:])
+    return "".join(out), tokens
+
+
+def _unmask_urls(s: str, tokens: list[str]) -> str:
+    for i, tok in enumerate(tokens):
+        s = s.replace(f"\x00URL{i}\x00", tok)
+    return s
+
+
+def _safe_replace_telegram_in_value(val: str) -> tuple[str, int]:
+    masked, tokens = _mask_urls(val)
+    new, n = _TELEGRAM_WORD.subn("Aorusgram", masked)
+    return _unmask_urls(new, tokens), n
+
+
+def _escape_strings_value(s: str) -> str:
+    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\r", "\\r").replace("\n", "\\n")
+
+
+def _patch_localizable_strings_file_content(text: str) -> tuple[str, int]:
+    """Parse .strings entries (multiline values + multiple entries per line), replace
+    \\bTelegram\\b in values only (URLs masked). Does not alter localization keys."""
+    entry_start = re.compile(r'(\s*"(?:[^"\\]|\\.)*"\s*=\s*")')
+    total = 0
+    out: list[str] = []
+    pos = 0
+    while pos < len(text):
+        m = entry_start.search(text, pos)
+        if not m:
+            out.append(text[pos:])
+            break
+        # Skip // comments (single-line)
+        # Always search from BOF: using `pos` here wrongly re-used the start of the
+        # previous entry as the window and treated almost everything as a // comment.
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        if text[line_start:m.start()].lstrip().startswith("//"):
+            out.append(text[pos : m.end()])
+            pos = m.end()
+            continue
+        out.append(text[pos : m.start()])
+        out.append(m.group(1))
+        i = m.end()
+        val_chars: list[str] = []
+        while i < len(text):
+            ch = text[i]
+            if ch == "\\" and i + 1 < len(text):
+                val_chars.append(text[i : i + 2])
+                i += 2
+                continue
+            if ch == '"':
+                if i + 1 < len(text) and text[i + 1] == ";":
+                    raw_val = "".join(val_chars)
+                    new_val, n = _safe_replace_telegram_in_value(raw_val)
+                    total += n
+                    out.append(_escape_strings_value(new_val))
+                    out.append('";')
+                    pos = i + 2
+                    break
+                val_chars.append(ch)
+                i += 1
+                continue
+            val_chars.append(ch)
+            i += 1
+        else:
+            out.append(text[m.start() :])
+            break
+    return "".join(out), total
+
+
+def patch_localizable_strings_safe(tg: Path) -> None:
+    """Replace word Telegram → Aorusgram in Localizable.strings values only (URLs kept)."""
+    roots = [
+        tg / "Telegram/Telegram-iOS",
+        tg / "Telegram/Share",
+        tg / "Telegram/WidgetKitWidget",
+        tg / "Telegram/NotificationService",
+    ]
+    total = 0
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for p in root.rglob("Localizable.strings"):
+            raw = p.read_text(encoding="utf-8", errors="surrogateescape")
+            new_text, n = _patch_localizable_strings_file_content(raw)
+            if n:
+                total += n
+                p.write_text(new_text, encoding="utf-8", errors="surrogateescape")
+                print(f"  Localizable safe: {p.relative_to(tg)} ({n} word hits)")
+    print(f"Localizable.strings (URL-safe): {total} Telegram→Aorusgram word replacements")
+
+
+def patch_presentation_theme_intro_gold(tg: Path) -> None:
+    """Gold accent for intro/tour markdown (bold) only — does not change global app accent."""
+    day = tg / "submodules/TelegramPresentationData/Sources/DefaultDayPresentationTheme.swift"
+    if day.is_file():
+        t = day.read_text(encoding="utf-8")
+        old = (
+            "    let intro = PresentationThemeIntro(\n"
+            "        statusBarStyle: .black,\n"
+            "        primaryTextColor: UIColor(rgb: 0x000000),\n"
+            "        accentTextColor: defaultDayAccentColor,\n"
+        )
+        new = (
+            "    let intro = PresentationThemeIntro(\n"
+            "        statusBarStyle: .black,\n"
+            "        primaryTextColor: UIColor(rgb: 0x000000),\n"
+            "        accentTextColor: UIColor(rgb: 0xc9a227),\n"
+        )
+        if old in t:
+            day.write_text(t.replace(old, new, 1), encoding="utf-8")
+            print("Patched DefaultDayPresentationTheme: intro accentTextColor gold")
+
+    dark = tg / "submodules/TelegramPresentationData/Sources/DefaultDarkPresentationTheme.swift"
+    if dark.is_file():
+        t = dark.read_text(encoding="utf-8")
+        old = (
+            "    let intro = PresentationThemeIntro(\n"
+            "        statusBarStyle: .white,\n"
+            "        primaryTextColor: UIColor(rgb: 0xffffff),\n"
+            "        accentTextColor: UIColor(rgb: 0xffffff),\n"
+        )
+        new = (
+            "    let intro = PresentationThemeIntro(\n"
+            "        statusBarStyle: .white,\n"
+            "        primaryTextColor: UIColor(rgb: 0xffffff),\n"
+            "        accentTextColor: UIColor(rgb: 0xe8c547),\n"
+        )
+        if old in t:
+            dark.write_text(t.replace(old, new, 1), encoding="utf-8")
+            print("Patched DefaultDarkPresentationTheme: intro accentTextColor gold")
+
+
 def patch_info_plist_strings_only(tg: Path) -> None:
     """Only InfoPlist.strings (short display names). Skip Localizable.strings — bulk
     Telegram→AorusGram there can break format strings and crash at startup."""
@@ -97,12 +244,12 @@ def patch_info_plist_strings_only(tg: Path) -> None:
             continue
         for p in root.rglob("InfoPlist.strings"):
             raw = p.read_text(encoding="utf-8", errors="replace")
-            new, c = pattern.subn("AorusGram", raw)
+            new, c = pattern.subn("Aorusgram", raw)
             if c:
                 p.write_text(new, encoding="utf-8")
                 n += c
                 print(f"  {p.relative_to(tg)}: {c} replacements")
-    print(f"InfoPlist.strings: {n} Telegram→AorusGram (Localizable untouched for stability)")
+    print(f"InfoPlist.strings: {n} Telegram→Aorusgram (Localizable handled separately)")
 
 
 def patch_app_delegate_launch_fixes(tg: Path) -> None:
@@ -203,9 +350,11 @@ def main() -> None:
     patch_launch_screen(tg)
     patch_xcconfig(tg)
     patch_app_delegate_launch_fixes(tg)
+    patch_presentation_theme_intro_gold(tg)
     for name in ("Info.plist", "InfoBazel.plist"):
         patch_plist_icons_and_urls(tg / "Telegram/Telegram-iOS" / name)
     patch_info_plist_strings_only(tg)
+    patch_localizable_strings_safe(tg)
 
 
 if __name__ == "__main__":
