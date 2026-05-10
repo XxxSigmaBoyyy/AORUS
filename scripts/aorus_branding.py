@@ -368,7 +368,7 @@ def patch_native_window_host_scene(tg: Path) -> None:
         "    }\n"
         "    \n"
         "    @available(iOS 13.0, *)\n"
-        "    init(windowScene: UIWindowScene) {\n"
+        "    override init(windowScene: UIWindowScene) {\n"
         "        super.init(windowScene: windowScene)\n"
         "        if let gestureRecognizers = self.gestureRecognizers {\n"
         "            for recognizer in gestureRecognizers {\n"
