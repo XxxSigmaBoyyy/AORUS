@@ -293,6 +293,7 @@ jobs:
           PLIST="telegram-ios/Telegram/Telegram-iOS/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName AorusGram" "$PLIST" 2>/dev/null || true
           /usr/libexec/PlistBuddy -c "Set :CFBundleName AorusGram" "$PLIST" 2>/dev/null || true
+          python3 aorusgram/scripts/verify_aorus_branding.py telegram-ios
 
       - name: Install Bazel
         run: brew install bazel 2>/dev/null || true
