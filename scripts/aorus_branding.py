@@ -81,7 +81,9 @@ def patch_plist_icons_and_urls(path: Path) -> None:
     print(f"Patched {path.name}: BlueIcon primary, aorusgram:// URL scheme, usage strings")
 
 
-def patch_localizable_strings(tg: Path) -> None:
+def patch_info_plist_strings_only(tg: Path) -> None:
+    """Only InfoPlist.strings (short display names). Skip Localizable.strings — bulk
+    Telegram→AorusGram there can break format strings and crash at startup."""
     pattern = re.compile(r"\bTelegram\b")
     roots = [
         tg / "Telegram/Telegram-iOS",
@@ -93,16 +95,31 @@ def patch_localizable_strings(tg: Path) -> None:
     for root in roots:
         if not root.is_dir():
             continue
-        for p in root.rglob("*.strings"):
-            if p.name not in ("Localizable.strings", "InfoPlist.strings"):
-                continue
+        for p in root.rglob("InfoPlist.strings"):
             raw = p.read_text(encoding="utf-8", errors="replace")
             new, c = pattern.subn("AorusGram", raw)
             if c:
                 p.write_text(new, encoding="utf-8")
                 n += c
                 print(f"  {p.relative_to(tg)}: {c} replacements")
-    print(f"Localizable .strings: {n} Telegram→AorusGram token replacements")
+    print(f"InfoPlist.strings: {n} Telegram→AorusGram (Localizable untouched for stability)")
+
+
+def patch_app_delegate_cold_start_background(tg: Path) -> None:
+    """Telegram sets containerView to UIColor.black in dark mode before Metal draws;
+    if rendering stalls, users see void-black — use near-black blue-gray instead."""
+    path = tg / "submodules/TelegramUI/Sources/AppDelegate.swift"
+    if not path.is_file():
+        print("AppDelegate.swift not found, skip")
+        return
+    t = path.read_text(encoding="utf-8")
+    old = "hostView.containerView.backgroundColor = UIColor.black"
+    new = "hostView.containerView.backgroundColor = UIColor(red: 0.11, green: 0.13, blue: 0.17, alpha: 1.0)"
+    if old not in t:
+        print("AppDelegate: expected UIColor.black line not found, skip")
+        return
+    path.write_text(t.replace(old, new, 1), encoding="utf-8")
+    print("Patched AppDelegate: dark-mode pre-Metal background is not pure black")
 
 
 def main() -> None:
@@ -112,9 +129,10 @@ def main() -> None:
         sys.exit(1)
     patch_launch_screen(tg)
     patch_xcconfig(tg)
+    patch_app_delegate_cold_start_background(tg)
     for name in ("Info.plist", "InfoBazel.plist"):
         patch_plist_icons_and_urls(tg / "Telegram/Telegram-iOS" / name)
-    patch_localizable_strings(tg)
+    patch_info_plist_strings_only(tg)
 
 
 if __name__ == "__main__":
