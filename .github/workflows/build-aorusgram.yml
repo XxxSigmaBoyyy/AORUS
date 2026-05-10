@@ -283,8 +283,13 @@ jobs:
           echo "--- AorusGramUI sources ---"
           ls -la $TG/submodules/AorusGramUI/Sources/
 
-      - name: Patch app name
+      - name: AorusGram branding (launch screen, name, URLs, icons, strings)
         run: |
+          python3 aorusgram/scripts/aorus_branding.py telegram-ios
+          MASTER=aorusgram/patches/assets/AorusGramAppIcon.png
+          bash aorusgram/scripts/fill_blue_icon_appiconset.sh "$MASTER" \
+            telegram-ios/Telegram/Telegram-iOS/AppIcons.xcassets/BlueIcon.appiconset
+          # Belt-and-suspenders (xcconfig APP_NAME + explicit plist literals)
           PLIST="telegram-ios/Telegram/Telegram-iOS/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName AorusGram" "$PLIST" 2>/dev/null || true
           /usr/libexec/PlistBuddy -c "Set :CFBundleName AorusGram" "$PLIST" 2>/dev/null || true
@@ -310,7 +315,7 @@ jobs:
               "is_internal_build": "false",
               "is_appstore_build": "false",
               "appstore_id": "0",
-              "app_specific_url_scheme": "aorusgram",
+              "app_specific_url_scheme": "aorus",
               "premium_iap_product_id": "",
               "enable_siri": False,
               "enable_icloud": False
