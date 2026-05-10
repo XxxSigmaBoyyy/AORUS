@@ -57,6 +57,8 @@ jobs:
           touch "$BC"
           add() { grep -qxF "$1" "$BC" 2>/dev/null || echo "$1" >> "$BC"; }
           add "build --incompatible_disallow_empty_glob=false"
+          # Quiets Bazel 8 MODULE.bazel vs resolved graph mismatch (bazel_features / skylib / platforms).
+          add "build --check_direct_dependencies=off"
           add "build --features=-swift.index_while_building"
           add "build --features=-swift.use_global_index_store"
           # Device IPA without Apple identity: Telegram vendors rules_apple with disable_legacy_signing
@@ -423,7 +425,8 @@ jobs:
               ('NotificationContent',  base + '.NotificationContent'),
               ('Intents',              base + '.SiriIntents'),
               ('IntentsExtension',     base + '.SiriIntents'),
-              ('IntentsUIExtension',   base + '.IntentsUI'),
+              # BUILD maps ph.telegra.Telegraph.SiriIntentsUI → com.Xdd.23723ab.SiriIntentsUI (not .IntentsUI).
+              ('IntentsUIExtension',   base + '.SiriIntentsUI'),
               ('Widget',               base + '.Widget'),
               ('BroadcastUpload',      base + '.BroadcastUpload'),
               ('Watch',                base + '.watchkitapp'),
