@@ -319,13 +319,16 @@ jobs:
           else:
               print('WARNING: invoke_build not found')
 
-          # 2. Disable provisioning profiles signing — extensions have no matching cert
-          # This calls set_disable_provisioning_profiles() so Bazel skips code signing
+          # 2. Disable extensions — no per-extension provisioning profiles needed.
+          # rules_apple requires non-None profile for EVERY extension on iphoneos.
+          # Excluding extensions lets us build release_arm64 with only one profile
+          # (main Telegram.mobileprovision). The IPA can then be re-signed via
+          # Sideloadly / AltStore with the user's real Apple Developer credentials.
           DISABLE_OLD = '    bazel_command_line.invoke_build()'
-          DISABLE_NEW = '    bazel_command_line.set_disable_provisioning_profiles()\n    bazel_command_line.invoke_build()'
+          DISABLE_NEW = "    bazel_command_line.common_args.append('--//Telegram:disableExtensions')\n    bazel_command_line.invoke_build()"
           if DISABLE_OLD in t:
               t = t.replace(DISABLE_OLD, DISABLE_NEW, 1)
-              print('Patched: disable_provisioning_profiles OK')
+              print('Patched: disableExtensions OK')
 
           # 3. Skip aps_environment None check (our fake profiles have it)
           t = t.replace('if codesigning_data.aps_environment is None:', 'if False and codesigning_data.aps_environment is None:', 1)
@@ -425,15 +428,19 @@ jobs:
               print('  ', f, os.path.getsize(os.path.join(out_dir, f)), 'bytes')
           CSEOF
 
-          # Import fake certificate into a temporary keychain so Xcode can sign.
-          # Without this Xcode 16 fails with "Unable to find identity in keychain".
+          # Import the self-signed fake cert (generated above) into a temp keychain
+          # so codesign can sign the IPA on the runner. The IPA will be re-signed
+          # by the user with real credentials via Sideloadly / AltStore.
           KEYCHAIN=/tmp/aorus-build.keychain-db
           security create-keychain -p aorusbuild "$KEYCHAIN" 2>/dev/null || true
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p aorusbuild "$KEYCHAIN"
-          # Import REAL developer certificate (from repo, password: 1)
+          # Import the fake PEM cert generated above into the keychain
+          security import /tmp/fake-cert.pem -A -k "$KEYCHAIN" 2>/dev/null || true
+          security import /tmp/fake-key.pem  -A -k "$KEYCHAIN" 2>/dev/null || true
+          # If real Certificate.p12 is present in repo — use it (optional).
           security import aorusgram/Certificate.p12 -P "1" -A \
-            -t cert -f pkcs12 -k "$KEYCHAIN" 2>&1 || true
+            -t cert -f pkcs12 -k "$KEYCHAIN" 2>/dev/null || true
           # Add keychain to search list
           security list-keychain -d user -s "$KEYCHAIN" \
             "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null || true
@@ -441,12 +448,12 @@ jobs:
           echo "=== Signing identities ==="
           security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null || true
 
-      - name: Build (no signing)
+      - name: Build release_arm64 (device, no extensions, unsigned IPA)
         working-directory: telegram-ios
         run: |
           echo "=== Python version ==="
           python3 --version
-          echo "=== Starting build ==="
+          echo "=== Starting release_arm64 build (extensions disabled, fake-signed) ==="
           set -o pipefail
           python3 build-system/Make/Make.py \
             --overrideXcodeVersion \
@@ -455,9 +462,8 @@ jobs:
             --configurationPath build-system/appstore-configuration.json \
             --codesigningInformationPath $RUNNER_TEMP/signing \
             --buildNumber=${{ github.run_number }} \
-            --configuration=debug_sim_arm64 \
+            --configuration=release_arm64 \
             --outputBuildArtifactsPath $RUNNER_TEMP/artifacts \
-            --continueOnError \
             2>&1 | tee $RUNNER_TEMP/build.log | tail -100
 
       - name: Show compile errors
