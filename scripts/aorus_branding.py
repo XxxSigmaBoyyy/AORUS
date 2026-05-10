@@ -105,21 +105,94 @@ def patch_info_plist_strings_only(tg: Path) -> None:
     print(f"InfoPlist.strings: {n} Telegram→AorusGram (Localizable untouched for stability)")
 
 
-def patch_app_delegate_cold_start_background(tg: Path) -> None:
-    """Telegram sets containerView to UIColor.black in dark mode before Metal draws;
-    if rendering stalls, users see void-black — use near-black blue-gray instead."""
+def patch_app_delegate_launch_fixes(tg: Path) -> None:
+    """Fix real black-screen bugs in upstream AppDelegate:
+
+    1) makeKeyAndVisible() is only called late (~line 779); early returns (App Group
+       container nil → \"Error 2\", disk full alert) call presentNative on a window
+       that was never made key/visible — alerts do not paint → endless black screen.
+
+    2) Dark mode used UIColor.black under Metal before first frame; use near-black tint.
+    """
     path = tg / "submodules/TelegramUI/Sources/AppDelegate.swift"
     if not path.is_file():
         print("AppDelegate.swift not found, skip")
         return
     t = path.read_text(encoding="utf-8")
-    old = "hostView.containerView.backgroundColor = UIColor.black"
-    new = "hostView.containerView.backgroundColor = UIColor(red: 0.11, green: 0.13, blue: 0.17, alpha: 1.0)"
-    if old not in t:
-        print("AppDelegate: expected UIColor.black line not found, skip")
-        return
-    path.write_text(t.replace(old, new, 1), encoding="utf-8")
-    print("Patched AppDelegate: dark-mode pre-Metal background is not pure black")
+    orig = t
+
+    # Blank line between assignments and Metal is indented spaces only (Xcode).
+    win_metal = (
+        "        self.window = window\n"
+        "        self.nativeWindow = window\n"
+        "        \n"
+        "        hostView.containerView.layer.addSublayer(MetalEngine.shared.rootLayer)"
+    )
+    win_metal_new = (
+        "        self.window = window\n"
+        "        self.nativeWindow = window\n"
+        "        self.window?.makeKeyAndVisible()\n"
+        "        \n"
+        "        hostView.containerView.layer.addSublayer(MetalEngine.shared.rootLayer)"
+    )
+    if win_metal in t:
+        t = t.replace(win_metal, win_metal_new, 1)
+        print("AppDelegate: makeKeyAndVisible immediately after window wiring")
+
+    old_black = "hostView.containerView.backgroundColor = UIColor.black"
+    new_bg = "hostView.containerView.backgroundColor = UIColor(red: 0.11, green: 0.13, blue: 0.17, alpha: 1.0)"
+    if old_black in t:
+        t = t.replace(old_black, new_bg, 1)
+        print("AppDelegate: dark-mode pre-Metal background not pure black")
+
+    err2 = (
+        "        guard let appGroupUrl = maybeAppGroupUrl else {\n"
+        "            self.mainWindow?.presentNative(UIAlertController(title: nil, message: \"Error 2\", preferredStyle: .alert))\n"
+        "            return true\n"
+        "        }"
+    )
+    err2_new = (
+        "        guard let appGroupUrl = maybeAppGroupUrl else {\n"
+        "            self.window?.makeKeyAndVisible()\n"
+        "            self.mainWindow?.presentNative(UIAlertController(title: nil, message: \"Error 2\", preferredStyle: .alert))\n"
+        "            return true\n"
+        "        }"
+    )
+    if err2 in t:
+        t = t.replace(err2, err2_new, 1)
+        print("AppDelegate: makeKeyAndVisible before App Group Error 2 alert")
+
+    disk = (
+        "        if !writeAbilityTestSuccess {\n"
+        "            let alertController = UIAlertController(title: nil, message: \"The device does not have sufficient free space.\", preferredStyle: .alert)\n"
+        "            alertController.addAction(UIAlertAction(title: \"OK\", style: .default, handler: { _ in\n"
+        "                preconditionFailure()\n"
+        "            }))\n"
+        "            self.mainWindow?.presentNative(alertController)\n"
+        "            \n"
+        "            return true\n"
+        "        }"
+    )
+    disk_new = (
+        "        if !writeAbilityTestSuccess {\n"
+        "            let alertController = UIAlertController(title: nil, message: \"The device does not have sufficient free space.\", preferredStyle: .alert)\n"
+        "            alertController.addAction(UIAlertAction(title: \"OK\", style: .default, handler: { _ in\n"
+        "                preconditionFailure()\n"
+        "            }))\n"
+        "            self.window?.makeKeyAndVisible()\n"
+        "            self.mainWindow?.presentNative(alertController)\n"
+        "            \n"
+        "            return true\n"
+        "        }"
+    )
+    if disk in t:
+        t = t.replace(disk, disk_new, 1)
+        print("AppDelegate: makeKeyAndVisible before disk-space alert")
+
+    if t != orig:
+        path.write_text(t, encoding="utf-8")
+    else:
+        print("AppDelegate: no launch patches applied (already patched or upstream drift)")
 
 
 def main() -> None:
@@ -129,7 +202,7 @@ def main() -> None:
         sys.exit(1)
     patch_launch_screen(tg)
     patch_xcconfig(tg)
-    patch_app_delegate_cold_start_background(tg)
+    patch_app_delegate_launch_fixes(tg)
     for name in ("Info.plist", "InfoBazel.plist"):
         patch_plist_icons_and_urls(tg / "Telegram/Telegram-iOS" / name)
     patch_info_plist_strings_only(tg)
