@@ -501,8 +501,8 @@ jobs:
         run: |
           echo "=== First 80 lines ==="
           head -80 $RUNNER_TEMP/build.log 2>/dev/null || echo "(log not available)"
-          echo "=== Errors ==="
-          grep -E " error:" $RUNNER_TEMP/build.log | head -80 || echo "(none)"
+          echo "=== Errors (compiler + Bazel) ==="
+          grep -iE " error:|^ERROR:|FAILED:" $RUNNER_TEMP/build.log | head -120 || echo "(none)"
           echo "=== Last 80 lines ==="
           tail -80 $RUNNER_TEMP/build.log 2>/dev/null || echo "(log not available)"
 

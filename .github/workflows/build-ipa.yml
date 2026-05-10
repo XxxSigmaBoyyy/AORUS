@@ -30,7 +30,7 @@ jobs:
 
       # --- Signing (optional, needed for real device / App Store) ---
       - name: Import certificate
-        if: ${{ env.CERTIFICATE_BASE64 != '' }}
+        if: ${{ secrets.CERTIFICATE_BASE64 != '' }}
         env:
           CERTIFICATE_BASE64: ${{ secrets.CERTIFICATE_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
@@ -46,7 +46,7 @@ jobs:
           security list-keychain -d user -s $KEYCHAIN_PATH
 
       - name: Install provisioning profile
-        if: ${{ env.PROVISIONING_PROFILE_BASE64 != '' }}
+        if: ${{ secrets.PROVISIONING_PROFILE_BASE64 != '' }}
         env:
           PROVISIONING_PROFILE_BASE64: ${{ secrets.PROVISIONING_PROFILE_BASE64 }}
         run: |
@@ -68,7 +68,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO | xcpretty || true
 
       - name: Archive (real device, requires signing secrets)
-        if: ${{ env.CERTIFICATE_BASE64 != '' }}
+        if: ${{ secrets.CERTIFICATE_BASE64 != '' }}
         env:
           CERTIFICATE_BASE64: ${{ secrets.CERTIFICATE_BASE64 }}
         run: |
@@ -81,7 +81,7 @@ jobs:
             archive | xcpretty
 
       - name: Export IPA
-        if: ${{ env.CERTIFICATE_BASE64 != '' }}
+        if: ${{ secrets.CERTIFICATE_BASE64 != '' }}
         env:
           CERTIFICATE_BASE64: ${{ secrets.CERTIFICATE_BASE64 }}
         run: |
@@ -92,7 +92,7 @@ jobs:
             -exportPath build/IPA | xcpretty
 
       - name: Upload IPA artifact
-        if: ${{ env.CERTIFICATE_BASE64 != '' }}
+        if: ${{ secrets.CERTIFICATE_BASE64 != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: App.ipa
