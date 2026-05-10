@@ -59,8 +59,9 @@ jobs:
           add "build --incompatible_disallow_empty_glob=false"
           add "build --features=-swift.index_while_building"
           add "build --features=-swift.use_global_index_store"
-          # Unsigned CI: rules_apple only documents skipping main-bundle codesign for *simulator* targets.
-          add "build --features=apple.skip_codesign_simulator_bundles"
+          # Device IPA without Apple identity: Telegram vendors rules_apple with disable_legacy_signing
+          # (skips legacy codesign path that requires a cert matching the .mobileprovision).
+          add "build --features=disable_legacy_signing"
           echo "=== tail $BC ==="; tail -5 "$BC"
 
       - name: Patch Telegram/BUILD bundle IDs to AorusGram
@@ -342,18 +343,17 @@ jobs:
           else:
               print('WARNING: invoke_build not found')
 
-          # 2. Disable extensions — fewer targets; simulator unsigned build avoids device codesign.
+          # 2. Device release without matching Apple cert: disable_legacy_signing (vendored rules_apple).
           DISABLE_OLD = '    bazel_command_line.invoke_build()'
-          # Same feature is also in .bazelrc; duplicate on command line so Make.py invocations always get it.
           DISABLE_NEW = (
-              "    bazel_command_line.common_args.append('--features=apple.skip_codesign_simulator_bundles')\n"
+              "    bazel_command_line.common_args.append('--features=disable_legacy_signing')\n"
               "    bazel_command_line.common_args.append('--//Telegram:disableExtensions')\n"
               "    bazel_command_line.set_disable_provisioning_profiles()\n"
               "    bazel_command_line.invoke_build()"
           )
           if DISABLE_OLD in t:
               t = t.replace(DISABLE_OLD, DISABLE_NEW, 1)
-              print('Patched: disableExtensions + disableProvisioningProfiles OK')
+              print('Patched: disable_legacy_signing + disableExtensions + disableProvisioningProfiles OK')
 
           # 3. Skip aps_environment None check (our fake profiles have it)
           t = t.replace('if codesigning_data.aps_environment is None:', 'if False and codesigning_data.aps_environment is None:', 1)
@@ -368,8 +368,8 @@ jobs:
         run: |
           python3 << 'VERIFY'
           t = open("build-system/Make/Make.py", encoding="utf-8", errors="replace").read()
-          assert "apple.skip_codesign_simulator_bundles" in t, \
-              "Make.py: missing skip_codesign_simulator_bundles (unsigned CI)"
+          assert "disable_legacy_signing" in t, \
+              "Make.py: missing disable_legacy_signing (unsigned device CI)"
           assert "common_args.append('--//Telegram:disableExtensions')" in t, \
               "Make.py: missing disableExtensions append (patch not applied)"
           assert "set_disable_provisioning_profiles()" in t, \
@@ -464,7 +464,7 @@ jobs:
               print('  ', f, os.path.getsize(os.path.join(out_dir, f)), 'bytes')
           CSEOF
 
-          # Simulator unsigned: optional keychain with fake PEM (some Bazel steps still probe keychain).
+          # Optional keychain with fake PEM (harmless; main signing uses disable_legacy_signing).
           KEYCHAIN=/tmp/aorus-build.keychain-db
           security delete-keychain "$KEYCHAIN" 2>/dev/null || true
           security create-keychain -p aorusbuild "$KEYCHAIN"
@@ -476,16 +476,15 @@ jobs:
             "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null || \
             security list-keychain -d user -s "$KEYCHAIN"
           security set-key-partition-list -S apple-tool:,apple: -s -k aorusbuild "$KEYCHAIN" 2>/dev/null || true
-          echo "=== Signing identities (informational; main app codesign skipped for sim) ==="
+          echo "=== Signing identities (informational) ==="
           security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null || true
 
-      - name: Build release_sim_arm64 (opt, unsigned simulator — no Apple codesign on app bundle)
+      - name: Build release_arm64 (device, no extensions; unsigned via disable_legacy_signing)
         working-directory: telegram-ios
         run: |
           echo "=== Python version ==="
           python3 --version
-          echo "=== release_sim_arm64 + apple.skip_codesign_simulator_bundles (unsigned CI artifact) ==="
-          echo "NOTE: binary is for iOS Simulator. Install on a physical iPhone only after re-signing (e.g. AltStore)."
+          echo "=== release_arm64 (iphoneos) + disable_legacy_signing — CI artifact without Apple cert match ==="
           set -o pipefail
           # PIPESTATUS[0] is Make.py — tail must not mask a failed build (last pipe cmd would be 0).
           python3 build-system/Make/Make.py \
@@ -495,7 +494,7 @@ jobs:
             --configurationPath build-system/appstore-configuration.json \
             --codesigningInformationPath $RUNNER_TEMP/signing \
             --buildNumber=${{ github.run_number }} \
-            --configuration=release_sim_arm64 \
+            --configuration=release_arm64 \
             --outputBuildArtifactsPath $RUNNER_TEMP/artifacts \
             2>&1 | tee "$RUNNER_TEMP/build.log" | tail -100
           exit "${PIPESTATUS[0]}"
@@ -535,7 +534,7 @@ jobs:
 
           if [ -n "$IPA" ]; then
             echo "Found IPA: $IPA"
-            cp "$IPA" $RUNNER_TEMP/AorusGram-unsigned-sim.ipa
+            cp "$IPA" $RUNNER_TEMP/AorusGram-unsigned.ipa
           else
             # 3. Ищем .app — сначала в bazel-bin с симлинками, потом везде
             APP=$(find -L telegram-ios/bazel-bin -name "Telegram.app" -type d 2>/dev/null \
@@ -568,16 +567,16 @@ jobs:
             echo "Packaging $APP → IPA"
             mkdir -p $RUNNER_TEMP/Payload
             cp -r "$APP" $RUNNER_TEMP/Payload/AorusGram.app
-            cd $RUNNER_TEMP && zip -qr AorusGram-unsigned-sim.ipa Payload/
+            cd $RUNNER_TEMP && zip -qr AorusGram-unsigned.ipa Payload/
           fi
 
-          ls -lh $RUNNER_TEMP/AorusGram-unsigned-sim.ipa
+          ls -lh $RUNNER_TEMP/AorusGram-unsigned.ipa
 
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:
-          name: AorusGram-unsigned-sim-${{ github.run_number }}
-          path: ${{ runner.temp }}/AorusGram-unsigned-sim.ipa
+          name: AorusGram-unsigned-${{ github.run_number }}
+          path: ${{ runner.temp }}/AorusGram-unsigned.ipa
           retention-days: 14
 
       - name: Upload build log
