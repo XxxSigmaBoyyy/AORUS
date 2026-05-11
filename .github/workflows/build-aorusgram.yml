@@ -337,17 +337,22 @@ jobs:
 
       - name: Prepare build config
         working-directory: telegram-ios
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
         run: |
           echo "=== build-system contents ==="
           ls build-system/ || echo "(no build-system dir)"
           ls build-system/Make/ 2>/dev/null | head -20 || echo "(no Make dir)"
           echo "=== Writing AorusGram appstore-configuration.json (always overwrite) ==="
           python3 << 'CFEOF'
-          import json
+          import json, os
+          api_id = os.environ.get("TG_API_ID", "34110820")
+          api_hash = os.environ.get("TG_API_HASH", "a000c631534567d489462ac9c72b7c4d")
           config = {
               "bundle_id": "com.aorusgram",
-              "api_id": "10840",
-              "api_hash": "33c45224029d59cb3ad0c16134215aeb",
+              "api_id": api_id,
+              "api_hash": api_hash,
               "team_id": "R9Q5YYQM2M",
               "app_center_id": "0",
               "is_internal_build": "false",
