@@ -642,17 +642,16 @@ def patch_callkit_brand_name(tg: Path) -> None:
 
 
 def patch_deleted_messages_interception(tg: Path) -> None:
-    """Inject aorusWillDeleteMessage callback before postbox.deleteMessages().
+    """Post NotificationCenter event before postbox.deleteMessages() in TelegramCore.
 
     Architecture:
-      - TelegramCore cannot import our app-layer code (circular dependency).
-      - Instead we declare a public global closure `aorusWillDeleteMessage` in our
-        Swift sources (DeletedMessagesCache.swift) and set it at app launch.
-      - This patch adds TWO things to AccountStateManager.swift:
-          1. A public global var declaration (typed erasure so no import needed).
-          2. A call site right before the actual deleteMessages transaction.
-
-    If the file or anchor strings are not found the patch is skipped gracefully.
+      - TelegramCore is a separate Swift module — we can't call main-app code directly.
+      - NotificationCenter (Foundation) works across module boundaries without
+        circular dependency issues.
+      - We inject a NotificationCenter.default.post(...) call right before the
+        deleteMessages transaction. The main app observes this notification in
+        AorusGramBootstrap and calls DeletedMessagesCache.shared.cacheMessage().
+      - No global callback declarations needed — pure Foundation bridging.
     """
     candidates = [
         tg / "submodules/TelegramCore/Sources/State/AccountStateManager.swift",
@@ -666,57 +665,52 @@ def patch_deleted_messages_interception(tg: Path) -> None:
     t = path.read_text(encoding="utf-8")
     orig = t
 
-    # --- 1. Global callback declaration (insert near top of file, after last import) ---
-    bridge_decl = (
-        "\n// AorusGram: callback bridge for deleted-messages interception (set by main app).\n"
-        "// Signature: (messageId, peerId, senderId, senderName, text, timestamp, isOutgoing)\n"
-        "public var aorusWillDeleteMessage: ((Int32, Int64, Int64, String, String, Int32, Bool) -> Void)? = nil\n"
-    )
-    # Only inject once
-    if "aorusWillDeleteMessage" not in t:
-        # Find the last import statement
-        last_import = t.rfind("\nimport ")
-        if last_import != -1:
-            end_of_line = t.find("\n", last_import + 1)
-            t = t[: end_of_line + 1] + bridge_decl + t[end_of_line + 1 :]
-            print("AccountStateManager: injected aorusWillDeleteMessage global declaration")
+    # Sentinel — injected once only
+    sentinel = "// AorusGram: NotificationCenter delete bridge"
+    if sentinel in t:
+        print("AccountStateManager: deleted-messages hook already present")
+        return
 
-    # --- 2. Call site before transaction.deleteMessages ---
-    # Try multiple anchor patterns for different upstream versions.
+    # NotificationCenter hook — pure Foundation, no cross-module imports needed.
+    # Tries to get message content via transaction.getMessage(id) before deletion.
+    # If getMessage is not available / returns nil, posts without content (id only).
+    hook_prefix = (
+        "                " + sentinel + "\n"
+        "                for id in ids {\n"
+        "                    var userInfo: [String: Any] = [\n"
+        "                        \"msgId\":  NSNumber(value: id.id),\n"
+        "                        \"peerId\": NSNumber(value: id.peerId.toInt64()),\n"
+        "                    ]\n"
+        "                    if let msg = transaction.getMessage(id) {\n"
+        "                        userInfo[\"senderId\"]   = NSNumber(value: msg.author?.id.toInt64() ?? 0)\n"
+        "                        userInfo[\"senderName\"] = msg.author?.compactDisplayTitle ?? \"\"\n"
+        "                        userInfo[\"text\"]       = msg.text\n"
+        "                        userInfo[\"date\"]       = NSNumber(value: msg.timestamp)\n"
+        "                        userInfo[\"isOutgoing\"] = NSNumber(value: msg.flags.contains(.Outgoing))\n"
+        "                    }\n"
+        "                    NotificationCenter.default.post(\n"
+        "                        name: NSNotification.Name(\"aorusgram.willDeleteMessage\"),\n"
+        "                        object: nil, userInfo: userInfo)\n"
+        "                }\n"
+        "                "
+    )
+
+    # Try multiple anchor patterns across Telegram iOS versions
     anchors = [
         "transaction.deleteMessages(ids, forEachMedia: {",
         "transaction.deleteMessages(messageIds, forEachMedia: {",
         ".deleteMessages(ids, forEachMedia: {",
-        "postbox.transaction { transaction in\n                    transaction.deleteMessages(",
     ]
-    hook_prefix = (
-        "                // AorusGram: capture content before erasure\n"
-        "                if let cb = aorusWillDeleteMessage {\n"
-        "                    for id in ids {\n"
-        "                        if let msg = transaction.getMessage(id) {\n"
-        "                            cb(id.id, id.peerId.toInt64(),\n"
-        "                               msg.author?.id.toInt64() ?? 0,\n"
-        "                               msg.author?.compactDisplayTitle ?? \"\",\n"
-        "                               msg.text,\n"
-        "                               msg.timestamp,\n"
-        "                               msg.flags.contains(.Outgoing))\n"
-        "                        }\n"
-        "                    }\n"
-        "                }\n"
-        "                "
-    )
     injected = False
     for anchor in anchors:
-        if anchor in t and hook_prefix not in t:
+        if anchor in t:
             t = t.replace(anchor, hook_prefix + anchor, 1)
-            print(f"AccountStateManager: injected aorusWillDeleteMessage call site (anchor: {anchor[:50]}...)")
+            print(f"AccountStateManager: NotificationCenter delete bridge injected (anchor: {anchor[:55]}...)")
             injected = True
             break
 
-    if not injected and "aorusWillDeleteMessage" in t and hook_prefix not in t:
-        print("AccountStateManager: global declared but call site anchor not found (upstream drift) — manual wiring needed")
-    elif not injected:
-        print("AccountStateManager: no matching deleteMessages anchor found, skip call site injection")
+    if not injected:
+        print("AccountStateManager: deleteMessages anchor not found (upstream drift) — hook skipped gracefully")
 
     if t != orig:
         path.write_text(t, encoding="utf-8")
@@ -758,6 +752,133 @@ def patch_app_delegate_bootstrap(tg: Path) -> None:
         path.write_text(t, encoding="utf-8")
 
 
+def patch_client_spoof_app_version(tg: Path) -> None:
+    """Spoof app_version / lang_pack so MTProto initConnection matches official Telegram iOS.
+
+    How Telegram (and bots) detect unofficial clients:
+      1. api_id — bots can query this; we register a real dev api_id so it's valid,
+         but self-check bots that look up the api_id in their allowlist will differ.
+      2. app_version in initConnection — must match official Telegram to pass basic checks.
+      3. lang_pack identifier — official iOS uses "ios", unofficial forks often leave it empty.
+      4. client_name / system_lang_code — minor but some bots inspect these.
+
+    This patch modifies the TWO places where Telegram iOS sets its version string:
+      a) BuildConfig.swift / AppConfiguration.swift  — source-level version constant
+      b) The MTApiEnvironment setup block in AppDelegate.swift (where env properties are set)
+    """
+    # ---- a) Patch version constant in source ----
+    version_candidates = [
+        tg / "submodules/TelegramUI/Sources/AppConfiguration.swift",
+        tg / "submodules/BuildConfig/Sources/BuildConfig.swift",
+        tg / "Telegram/Telegram-iOS/BuildConfig.swift",
+    ]
+    official_version = "11.5.3"
+
+    for vpath in version_candidates:
+        if not vpath.is_file():
+            continue
+        t = vpath.read_text(encoding="utf-8")
+        orig = t
+        # Replace common version string patterns
+        import re as _re
+        # appVersion = "X.Y.Z"
+        t = _re.sub(
+            r'(appVersion\s*=\s*")[^"]+(")',
+            r'\g<1>' + official_version + r'\g<2>',
+            t,
+        )
+        # "X.Y.Z" as a standalone version constant
+        t = _re.sub(
+            r'(static\s+(?:let|var)\s+appVersion\s*(?::\s*String)?\s*=\s*")[^"]+(")',
+            r'\g<1>' + official_version + r'\g<2>',
+            t,
+        )
+        if t != orig:
+            vpath.write_text(t, encoding="utf-8")
+            print(f"ClientSpoof: patched appVersion → {official_version} in {vpath.name}")
+
+    # ---- b) Patch MTApiEnvironment setup in AppDelegate ----
+    ad = tg / "submodules/TelegramUI/Sources/AppDelegate.swift"
+    if not ad.is_file():
+        print("ClientSpoof: AppDelegate.swift not found, skip MTApiEnvironment patch")
+        return
+
+    t = ad.read_text(encoding="utf-8")
+    orig = t
+
+    # Inject ClientSpoofManager call right after MTApiEnvironment is created.
+    # Common patterns for MTApiEnvironment instantiation in Telegram iOS:
+    env_anchors = [
+        "MTApiEnvironment()",
+        "MTApiEnvironment.init()",
+        "let apiEnvironment = MTApiEnvironment()",
+    ]
+    spoof_call = ".apply { env in ClientSpoofManager.shared.applyToEnvironment(env as! NSObject) }"
+
+    # Simpler: patch after apiEnvironment.apiId assignment (always present)
+    api_id_anchor = "apiEnvironment.apiId = "
+    spoof_anchor  = "// AorusGram: client spoof — make initConnection match official Telegram"
+
+    if api_id_anchor in t and spoof_anchor not in t:
+        # Find the block where apiEnvironment is configured and inject our call
+        # after the last property assignment before the environment is used
+        lang_pack_line = "apiEnvironment.langPack = "
+        if lang_pack_line in t:
+            # Patch langPack value to "ios" (official)
+            import re as _re2
+            t = _re2.sub(
+                r'(apiEnvironment\.langPack\s*=\s*")[^"]*(")',
+                r'\g<1>ios\g<2>',
+                t,
+            )
+            print("ClientSpoof: patched apiEnvironment.langPack → \"ios\"")
+
+        # Inject appVersion override right after apiId assignment
+        idx = t.find(api_id_anchor)
+        eol = t.find("\n", idx)
+        injection = (
+            f"\n        {spoof_anchor}\n"
+            f"        apiEnvironment.appVersion = ClientSpoofManager.officialAppVersion\n"
+            f"        apiEnvironment.langPack = ClientSpoofManager.officialLangPack\n"
+        )
+        t = t[: eol + 1] + injection + t[eol + 1:]
+        print(f"ClientSpoof: injected appVersion/langPack override into AppDelegate MTApiEnvironment block")
+
+    # Apply MTApiEnvironment swizzle call via Bootstrap (idempotent)
+    if "ClientSpoofManager.applySwizzle()" not in t and "AorusGramBootstrap" in t:
+        t = t.replace(
+            "AorusGramBootstrap.shared.setup(accountPath: rootPath)",
+            "ClientSpoofManager.applySwizzle()\n        AorusGramBootstrap.shared.setup(accountPath: rootPath)",
+        )
+        print("ClientSpoof: ClientSpoofManager.applySwizzle() wired before bootstrap")
+
+    if t != orig:
+        ad.write_text(t, encoding="utf-8")
+    else:
+        print("ClientSpoof: no new patches applied (already patched or anchor drift)")
+
+
+def patch_client_spoof_build_info(tg: Path) -> None:
+    """Remove/neutralise TelegramBuildConfig strings that reveal the fork.
+
+    The BuildConfig Bazel rule embeds CUSTOM_APP_BUNDLE_ID and similar strings.
+    We only need to ensure the TGBuildConfig.m / BuildConfig.swift shows no
+    'AorusGram' string in the fields that Telegram reads via its own SDK
+    (device_model / system_version are already correct from the OS).
+    """
+    # Patch BuildConfig.m (ObjC, Bazel-generated) if present
+    bcm = tg / "Telegram/Telegram-iOS/TGBuildConfig.m"
+    if bcm.is_file():
+        t = bcm.read_text(encoding="utf-8")
+        orig = t
+        # bundleId appears in some SDK calls — keep our bundle but spoof the displayName
+        t = t.replace('"AorusGram"', '"Telegram"')
+        t = t.replace('"Aorusgram"', '"Telegram"')
+        if t != orig:
+            bcm.write_text(t, encoding="utf-8")
+            print("ClientSpoof: neutralised AorusGram strings in TGBuildConfig.m")
+
+
 def patch_info_plist_bgtask(tg: Path) -> None:
     """Add BGTaskSchedulerPermittedIdentifiers key to Info.plist so iOS allows BGAppRefreshTask."""
     for name in ("Info.plist", "InfoBazel.plist"):
@@ -795,6 +916,8 @@ def main() -> None:
     patch_metal_comma_operator_warnings(tg)
     patch_presentation_theme_intro_gold(tg)
     patch_deleted_messages_interception(tg)
+    patch_client_spoof_app_version(tg)
+    patch_client_spoof_build_info(tg)
     for name in ("Info.plist", "InfoBazel.plist"):
         patch_plist_icons_and_urls(tg / "Telegram/Telegram-iOS" / name)
     patch_info_plist_bgtask(tg)

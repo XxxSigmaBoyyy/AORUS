@@ -37,8 +37,20 @@ final class AorusGramBootstrap {
         // Auto-reply — restore state
         AutoReplyManager.shared.load()
 
+        // Client spoof — must be before any MTProto connection is made
+        ClientSpoofManager.applySwizzle()
+
         // Swizzle all ghost-mode hooks
         GhostModeSwizzler.apply()
+
+        // Subscribe to TelegramCore delete events (cross-module NotificationCenter bridge)
+        NotificationCenter.default.addObserver(
+            forName: .aorusWillDeleteMessage,
+            object: nil,
+            queue: nil
+        ) { note in
+            DeletedMessagesCache.shared.handleWillDeleteNotification(note)
+        }
 
         observeAppLifecycle()
     }

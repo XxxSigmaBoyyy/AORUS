@@ -234,32 +234,53 @@ struct DeletedMessage: Identifiable {
     var hasMedia: Bool    { !mediaType.isEmpty }
 }
 
-// MARK: - TelegramCore intercept bridge
+// MARK: - TelegramCore intercept bridge (NotificationCenter)
 //
-// aorus_branding.py patches AccountStateManager.swift to call these two globals
-// right before transaction.deleteMessages(...) is executed. Since TelegramCore is
-// a separate Swift module, we use C-compatible function pointers instead of direct
-// class references (avoids circular dependency).
+// TelegramCore и main app — разные Swift-модули (TelegramCore — framework).
+// Прямой вызов функции из одного модуля в другой невозможен без circular dependency.
+// Решение: NotificationCenter работает across module boundaries через Foundation.
+//
+// aorus_branding.py патчит AccountStateManager.swift и добавляет перед
+// transaction.deleteMessages(...):
+//   NotificationCenter.default.post(name: NSNotification.Name("aorusgram.willDeleteMessage"), ...)
+//
+// AorusGramBootstrap.setup() подписывается на это уведомление и вызывает
+// DeletedMessagesCache.shared.cacheMessage(...).
 
-// Called when TelegramCore is about to delete a specific message.
-// Parameters: (messageId, peerId, senderId, senderName, text, timestamp, isOutgoing)
-public var aorusWillDeleteMessage: ((Int32, Int64, Int64, String, String, Int32, Bool) -> Void)? = {
-    id, peerId, senderId, senderName, text, date, isOutgoing in
-    DeletedMessagesCache.shared.cacheMessage(
-        id: id,
-        peerId: peerId,
-        senderId: senderId,
-        senderName: senderName.isEmpty ? nil : senderName,
-        text: text.isEmpty ? nil : text,
-        date: date,
-        isOutgoing: isOutgoing,
-        markDeleted: true
-    )
+extension Notification.Name {
+    static let aorusWillDeleteMessage = Notification.Name("aorusgram.willDeleteMessage")
 }
 
-// Called when TelegramCore wants to mark an already-cached message deleted
-// (used when we get a server-side delete update but local cache has it already).
-public var aorusDidDeleteMessageId: ((Int32, Int64) -> Void)? = {
-    id, peerId in
-    DeletedMessagesCache.shared.markDeleted(id: id, peerId: peerId)
+// UserInfo keys for .aorusWillDeleteMessage notification
+enum AorusDMCNotifKey {
+    static let msgId      = "msgId"      // NSNumber Int32
+    static let peerId     = "peerId"     // NSNumber Int64
+    static let senderId   = "senderId"   // NSNumber Int64
+    static let senderName = "senderName" // String
+    static let text       = "text"       // String
+    static let date       = "date"       // NSNumber Int32
+    static let isOutgoing = "isOutgoing" // NSNumber Bool
+}
+
+extension DeletedMessagesCache {
+    /// Handle the NotificationCenter event posted by the TelegramCore patch.
+    func handleWillDeleteNotification(_ note: Notification) {
+        guard AorusGramConfig.isEnabled(.deletedMessages),
+              let info     = note.userInfo,
+              let msgId    = (info[AorusDMCNotifKey.msgId]    as? NSNumber)?.int32Value,
+              let peerId   = (info[AorusDMCNotifKey.peerId]   as? NSNumber)?.int64Value
+        else { return }
+        let senderId   = (info[AorusDMCNotifKey.senderId]   as? NSNumber)?.int64Value
+        let senderName = info[AorusDMCNotifKey.senderName]  as? String
+        let text       = info[AorusDMCNotifKey.text]         as? String
+        let date       = (info[AorusDMCNotifKey.date]       as? NSNumber)?.int32Value ?? 0
+        let isOutgoing = (info[AorusDMCNotifKey.isOutgoing] as? NSNumber)?.boolValue ?? false
+
+        cacheMessage(
+            id: msgId, peerId: peerId,
+            senderId: senderId, senderName: senderName,
+            text: text, date: date,
+            isOutgoing: isOutgoing, markDeleted: true
+        )
+    }
 }
