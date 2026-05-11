@@ -6,7 +6,8 @@ swift_library(
     srcs = glob([
         "Sources/**/*.swift",
     ]),
-    copts = [],
+    # Telegram’s deployment target is below iOS 14; SwiftUI here uses .toolbar / ToolbarItem (14+).
+    copts = ["-Xfrontend", "-disable-availability-checking"],
     deps = [
         "//submodules/Display:Display",
     ],
