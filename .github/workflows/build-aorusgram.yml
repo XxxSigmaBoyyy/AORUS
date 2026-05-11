@@ -130,9 +130,10 @@ jobs:
                   ),
               ]
               for old_b, new_b in build_brand:
-                  if old_b in t:
-                      t = t.replace(old_b, new_b, 1)
-                      print('BUILD branding: patched', old_b.split()[0:2])
+                  n = t.count(old_b)
+                  if n:
+                      t = t.replace(old_b, new_b)
+                      print(f'BUILD branding: replaced {n}x', old_b.split()[0:2])
                   else:
                       print('WARNING: BUILD branding pattern missing:', old_b[:70].replace('\n', ' '))
               open(build_path, 'w').write(t)
