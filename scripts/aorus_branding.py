@@ -410,7 +410,15 @@ def patch_native_window_host_scene(tg: Path) -> None:
     t = path.read_text(encoding="utf-8")
     orig = t
 
+    # Anchor must include init(frame:) — the short tail-only marker also appears after
+    # init(windowScene:), so a second branding run (or cached patched tree) would duplicate the override.
     init_marker = (
+        "    override init(frame: CGRect) {\n"
+        "        super.init(frame: frame)\n"
+        "        \n"
+        "        if let gestureRecognizers = self.gestureRecognizers {\n"
+        "            for recognizer in gestureRecognizers {\n"
+        "                recognizer.delaysTouchesBegan = false\n"
         "            }\n"
         "        }\n"
         "    }\n"
@@ -420,6 +428,12 @@ def patch_native_window_host_scene(tg: Path) -> None:
         "    }\n"
     )
     init_new = (
+        "    override init(frame: CGRect) {\n"
+        "        super.init(frame: frame)\n"
+        "        \n"
+        "        if let gestureRecognizers = self.gestureRecognizers {\n"
+        "            for recognizer in gestureRecognizers {\n"
+        "                recognizer.delaysTouchesBegan = false\n"
         "            }\n"
         "        }\n"
         "    }\n"
