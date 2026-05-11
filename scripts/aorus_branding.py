@@ -726,13 +726,18 @@ def patch_app_delegate_import_aorusgram(tg: Path) -> None:
         return
     if "AorusGramBootstrap" not in t and "ClientSpoofManager" not in t:
         return
-    for anchor in ("import UIKit\n", "import SwiftUI\n", "import Foundation\n"):
-        if anchor in t:
-            t = t.replace(anchor, anchor + "import AorusGram\n", 1)
+    # Do not rely on exact "\n" after UIKit — runners may use CRLF; insert after first import UIKit line.
+    needle = "import UIKit"
+    pos = t.find(needle)
+    if pos != -1:
+        line_end = t.find("\n", pos)
+        if line_end != -1:
+            insert_at = line_end + 1
+            t = t[:insert_at] + "import AorusGram\n" + t[insert_at:]
             path.write_text(t, encoding="utf-8")
-            print("AppDelegate: added import AorusGram")
+            print("AppDelegate: added import AorusGram after import UIKit")
             return
-    print("WARNING: AppDelegate: could not insert import AorusGram (no standard import anchor)")
+    print("WARNING: AppDelegate: could not insert import AorusGram (import UIKit not found)")
 
 
 def patch_app_delegate_bootstrap(tg: Path) -> None:
