@@ -400,32 +400,53 @@ def patch_app_delegate_launch_fixes(tg: Path) -> None:
 
 
 def patch_app_delegate_background_url_session_safe(tg: Path) -> None:
-    """Only set URLSessionConfiguration.sharedContainerIdentifier when App Group exists.
+    """Fall back to default URLSession when App Group entitlement is absent (sideload).
 
-    Sideload / resign often omits App Group entitlement; assigning a non-entitled group id
-    breaks background URLSession behaviour and can leave the app stuck \"updating\" with no data.
+    Background URLSessions REQUIRE a shared container — without App Group entitlement the
+    session has nowhere to store data, breaking MTProto sync entirely: chat list stays on
+    'Updating...' forever and login shows 'no internet connection'.
+    Fix: detect entitlement at runtime; use .default config when App Group is unavailable.
     """
     path = tg / "submodules/TelegramUI/Sources/AppDelegate.swift"
     if not path.is_file():
         return
     t = path.read_text(encoding="utf-8")
-    old = (
+
+    # Pattern 1: original upstream (no guard at all)
+    old1 = (
         "        let configuration = URLSessionConfiguration.background(withIdentifier: identifier)\n"
         "        configuration.sharedContainerIdentifier = appGroupName\n"
         "        configuration.isDiscretionary = false\n"
     )
-    new = (
+    # Pattern 2: previous partial fix (guard exists but still uses .background)
+    old2 = (
         "        let configuration = URLSessionConfiguration.background(withIdentifier: identifier)\n"
         "        if FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupName) != nil {\n"
         "            configuration.sharedContainerIdentifier = appGroupName\n"
         "        }\n"
         "        configuration.isDiscretionary = false\n"
     )
-    if old in t:
-        path.write_text(t.replace(old, new, 1), encoding="utf-8")
-        print("AppDelegate: background URLSession only uses App Group when entitled")
-    elif "containerURL(forSecurityApplicationGroupIdentifier: appGroupName) != nil" in t:
-        print("AppDelegate: URLSession App Group guard already present")
+    # Correct fix: use .default when no App Group (sideload/AltStore/ad-hoc resign)
+    new = (
+        "        let hasAppGroup = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupName) != nil\n"
+        "        let configuration: URLSessionConfiguration\n"
+        "        if hasAppGroup {\n"
+        "            configuration = URLSessionConfiguration.background(withIdentifier: identifier)\n"
+        "            configuration.sharedContainerIdentifier = appGroupName\n"
+        "        } else {\n"
+        "            configuration = URLSessionConfiguration.default\n"
+        "        }\n"
+        "        configuration.isDiscretionary = false\n"
+    )
+
+    if old1 in t:
+        path.write_text(t.replace(old1, new, 1), encoding="utf-8")
+        print("AppDelegate: URLSession fallback to .default when no App Group (from upstream)")
+    elif old2 in t:
+        path.write_text(t.replace(old2, new, 1), encoding="utf-8")
+        print("AppDelegate: URLSession fallback to .default when no App Group (upgraded partial fix)")
+    elif "hasAppGroup" in t:
+        print("AppDelegate: URLSession full fallback fix already present")
     else:
         print("WARNING: AppDelegate URLSession block not found (upstream drift)")
 
