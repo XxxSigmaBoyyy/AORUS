@@ -641,6 +641,143 @@ def patch_callkit_brand_name(tg: Path) -> None:
         print("CallKit: localizedName Aorusgram")
 
 
+def patch_deleted_messages_interception(tg: Path) -> None:
+    """Inject aorusWillDeleteMessage callback before postbox.deleteMessages().
+
+    Architecture:
+      - TelegramCore cannot import our app-layer code (circular dependency).
+      - Instead we declare a public global closure `aorusWillDeleteMessage` in our
+        Swift sources (DeletedMessagesCache.swift) and set it at app launch.
+      - This patch adds TWO things to AccountStateManager.swift:
+          1. A public global var declaration (typed erasure so no import needed).
+          2. A call site right before the actual deleteMessages transaction.
+
+    If the file or anchor strings are not found the patch is skipped gracefully.
+    """
+    candidates = [
+        tg / "submodules/TelegramCore/Sources/State/AccountStateManager.swift",
+        tg / "submodules/TelegramCore/Sources/AccountStateManager.swift",
+    ]
+    path: Path | None = next((p for p in candidates if p.is_file()), None)
+    if path is None:
+        print("AccountStateManager.swift not found, skip deleted-messages hook")
+        return
+
+    t = path.read_text(encoding="utf-8")
+    orig = t
+
+    # --- 1. Global callback declaration (insert near top of file, after last import) ---
+    bridge_decl = (
+        "\n// AorusGram: callback bridge for deleted-messages interception (set by main app).\n"
+        "// Signature: (messageId, peerId, senderId, senderName, text, timestamp, isOutgoing)\n"
+        "public var aorusWillDeleteMessage: ((Int32, Int64, Int64, String, String, Int32, Bool) -> Void)? = nil\n"
+    )
+    # Only inject once
+    if "aorusWillDeleteMessage" not in t:
+        # Find the last import statement
+        last_import = t.rfind("\nimport ")
+        if last_import != -1:
+            end_of_line = t.find("\n", last_import + 1)
+            t = t[: end_of_line + 1] + bridge_decl + t[end_of_line + 1 :]
+            print("AccountStateManager: injected aorusWillDeleteMessage global declaration")
+
+    # --- 2. Call site before transaction.deleteMessages ---
+    # Try multiple anchor patterns for different upstream versions.
+    anchors = [
+        "transaction.deleteMessages(ids, forEachMedia: {",
+        "transaction.deleteMessages(messageIds, forEachMedia: {",
+        ".deleteMessages(ids, forEachMedia: {",
+        "postbox.transaction { transaction in\n                    transaction.deleteMessages(",
+    ]
+    hook_prefix = (
+        "                // AorusGram: capture content before erasure\n"
+        "                if let cb = aorusWillDeleteMessage {\n"
+        "                    for id in ids {\n"
+        "                        if let msg = transaction.getMessage(id) {\n"
+        "                            cb(id.id, id.peerId.toInt64(),\n"
+        "                               msg.author?.id.toInt64() ?? 0,\n"
+        "                               msg.author?.compactDisplayTitle ?? \"\",\n"
+        "                               msg.text,\n"
+        "                               msg.timestamp,\n"
+        "                               msg.flags.contains(.Outgoing))\n"
+        "                        }\n"
+        "                    }\n"
+        "                }\n"
+        "                "
+    )
+    injected = False
+    for anchor in anchors:
+        if anchor in t and hook_prefix not in t:
+            t = t.replace(anchor, hook_prefix + anchor, 1)
+            print(f"AccountStateManager: injected aorusWillDeleteMessage call site (anchor: {anchor[:50]}...)")
+            injected = True
+            break
+
+    if not injected and "aorusWillDeleteMessage" in t and hook_prefix not in t:
+        print("AccountStateManager: global declared but call site anchor not found (upstream drift) — manual wiring needed")
+    elif not injected:
+        print("AccountStateManager: no matching deleteMessages anchor found, skip call site injection")
+
+    if t != orig:
+        path.write_text(t, encoding="utf-8")
+
+
+def patch_app_delegate_bootstrap(tg: Path) -> None:
+    """Call AorusGramBootstrap.shared.setup() after the account stack is ready.
+
+    The injection point is just after the DeviceSpecificEncryptionParameters call,
+    which is well after the account group URL is resolved and before any UI is shown.
+    Also registers the BGTask identifier in the bootstrap.
+    """
+    path = tg / "submodules/TelegramUI/Sources/AppDelegate.swift"
+    if not path.is_file():
+        print("AppDelegate.swift not found, skip bootstrap patch")
+        return
+
+    t = path.read_text(encoding="utf-8")
+    orig = t
+
+    if "AorusGramBootstrap" in t:
+        print("AppDelegate: AorusGram bootstrap already injected")
+        return
+
+    # Anchor: the call that happens once the encryption params are ready — this is
+    # a stable, version-robust marker present in all recent Telegram iOS builds.
+    anchor = "let deviceSpecificEncryptionParameters = BuildConfig.deviceSpecificEncryptionParameters(rootPath, baseAppBundleId: baseAppBundleId)"
+    bootstrap_call = (
+        "\n        // AorusGram: initialise all custom features\n"
+        "        AorusGramBootstrap.shared.setup(accountPath: rootPath)\n"
+    )
+    if anchor in t:
+        t = t.replace(anchor, anchor + bootstrap_call, 1)
+        print("AppDelegate: AorusGramBootstrap.shared.setup() injected after encryption params")
+    else:
+        print("WARNING: AppDelegate encryption params anchor not found — bootstrap not injected")
+
+    if t != orig:
+        path.write_text(t, encoding="utf-8")
+
+
+def patch_info_plist_bgtask(tg: Path) -> None:
+    """Add BGTaskSchedulerPermittedIdentifiers key to Info.plist so iOS allows BGAppRefreshTask."""
+    for name in ("Info.plist", "InfoBazel.plist"):
+        path = tg / "Telegram/Telegram-iOS" / name
+        if not path.is_file():
+            continue
+        with path.open("rb") as f:
+            pl = plistlib.load(f)
+        key = "BGTaskSchedulerPermittedIdentifiers"
+        task_id = "com.aorusgram.dmc.sync"
+        existing = pl.get(key, [])
+        if task_id not in existing:
+            pl[key] = existing + [task_id]
+            with path.open("wb") as f:
+                plistlib.dump(pl, f, fmt=plistlib.FMT_XML)
+            print(f"{name}: added BGTaskSchedulerPermittedIdentifiers = [{task_id}]")
+        else:
+            print(f"{name}: BGTaskSchedulerPermittedIdentifiers already present")
+
+
 def main() -> None:
     tg = Path(sys.argv[1]).resolve()
     if not tg.is_dir():
@@ -650,14 +787,17 @@ def main() -> None:
     patch_xcconfig(tg)
     patch_app_delegate_launch_fixes(tg)
     patch_app_delegate_background_url_session_safe(tg)
+    patch_app_delegate_bootstrap(tg)
     patch_native_window_host_scene(tg)
     patch_authorization_network_flood_wait(tg)
     patch_authorization_login_title_gold(tg)
     patch_callkit_brand_name(tg)
     patch_metal_comma_operator_warnings(tg)
     patch_presentation_theme_intro_gold(tg)
+    patch_deleted_messages_interception(tg)
     for name in ("Info.plist", "InfoBazel.plist"):
         patch_plist_icons_and_urls(tg / "Telegram/Telegram-iOS" / name)
+    patch_info_plist_bgtask(tg)
     patch_info_plist_strings_only(tg)
     patch_localizable_strings_safe(tg)
 

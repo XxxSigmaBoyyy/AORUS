@@ -56,8 +56,13 @@ def main() -> None:
         err.append('AppDelegate: missing setAlternateIconName("Blue") for branded home-screen icon')
     if "self.nativeWindow = window\n        self.window?.makeKeyAndVisible()" not in t:
         err.append("AppDelegate: missing early makeKeyAndVisible after window wiring")
-    if "if FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupName) != nil" not in t:
-        err.append("AppDelegate: missing guarded sharedContainerIdentifier for background URLSession")
+    # Accept either the legacy guard pattern or the improved hasAppGroup pattern
+    has_url_guard = (
+        "if FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupName) != nil" in t
+        or "hasAppGroup" in t
+    )
+    if not has_url_guard:
+        err.append("AppDelegate: missing URLSession App Group guard (hasAppGroup or containerURL check)")
 
     build_path = tg / "Telegram" / "BUILD"
     if build_path.is_file():
@@ -78,6 +83,17 @@ def main() -> None:
             err.append("NativeWindowHostView: missing init(windowScene:) (scene-attached window)")
         if "windowScenes.first(where: { $0.activationState == .foregroundActive })" not in nt:
             err.append("NativeWindowHostView: missing UIWindowScene selection in nativeWindowHostView()")
+
+    # AorusGramBootstrap injection
+    if "AorusGramBootstrap" not in t:
+        err.append("AppDelegate: missing AorusGramBootstrap.shared.setup() call (feature initialisation)")
+
+    # BGTask identifier in plist
+    bgtask_key = "BGTaskSchedulerPermittedIdentifiers"
+    bgtask_val = "com.aorusgram.dmc.sync"
+    bgtask_ok = bgtask_key in pl and bgtask_val in pl.get(bgtask_key, [])
+    if not bgtask_ok:
+        err.append(f"Info.plist: missing {bgtask_key} = [{bgtask_val}] (required for deleted-messages BGTask)")
 
     xc = (tg / "Telegram" / "Telegram-iOS" / "Config-AppStoreLLC.xcconfig").read_text(encoding="utf-8")
     if "APP_NAME=Aorusgram" not in xc:
