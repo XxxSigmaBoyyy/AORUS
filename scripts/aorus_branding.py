@@ -559,6 +559,23 @@ def patch_authorization_login_title_gold(tg: Path) -> None:
         path.write_text(t, encoding="utf-8")
 
 
+def patch_metal_comma_operator_warnings(tg: Path) -> None:
+    """Metal: `(a.r, b.r)` is parsed as comma-expression, not half2(); fix -Wunused-value."""
+    needle = "half2 inUV = (inTextureU.read(uvPosition).r, inTextureV.read(uvPosition).r);"
+    repl = "half2 inUV = half2(inTextureU.read(uvPosition).r, inTextureV.read(uvPosition).r);"
+    paths = [
+        tg / "submodules/TelegramUI/Components/CameraScreen/MetalResources/cameraScreen.metal",
+        tg / "submodules/TelegramUI/Components/Calls/CallScreen/Metal/CallScreenShaders.metal",
+    ]
+    for path in paths:
+        if not path.is_file():
+            continue
+        t = path.read_text(encoding="utf-8")
+        if needle in t:
+            path.write_text(t.replace(needle, repl), encoding="utf-8")
+            print(f"Metal: fixed half2 comma init in {path.name}")
+
+
 def patch_callkit_brand_name(tg: Path) -> None:
     path = tg / "submodules/TelegramCallsUI/Sources/CallKitIntegration.swift"
     if not path.is_file():
@@ -584,6 +601,7 @@ def main() -> None:
     patch_authorization_network_flood_wait(tg)
     patch_authorization_login_title_gold(tg)
     patch_callkit_brand_name(tg)
+    patch_metal_comma_operator_warnings(tg)
     patch_presentation_theme_intro_gold(tg)
     for name in ("Info.plist", "InfoBazel.plist"):
         patch_plist_icons_and_urls(tg / "Telegram/Telegram-iOS" / name)

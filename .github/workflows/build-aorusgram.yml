@@ -15,6 +15,9 @@ permissions:
 jobs:
   build:
     runs-on: macos-15
+    env:
+      # Quiets GitHub deprecation warnings for actions/cache, checkout, upload-artifact on Node 20.
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -389,23 +392,21 @@ jobs:
           #    `bazel build` sees them. (A second replace on invoke_build() was fragile: upstream
           #    line numbers / duplicate matches could skip appending — CI then omitted
           #    disable_legacy_signing while still adding disableExtensions.)
-          CA_MARKER = (
-              "        self.common_args = [\n"
-              "            # https://docs.bazel.build/versions/master/command-line-reference.html\n"
-          )
-          CA_INJECT = (
-              "        self.common_args = [\n"
+          # Upstream Make.py gained extra comments after common_args = [ — match only the opener.
+          ca_opener = "        self.common_args = [\n"
+          ca_flags = (
               "            # CI: unsigned iphoneos artifact (rules_apple disable_legacy_signing).\n"
               "            '--features=disable_legacy_signing',\n"
               "            '--//Telegram:disableExtensions',\n"
               "            '--//Telegram:disableProvisioningProfiles',\n"
-              "            # https://docs.bazel.build/versions/master/command-line-reference.html\n"
           )
-          if CA_MARKER in t:
-              t = t.replace(CA_MARKER, CA_INJECT, 1)
+          if "disable_legacy_signing" in t and "'--//Telegram:disableExtensions'" in t:
+              print('Make.py: CI signing flags already present')
+          elif ca_opener in t:
+              t = t.replace(ca_opener, ca_opener + ca_flags, 1)
               print('Patched: common_args CI signing flags OK')
           else:
-              print('WARNING: common_args marker not found — disable_legacy_signing not injected')
+              print('WARNING: common_args opener not found — disable_legacy_signing not injected')
 
           # 3. Skip aps_environment None check (our fake profiles have it)
           t = t.replace('if codesigning_data.aps_environment is None:', 'if False and codesigning_data.aps_environment is None:', 1)
