@@ -291,6 +291,27 @@ jobs:
           TG=telegram-ios
           PEER=$TG/submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen
 
+          # 0. AorusGram core (ClientSpoofManager, AorusGramBootstrap, etc.) — must link into TelegramUI
+          mkdir -p $TG/submodules/AorusGram
+          rm -rf $TG/submodules/AorusGram/Sources
+          cp -a aorusgram/AorusGram/Sources $TG/submodules/AorusGram/
+          cp $PATCHES/submodules/AorusGram/BUILD $TG/submodules/AorusGram/
+          python3 << 'PY'
+          from pathlib import Path
+          p = Path("telegram-ios/submodules/TelegramUI/BUILD")
+          t = p.read_text()
+          dep = '        "//submodules/AorusGram:AorusGram",\n'
+          if "//submodules/AorusGram:AorusGram" in t:
+              print("TelegramUI BUILD: AorusGram dep already present")
+          else:
+              needle = '        "//submodules/TelegramUIPreferences:TelegramUIPreferences",\n'
+              if needle not in t:
+                  raise SystemExit("TelegramUI BUILD: needle for AorusGram insert not found")
+              t = t.replace(needle, needle + dep, 1)
+              p.write_text(t)
+              print("TelegramUI BUILD: added //submodules/AorusGram:AorusGram")
+          PY
+
           # 1. Copy AorusGramUI module (all new code, no conflicts)
           mkdir -p $TG/submodules/AorusGramUI/Sources
           cp -r $PATCHES/submodules/AorusGramUI/. $TG/submodules/AorusGramUI/

@@ -716,6 +716,25 @@ def patch_deleted_messages_interception(tg: Path) -> None:
         path.write_text(t, encoding="utf-8")
 
 
+def patch_app_delegate_import_aorusgram(tg: Path) -> None:
+    """TelegramUI and AorusGram are separate Swift modules — AppDelegate must import AorusGram."""
+    path = tg / "submodules/TelegramUI/Sources/AppDelegate.swift"
+    if not path.is_file():
+        return
+    t = path.read_text(encoding="utf-8")
+    if "import AorusGram" in t:
+        return
+    if "AorusGramBootstrap" not in t and "ClientSpoofManager" not in t:
+        return
+    for anchor in ("import UIKit\n", "import SwiftUI\n", "import Foundation\n"):
+        if anchor in t:
+            t = t.replace(anchor, anchor + "import AorusGram\n", 1)
+            path.write_text(t, encoding="utf-8")
+            print("AppDelegate: added import AorusGram")
+            return
+    print("WARNING: AppDelegate: could not insert import AorusGram (no standard import anchor)")
+
+
 def patch_app_delegate_bootstrap(tg: Path) -> None:
     """Call AorusGramBootstrap.shared.setup() after the account stack is ready.
 
@@ -917,6 +936,7 @@ def main() -> None:
     patch_presentation_theme_intro_gold(tg)
     patch_deleted_messages_interception(tg)
     patch_client_spoof_app_version(tg)
+    patch_app_delegate_import_aorusgram(tg)
     patch_client_spoof_build_info(tg)
     for name in ("Info.plist", "InfoBazel.plist"):
         patch_plist_icons_and_urls(tg / "Telegram/Telegram-iOS" / name)
