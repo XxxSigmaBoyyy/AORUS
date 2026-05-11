@@ -62,6 +62,7 @@ final class AorusCodeManager {
         case invalidCode
         case expired
         case alreadyActivated
+        case deviceMismatch
     }
 
     func activate(code rawCode: String) -> ActivationResult {

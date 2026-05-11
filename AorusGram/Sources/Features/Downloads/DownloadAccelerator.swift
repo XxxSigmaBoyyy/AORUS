@@ -116,14 +116,15 @@ final class DownloadTask {
     }
 
     func start() {
-        let chunks = stride(from: Int64(0), to: totalSize, by: chunkSize).map { offset in
-            min(chunkSize, totalSize - offset)
-        }
-        for (index, chunkLen) in chunks.enumerated() {
-            let offset = Int64(index) * chunkSize
+        var offset: Int64 = 0
+        while offset < totalSize {
+            let chunkLen = min(chunkSize, totalSize - offset)
+            let opOffset = offset
+            let opLen = chunkLen
             operationQueue.addOperation { [weak self] in
-                self?.downloadChunk(offset: offset, length: chunkLen)
+                self?.downloadChunk(offset: opOffset, length: opLen)
             }
+            offset += chunkSize
         }
     }
 

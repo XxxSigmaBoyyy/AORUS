@@ -101,7 +101,7 @@ final class SiriShortcutsManager {
         activity.suggestedInvocationPhrase = type.suggestedPhrase
         activity.isEligibleForPrediction   = true
 
-        guard let shortcut = INShortcut(userActivity: activity) else { return nil }
+        let shortcut = INShortcut(userActivity: activity)
         let vc = INUIAddVoiceShortcutViewController(shortcut: shortcut)
         return vc
     }
