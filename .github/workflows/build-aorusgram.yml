@@ -5,8 +5,11 @@ on:
     branches: [ main, "claude/**", "cursor/**" ]
   workflow_dispatch:
 
+# Same ref + same event: newest run wins (saves CI on rapid pushes).
+# Different events (e.g. push vs workflow_dispatch) must NOT cancel each other:
+# a manual re-run was aborting long Bazel builds mid-analysis with "The operation was canceled".
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 permissions:
