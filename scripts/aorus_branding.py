@@ -399,6 +399,37 @@ def patch_app_delegate_launch_fixes(tg: Path) -> None:
         print("AppDelegate: no launch patches applied (already patched or upstream drift)")
 
 
+def patch_app_delegate_background_url_session_safe(tg: Path) -> None:
+    """Only set URLSessionConfiguration.sharedContainerIdentifier when App Group exists.
+
+    Sideload / resign often omits App Group entitlement; assigning a non-entitled group id
+    breaks background URLSession behaviour and can leave the app stuck \"updating\" with no data.
+    """
+    path = tg / "submodules/TelegramUI/Sources/AppDelegate.swift"
+    if not path.is_file():
+        return
+    t = path.read_text(encoding="utf-8")
+    old = (
+        "        let configuration = URLSessionConfiguration.background(withIdentifier: identifier)\n"
+        "        configuration.sharedContainerIdentifier = appGroupName\n"
+        "        configuration.isDiscretionary = false\n"
+    )
+    new = (
+        "        let configuration = URLSessionConfiguration.background(withIdentifier: identifier)\n"
+        "        if FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupName) != nil {\n"
+        "            configuration.sharedContainerIdentifier = appGroupName\n"
+        "        }\n"
+        "        configuration.isDiscretionary = false\n"
+    )
+    if old in t:
+        path.write_text(t.replace(old, new, 1), encoding="utf-8")
+        print("AppDelegate: background URLSession only uses App Group when entitled")
+    elif "containerURL(forSecurityApplicationGroupIdentifier: appGroupName) != nil" in t:
+        print("AppDelegate: URLSession App Group guard already present")
+    else:
+        print("WARNING: AppDelegate URLSession block not found (upstream drift)")
+
+
 def patch_native_window_host_scene(tg: Path) -> None:
     """Prefer UIWindow(windowScene:) on iOS 13+ when a scene exists — avoids a known
     class of launch black screens when the window is not attached to a UIWindowScene
@@ -597,6 +628,7 @@ def main() -> None:
     patch_launch_screen(tg)
     patch_xcconfig(tg)
     patch_app_delegate_launch_fixes(tg)
+    patch_app_delegate_background_url_session_safe(tg)
     patch_native_window_host_scene(tg)
     patch_authorization_network_flood_wait(tg)
     patch_authorization_login_title_gold(tg)

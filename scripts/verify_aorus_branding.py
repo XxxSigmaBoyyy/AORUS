@@ -56,6 +56,8 @@ def main() -> None:
         err.append('AppDelegate: missing setAlternateIconName("Blue") for branded home-screen icon')
     if "self.nativeWindow = window\n        self.window?.makeKeyAndVisible()" not in t:
         err.append("AppDelegate: missing early makeKeyAndVisible after window wiring")
+    if "if FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupName) != nil" not in t:
+        err.append("AppDelegate: missing guarded sharedContainerIdentifier for background URLSession")
 
     build_path = tg / "Telegram" / "BUILD"
     if build_path.is_file():
