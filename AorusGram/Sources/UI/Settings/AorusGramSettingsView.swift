@@ -449,7 +449,7 @@ struct AorusGramSettingsView: View {
     @ViewBuilder
     private func settingsSection<Content: View>(
         title: String, icon: String, color: Color,
-        @ViewBuilder content: () -> Content
+        @ViewBuilder content: @escaping () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Label(title, systemImage: icon)
