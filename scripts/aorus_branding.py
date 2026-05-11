@@ -324,6 +324,21 @@ def patch_app_delegate_launch_fixes(tg: Path) -> None:
     elif err2_orig in t:
         t = t.replace(err2_orig, app_group_resolved, 1)
         print("AppDelegate: App Group fallback (replaces Error 2 guard, AltStore-safe)")
+    elif "AorusgramGroupFallback" not in t:
+        # Upstream whitespace / extra lines drift — still match the fatal guard by structure.
+        err2_rx = re.compile(
+            r"^[ \t]*guard let appGroupUrl = maybeAppGroupUrl else \{[ \t]*\n"
+            r"(?:^[ \t]*.*\n)*?"
+            r"^[ \t]*return true[ \t]*\n"
+            r"^[ \t]*\}[ \t]*\n",
+            re.MULTILINE,
+        )
+        m = err2_rx.search(t)
+        if m and "Error 2" in m.group(0):
+            t = err2_rx.sub(app_group_resolved, t, count=1)
+            print("AppDelegate: App Group fallback via regex (Error 2 guard removed)")
+        else:
+            print("WARNING: AppDelegate Error 2 guard not found — AltStore may still show Error 2")
 
     disk = (
         "        if !writeAbilityTestSuccess {\n"
