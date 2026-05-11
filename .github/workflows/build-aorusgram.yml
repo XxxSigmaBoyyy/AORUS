@@ -73,17 +73,17 @@ jobs:
 
           # Replacements — order matters: specific suffixes before the base ID
           replacements = [
-              ('ph.telegra.Telegraph.Share',                   'com.Xdd.23723ab.Share'),
-              ('ph.telegra.Telegraph.SiriIntents',             'com.Xdd.23723ab.SiriIntents'),
-              ('ph.telegra.Telegraph.Widget',                  'com.Xdd.23723ab.Widget'),
-              ('ph.telegra.Telegraph.BroadcastUpload',         'com.Xdd.23723ab.BroadcastUpload'),
-              ('ph.telegra.Telegraph.NotificationServiceExtension', 'com.Xdd.23723ab.NotificationService'),
-              ('ph.telegra.Telegraph.NotificationService',     'com.Xdd.23723ab.NotificationService'),
-              ('ph.telegra.Telegraph.NotificationContent',     'com.Xdd.23723ab.NotificationContent'),
-              ('ph.telegra.Telegraph.WatchkitApp',             'com.Xdd.23723ab.watchkitapp'),
-              ('ph.telegra.Telegraph.WatchkitExtension',       'com.Xdd.23723ab.watchkitapp.watchkitextension'),
-              ('ph.telegra.Telegraph.SiriIntentsUI',           'com.Xdd.23723ab.SiriIntentsUI'),
-              ('ph.telegra.Telegraph',                         'com.Xdd.23723ab'),
+              ('ph.telegra.Telegraph.Share',                   'com.aurusgram.Share'),
+              ('ph.telegra.Telegraph.SiriIntents',             'com.aurusgram.SiriIntents'),
+              ('ph.telegra.Telegraph.Widget',                  'com.aurusgram.Widget'),
+              ('ph.telegra.Telegraph.BroadcastUpload',         'com.aurusgram.BroadcastUpload'),
+              ('ph.telegra.Telegraph.NotificationServiceExtension', 'com.aurusgram.NotificationService'),
+              ('ph.telegra.Telegraph.NotificationService',     'com.aurusgram.NotificationService'),
+              ('ph.telegra.Telegraph.NotificationContent',     'com.aurusgram.NotificationContent'),
+              ('ph.telegra.Telegraph.WatchkitApp',             'com.aurusgram.watchkitapp'),
+              ('ph.telegra.Telegraph.WatchkitExtension',       'com.aurusgram.watchkitapp.watchkitextension'),
+              ('ph.telegra.Telegraph.SiriIntentsUI',           'com.aurusgram.SiriIntentsUI'),
+              ('ph.telegra.Telegraph',                         'com.aurusgram'),
               ('C67CF9S4VU',                                   'R9Q5YYQM2M'),
           ]
 
@@ -342,7 +342,7 @@ jobs:
           python3 << 'CFEOF'
           import json
           config = {
-              "bundle_id": "com.Xdd.23723ab",
+              "bundle_id": "com.aurusgram",
               "api_id": "10840",
               "api_hash": "33c45224029d59cb3ad0c16134215aeb",
               "team_id": "R9Q5YYQM2M",
@@ -451,7 +451,7 @@ jobs:
           )
 
           team = 'R9Q5YYQM2M'
-          base = 'com.Xdd.23723ab'
+          base = 'com.aurusgram'
           out_dir = os.environ.get('RUNNER_TEMP', '/tmp') + '/signing/profiles'
           os.makedirs(out_dir, exist_ok=True)
 
@@ -465,7 +465,7 @@ jobs:
               ('NotificationContent',  base + '.NotificationContent'),
               ('Intents',              base + '.SiriIntents'),
               ('IntentsExtension',     base + '.SiriIntents'),
-              # BUILD maps ph.telegra.Telegraph.SiriIntentsUI → com.Xdd.23723ab.SiriIntentsUI (not .IntentsUI).
+              # BUILD maps ph.telegra.Telegraph.SiriIntentsUI → com.aurusgram.SiriIntentsUI (not .IntentsUI).
               ('IntentsUIExtension',   base + '.SiriIntentsUI'),
               ('Widget',               base + '.Widget'),
               ('BroadcastUpload',      base + '.BroadcastUpload'),

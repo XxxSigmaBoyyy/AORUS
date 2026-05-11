@@ -489,6 +489,89 @@ def patch_native_window_host_scene(tg: Path) -> None:
             print("NativeWindowHostView: patch did not apply (upstream drift?)")
 
 
+def patch_authorization_network_flood_wait(tg: Path) -> None:
+    """Use MTProto automatic flood wait for auth.sendCode / resend / signIn so the client
+    waits server FLOOD_WAIT instead of failing immediately with Login_CodeFloodError."""
+    path = tg / "submodules/TelegramCore/Sources/Authorization.swift"
+    if not path.is_file():
+        print("Authorization.swift not found, skip flood-wait patch")
+        return
+    t = path.read_text(encoding="utf-8")
+    orig = t
+    pairs = [
+        ("account.network.request(sendCode, automaticFloodWait: false)", "account.network.request(sendCode, automaticFloodWait: true)"),
+        ("return updatedAccount.network.request(sendCode, automaticFloodWait: false)", "return updatedAccount.network.request(sendCode, automaticFloodWait: true)"),
+        (
+            "return account.network.request(Api.functions.auth.resendCode(flags: flags, phoneNumber: number, phoneCodeHash: hash, reason: mappedReason), automaticFloodWait: false)",
+            "return account.network.request(Api.functions.auth.resendCode(flags: flags, phoneNumber: number, phoneCodeHash: hash, reason: mappedReason), automaticFloodWait: true)",
+        ),
+        (
+            "return account.network.request(Api.functions.auth.resendCode(flags: 0, phoneNumber: number, phoneCodeHash: hash, reason: nil), automaticFloodWait: false)",
+            "return account.network.request(Api.functions.auth.resendCode(flags: 0, phoneNumber: number, phoneCodeHash: hash, reason: nil), automaticFloodWait: true)",
+        ),
+        (
+            "return account.network.request(Api.functions.auth.signIn(flags: flags, phoneNumber: number, phoneCodeHash: hash, phoneCode: phoneCode, emailVerification: emailVerification), automaticFloodWait: false)",
+            "return account.network.request(Api.functions.auth.signIn(flags: flags, phoneNumber: number, phoneCodeHash: hash, phoneCode: phoneCode, emailVerification: emailVerification), automaticFloodWait: true)",
+        ),
+    ]
+    for old, new in pairs:
+        if old in t:
+            t = t.replace(old, new)
+            print("Authorization: automaticFloodWait for auth request")
+    if t != orig:
+        path.write_text(t, encoding="utf-8")
+    else:
+        print("Authorization: flood-wait markers not found (upstream drift)")
+
+
+def patch_authorization_login_title_gold(tg: Path) -> None:
+    """Gold title on phone-number welcome (strings already say Aorusgram after Localizable patch)."""
+    path = tg / "submodules/AuthorizationUI/Sources/AuthorizationSequencePhoneEntryControllerNode.swift"
+    if not path.is_file():
+        print("AuthorizationSequencePhoneEntryControllerNode.swift not found, skip")
+        return
+    t = path.read_text(encoding="utf-8")
+    orig = t
+    gold = "UIColor(red: 0.788, green: 0.635, blue: 0.153, alpha: 1.0)"
+    a = (
+        "self.titleNode.attributedText = NSAttributedString(string: account == nil ? strings.Login_NewNumber : strings.Login_PhoneTitle, font: Font.light(30.0), textColor: theme.list.itemPrimaryTextColor)"
+    )
+    b = (
+        "self.titleNode.attributedText = NSAttributedString(string: account == nil ? strings.Login_NewNumber : strings.Login_PhoneTitle, font: Font.light(30.0), textColor: "
+        + gold
+        + ")"
+    )
+    c = (
+        "self.titleNode.attributedText = NSAttributedString(string: self.account == nil ? self.strings.Login_NewNumber : self.strings.Login_PhoneTitle, font: Font.bold(28.0), textColor: self.theme.list.itemPrimaryTextColor)"
+    )
+    d = (
+        "self.titleNode.attributedText = NSAttributedString(string: self.account == nil ? self.strings.Login_NewNumber : self.strings.Login_PhoneTitle, font: Font.bold(28.0), textColor: "
+        + gold
+        + ")"
+    )
+    if a in t:
+        t = t.replace(a, b, 1)
+        print("Auth phone entry: gold title (init)")
+    if c in t:
+        t = t.replace(c, d, 1)
+        print("Auth phone entry: gold title (layout)")
+    if t != orig:
+        path.write_text(t, encoding="utf-8")
+
+
+def patch_callkit_brand_name(tg: Path) -> None:
+    path = tg / "submodules/TelegramCallsUI/Sources/CallKitIntegration.swift"
+    if not path.is_file():
+        print("CallKitIntegration.swift not found, skip")
+        return
+    t = path.read_text(encoding="utf-8")
+    old = 'let providerConfiguration = CXProviderConfiguration(localizedName: "Telegram")'
+    new = 'let providerConfiguration = CXProviderConfiguration(localizedName: "Aorusgram")'
+    if old in t:
+        path.write_text(t.replace(old, new, 1), encoding="utf-8")
+        print("CallKit: localizedName Aorusgram")
+
+
 def main() -> None:
     tg = Path(sys.argv[1]).resolve()
     if not tg.is_dir():
@@ -498,6 +581,9 @@ def main() -> None:
     patch_xcconfig(tg)
     patch_app_delegate_launch_fixes(tg)
     patch_native_window_host_scene(tg)
+    patch_authorization_network_flood_wait(tg)
+    patch_authorization_login_title_gold(tg)
+    patch_callkit_brand_name(tg)
     patch_presentation_theme_intro_gold(tg)
     for name in ("Info.plist", "InfoBazel.plist"):
         patch_plist_icons_and_urls(tg / "Telegram/Telegram-iOS" / name)
