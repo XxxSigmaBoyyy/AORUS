@@ -30,7 +30,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: telegram-ios
-          key: tg-ios-src-v6-xcode16
+          key: tg-ios-src-v7-aorus-import
 
       - name: Clone Telegram iOS
         if: steps.tg-cache.outputs.cache-hit != 'true'
@@ -333,6 +333,30 @@ jobs:
       - name: AorusGram branding (launch screen, name, URLs, icons, strings)
         run: |
           python3 aorusgram/scripts/aorus_branding.py telegram-ios
+          # Cached telegram-ios trees can carry AppDelegate edits without a matching import line.
+          python3 << 'PY'
+          import sys
+          from pathlib import Path
+          p = Path("telegram-ios/submodules/TelegramUI/Sources/AppDelegate.swift")
+          if not p.is_file():
+              sys.exit("AppDelegate.swift missing")
+          t = p.read_text(encoding="utf-8")
+          if "import AorusGram" in t:
+              print("AppDelegate: import AorusGram already present")
+              sys.exit(0)
+          if "AorusGramBootstrap" not in t and "ClientSpoofManager" not in t:
+              print("AppDelegate: no AorusGram hooks — skip import")
+              sys.exit(0)
+          pos = t.find("import UIKit")
+          if pos < 0:
+              sys.exit("AppDelegate: import UIKit not found")
+          line_end = t.find("\n", pos)
+          if line_end < 0:
+              sys.exit("AppDelegate: newline after UIKit import not found")
+          t = t[: line_end + 1] + "import AorusGram\n" + t[line_end + 1 :]
+          p.write_text(t, encoding="utf-8")
+          print("AppDelegate: forced import AorusGram (post-branding)")
+          PY
           MASTER=aorusgram/patches/assets/AorusGramAppIcon.png
           bash aorusgram/scripts/fill_blue_icon_appiconset.sh "$MASTER" \
             telegram-ios/Telegram/Telegram-iOS/AppIcons.xcassets/BlueIcon.appiconset
