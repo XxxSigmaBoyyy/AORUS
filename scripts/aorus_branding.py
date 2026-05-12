@@ -919,7 +919,7 @@ def patch_download_accelerator(tg: Path) -> None:
     """
     sentinel = "// AorusGram: download accelerator"
     candidates = [
-        tg / "submodules/TelegramCore/Sources/Network/MultipartUpload.swift",
+        # MultipartUpload.swift: anchors like "let parallelParts =" hit property/context lines — injection breaks Swift (expected declaration). Skip.
         tg / "submodules/TelegramCore/Sources/Network/MultipartFetch.swift",
         tg / "submodules/TelegramCore/Sources/Network/FetchMediaResource.swift",
         tg / "submodules/TelegramCore/Sources/Network/Upload.swift",
