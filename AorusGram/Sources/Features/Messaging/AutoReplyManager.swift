@@ -83,6 +83,25 @@ final class AutoReplyManager: ObservableObject {
     func resetCooldown(for peerId: Int64) {
         queue.async { self.lastReplied.removeValue(forKey: peerId) }
     }
+
+    // MARK: - Called from AorusGramBootstrap when incoming message arrives
+
+    func handleIncoming(peerId: Int64, text: String) {
+        // Negative peerId = group/channel in Telegram's internal representation
+        let isGroup   = peerId < -1_000_000_000
+        let isChannel = peerId < -1_000_000_000_000
+
+        let decision = decide(peerId: peerId, isGroup: isGroup, isChannel: isChannel)
+        if case .send(let msg) = decision {
+            // Post NotificationCenter event — branding.py-injected code in TelegramUI
+            // observes this and calls account.sendMessage(...)
+            NotificationCenter.default.post(
+                name: NSNotification.Name("aorusgram.sendAutoReply"),
+                object: nil,
+                userInfo: ["peerId": NSNumber(value: peerId), "text": msg]
+            )
+        }
+    }
 }
 
 private extension Int {

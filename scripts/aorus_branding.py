@@ -903,6 +903,210 @@ def patch_client_spoof_build_info(tg: Path) -> None:
             print("ClientSpoof: neutralised AorusGram strings in TGBuildConfig.m")
 
 
+def patch_ghost_mode_hooks(tg: Path) -> None:
+    """Inject UserDefaults ghost-mode guards around presence/typing/read-receipt API calls.
+
+    Works alongside GhostModeSwizzler (MTRequestMessageService ObjC layer) as a
+    belt-and-suspenders defence: the source-level guard fires even before the
+    request object is created, so nothing leaks if the swizzle misses a path.
+
+    The UserDefaults key 'aorusgram_ghost_mode' is set by GhostModeManager.toggle()
+    in the main app — readable from any Swift code in the same process.
+    """
+    sentinel = "// AorusGram: ghost mode guard"
+
+    # --- 1. Presence (updateStatus) ---
+    presence_candidates = [
+        tg / "submodules/TelegramCore/Sources/Account/AccountPresenceManager.swift",
+        tg / "submodules/TelegramCore/Sources/ApiUtils/AccountPresenceManager.swift",
+        tg / "submodules/TelegramCore/Sources/State/AccountStateManager.swift",
+        tg / "submodules/TelegramCore/Sources/AccountStateManager.swift",
+        tg / "submodules/TelegramCore/Sources/Account/UpdatePresence.swift",
+    ]
+    presence_anchors = [
+        "Api.functions.account.updateStatus(",
+        ".account.updateStatus(offline:",
+        "account.updateStatus(offline:",
+        "network.request(Api.functions.account.updateStatus",
+    ]
+    _inject_ghost_guard(presence_candidates, presence_anchors, sentinel + " — presence")
+
+    # --- 2. Typing indicator (setTyping) ---
+    typing_candidates = [
+        tg / "submodules/TelegramCore/Sources/Account/InputActivity.swift",
+        tg / "submodules/TelegramCore/Sources/ApiUtils/RemoteInputActivity.swift",
+        tg / "submodules/TelegramCore/Sources/TelegramEngine/Messages/InputActivity.swift",
+        tg / "submodules/TelegramUI/Sources/Chat/ChatControllerImpl.swift",
+        tg / "submodules/TelegramUI/Sources/ChatControllerImpl.swift",
+    ]
+    typing_anchors = [
+        "Api.functions.messages.setTyping(",
+        ".messages.setTyping(",
+        "network.request(Api.functions.messages.setTyping",
+        "setTyping(flags:",
+    ]
+    _inject_ghost_guard(typing_candidates, typing_anchors, sentinel + " — typing",
+                        ud_key="aorusgram_ghost_hide_typing")
+
+    # --- 3. Read receipts (readHistory / readMessageContents) ---
+    read_candidates = [
+        tg / "submodules/TelegramCore/Sources/State/AccountStateManager.swift",
+        tg / "submodules/TelegramCore/Sources/AccountStateManager.swift",
+        tg / "submodules/TelegramCore/Sources/TelegramEngine/Messages/ReadMessages.swift",
+        tg / "submodules/TelegramCore/Sources/ApiUtils/ReadMessages.swift",
+    ]
+    read_anchors = [
+        "Api.functions.messages.readHistory(",
+        "Api.functions.messages.readMessageContents(",
+        ".messages.readHistory(",
+        "network.request(Api.functions.messages.readHistory",
+    ]
+    _inject_ghost_guard(read_candidates, read_anchors, sentinel + " — read receipts",
+                        ud_key="aorusgram_ghost_block_read")
+
+
+def _inject_ghost_guard(candidates: list, anchors: list, label: str,
+                         ud_key: str = "aorusgram_ghost_mode") -> None:
+    """Helper: find the first file+anchor match and inject a UserDefaults guard."""
+    for path in candidates:
+        if not path.is_file():
+            continue
+        t = path.read_text(encoding="utf-8")
+        if label in t:
+            print(f"[GhostMode] {path.name}: {label} already injected")
+            return
+        for anchor in anchors:
+            if anchor in t:
+                guard_code = (
+                    f"                {label}\n"
+                    f"                if UserDefaults.standard.bool(forKey: \"{ud_key}\") {{ return }}\n"
+                    f"                "
+                )
+                t = t.replace(anchor, guard_code + anchor, 1)
+                path.write_text(t, encoding="utf-8")
+                print(f"[GhostMode] {path.name}: injected guard before '{anchor[:50]}…'")
+                return
+    print(f"[GhostMode] {label}: no matching file/anchor found — skipped gracefully")
+
+
+def patch_incoming_message_hook(tg: Path) -> None:
+    """Post NotificationCenter event for each incoming message.
+
+    The main-app AorusGramBootstrap observes 'aorusgram.didReceiveMessage' and
+    dispatches to AntiSpamManager.processIncoming() and AutoReplyManager.handleIncoming().
+
+    Uses the same architecture as the deleted-messages hook:
+      TelegramCore (closed module) → NotificationCenter.default.post → main app.
+    """
+    candidates = [
+        tg / "submodules/TelegramCore/Sources/State/AccountStateManager.swift",
+        tg / "submodules/TelegramCore/Sources/AccountStateManager.swift",
+    ]
+    path: "Path | None" = next((p for p in candidates if p.is_file()), None)
+    if path is None:
+        print("IncomingMessageHook: AccountStateManager.swift not found, skip")
+        return
+
+    t = path.read_text(encoding="utf-8")
+    if "aorusgram.didReceiveMessage" in t:
+        print("IncomingMessageHook: already injected")
+        return
+
+    sentinel = "// AorusGram: incoming message hook"
+
+    # Anchor: addMessages (incoming) in the postbox transaction.
+    # Try multiple patterns used across Telegram iOS versions.
+    anchors = [
+        "transaction.addMessages(messages,",
+        "transaction.addMessages(storeMessages,",
+        ".addMessages(messages,",
+        "addMessages(transaction: transaction",
+    ]
+
+    hook_code = (
+        "                " + sentinel + "\n"
+        "                for msg in messages {\n"
+        "                    guard !msg.flags.contains(.Incoming) == false else { continue }\n"
+        "                    var userInfo: [String: Any] = [\n"
+        "                        \"msgId\":  NSNumber(value: msg.id.id),\n"
+        "                        \"peerId\": NSNumber(value: msg.id.peerId.toInt64()),\n"
+        "                        \"text\":   msg.text,\n"
+        "                        \"date\":   NSNumber(value: msg.timestamp),\n"
+        "                    ]\n"
+        "                    if let author = msg.author {\n"
+        "                        userInfo[\"senderId\"]   = NSNumber(value: author.id.toInt64())\n"
+        "                        userInfo[\"senderName\"] = author.compactDisplayTitle\n"
+        "                    }\n"
+        "                    NotificationCenter.default.post(\n"
+        "                        name: NSNotification.Name(\"aorusgram.didReceiveMessage\"),\n"
+        "                        object: nil, userInfo: userInfo)\n"
+        "                }\n"
+        "                "
+    )
+
+    injected = False
+    for anchor in anchors:
+        if anchor in t:
+            t = t.replace(anchor, hook_code + anchor, 1)
+            print(f"IncomingMessageHook: injected before '{anchor[:55]}…'")
+            injected = True
+            break
+
+    if not injected:
+        print("IncomingMessageHook: anchor not found — skipped gracefully")
+    else:
+        path.write_text(t, encoding="utf-8")
+
+
+def patch_auto_reply_send_hook(tg: Path) -> None:
+    """Observe aorusgram.sendAutoReply notification and send via TelegramEngine.
+
+    We inject an observer into AppDelegate (which holds the account context) that
+    listens for the NotificationCenter event posted by AutoReplyManager.handleIncoming
+    and actually calls the Telegram send-message API.
+    """
+    path = tg / "submodules/TelegramUI/Sources/AppDelegate.swift"
+    if not path.is_file():
+        print("AutoReplySend: AppDelegate.swift not found, skip")
+        return
+    t = path.read_text(encoding="utf-8")
+    if "aorusgram.sendAutoReply" in t:
+        print("AutoReplySend: already injected")
+        return
+
+    sentinel = "// AorusGram: auto-reply observer"
+    hook = (
+        "\n        " + sentinel + "\n"
+        "        NotificationCenter.default.addObserver(forName: NSNotification.Name(\"aorusgram.sendAutoReply\"),\n"
+        "            object: nil, queue: .main) { [weak self] note in\n"
+        "            guard AorusGramConfig.isEnabled(.autoReply),\n"
+        "                  let info = note.userInfo,\n"
+        "                  let peerIdNum = info[\"peerId\"] as? NSNumber,\n"
+        "                  let text = info[\"text\"] as? String,\n"
+        "                  let context = self?.context else { return }\n"
+        "            let peerId = PeerId(peerIdNum.int64Value)\n"
+        "            let _ = context.engine.messages.enqueueMessages(\n"
+        "                peerId: peerId,\n"
+        "                messages: [EnqueueMessage.message(\n"
+        "                    text: text, attributes: [], inlineStickers: [:],\n"
+        "                    mediaReference: nil, threadId: nil,\n"
+        "                    replyToMessageId: nil, replyToStoryId: nil,\n"
+        "                    localGroupingKey: nil, correlationId: nil,\n"
+        "                    bubbleUpEmojiOrStickersets: [])]\n"
+        "            ).start()\n"
+        "        }\n"
+    )
+
+    # Inject right after the AorusGramBootstrap call
+    anchor = "AorusGramBootstrap.shared.setup(accountPath: rootPath)"
+    if anchor in t:
+        t = t.replace(anchor, anchor + hook, 1)
+        path.write_text(t, encoding="utf-8")
+        print("AutoReplySend: observer injected into AppDelegate after bootstrap call")
+    else:
+        print("AutoReplySend: bootstrap anchor not found — skipped gracefully")
+
+
 def patch_info_plist_bgtask(tg: Path) -> None:
     """Add BGTaskSchedulerPermittedIdentifiers key to Info.plist so iOS allows BGAppRefreshTask."""
     for name in ("Info.plist", "InfoBazel.plist"):
@@ -940,6 +1144,9 @@ def main() -> None:
     patch_metal_comma_operator_warnings(tg)
     patch_presentation_theme_intro_gold(tg)
     patch_deleted_messages_interception(tg)
+    patch_ghost_mode_hooks(tg)
+    patch_incoming_message_hook(tg)
+    patch_auto_reply_send_hook(tg)
     patch_client_spoof_app_version(tg)
     patch_app_delegate_import_aorusgram(tg)
     patch_client_spoof_build_info(tg)

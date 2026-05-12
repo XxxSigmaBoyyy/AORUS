@@ -14,34 +14,35 @@ public final class AorusGramBootstrap {
         guard !didSetup else { return }
         didSetup = true
 
+        // Client spoof — must be before any MTProto connection is made
+        ClientSpoofManager.applySwizzle()
+
+        // Ghost Mode — restore persisted state + MTProto-level swizzle
+        GhostModeManager.shared.load()
+        GhostModeSwizzler.apply()
+
         // Deleted messages — register BGTask and schedule first sync
         DeletedMessagesCache.shared.registerBackgroundTask()
         DeletedMessagesCache.shared.scheduleBackgroundSync()
 
-        // Ghost Mode — restore persisted state
-        GhostModeManager.shared.load()
-
-        // Anti-screenshot — attach to the key window when it's ready
+        // Anti-screenshot
         if AorusGramConfig.isEnabled(.antiScreenshot) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                 AntiScreenshotManager.shared.enable()
             }
         }
 
-        // Secret pin — load stored config
+        // Secret pin
         SecretPinManager.shared.load()
 
-        // Streaks — daily tick
+        // Streaks
         StreakManager.shared.tick()
 
-        // Auto-reply — restore state
+        // Auto-reply
         AutoReplyManager.shared.load()
 
-        // Client spoof — must be before any MTProto connection is made
-        ClientSpoofManager.applySwizzle()
-
-        // Swizzle all ghost-mode hooks
-        GhostModeSwizzler.apply()
+        // Anti-spam
+        AntiSpamManager.shared.setEnabled(AorusGramConfig.isEnabled(.antiSpam))
 
         // Subscribe to TelegramCore delete events (cross-module NotificationCenter bridge)
         NotificationCenter.default.addObserver(
@@ -52,7 +53,38 @@ public final class AorusGramBootstrap {
             DeletedMessagesCache.shared.handleWillDeleteNotification(note)
         }
 
+        // Subscribe to incoming message events (injected by branding.py into AccountStateManager)
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("aorusgram.didReceiveMessage"),
+            object: nil,
+            queue: nil
+        ) { [weak self] note in
+            self?.handleIncomingMessage(note)
+        }
+
         observeAppLifecycle()
+    }
+
+    // MARK: - Incoming message handler (anti-spam + auto-reply)
+
+    private func handleIncomingMessage(_ note: Notification) {
+        guard let info = note.userInfo else { return }
+        let peerId = (info["peerId"] as? NSNumber)?.int64Value ?? 0
+        let text   = info["text"]   as? String ?? ""
+
+        // Anti-spam gate
+        if AorusGramConfig.isEnabled(.antiSpam) {
+            let verdict = AntiSpamManager.shared.check(peerId: peerId, text: text)
+            if verdict.isSpam {
+                AntiSpamManager.shared.processIncoming(peerId: peerId, text: text)
+                return
+            }
+        }
+
+        // Auto-reply
+        if AorusGramConfig.isEnabled(.autoReply) {
+            AutoReplyManager.shared.handleIncoming(peerId: peerId, text: text)
+        }
     }
 
     // MARK: - App lifecycle
