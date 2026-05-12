@@ -1,5 +1,7 @@
 import Foundation
 import SwiftUI
+import UIKit
+import ObjectiveC
 
 // Менеджер безлимитных аккаунтов.
 // TelegramCore поддерживает до 4 аккаунтов из коробки.

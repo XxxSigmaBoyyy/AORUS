@@ -206,12 +206,12 @@ final class DeletedMessagesCache {
 
     private func handleBGTask(_ task: BGAppRefreshTask) {
         scheduleBackgroundSync()
+        task.expirationHandler = { task.setTaskCompleted(success: false) }
         // Flush any pending ops and compact the WAL
         queue.async { [weak self] in
             sqlite3_exec(self?.db, "PRAGMA wal_checkpoint(PASSIVE);", nil, nil, nil)
             task.setTaskCompleted(success: true)
         }
-        task.expirationHandler = { task.setTaskCompleted(success: false) }
     }
 }
 

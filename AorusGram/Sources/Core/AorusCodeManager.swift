@@ -1,6 +1,7 @@
 import Foundation
 import CryptoKit
 import UIKit
+import Security
 
 // AorusCode — офлайн-система активационных кодов.
 //

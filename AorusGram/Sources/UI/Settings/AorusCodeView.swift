@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct AorusCodeView: View {
     @Environment(\.dismiss) var dismiss

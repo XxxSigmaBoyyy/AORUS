@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 // In-message translation. Uses Apple Translation framework (iOS 17.4+) when available,
 // falls back to DeepL free API if the user provides an API key.
@@ -14,7 +15,7 @@ final class TranslatorManager {
     private var cache: [String: String] = [:]
     private let cacheQueue = DispatchQueue(label: "aorusgram.translate.cache")
 
-    var targetLanguageCode: String = Locale.current.language.languageCode?.identifier ?? "ru"
+    var targetLanguageCode: String = Locale.current.languageCode ?? "ru"
 
     var deepLApiKey: String? {
         get { TranslatorKeychain.read(account: "deepl_key") }

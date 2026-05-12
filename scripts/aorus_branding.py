@@ -1084,7 +1084,7 @@ def patch_incoming_message_hook(tg: Path) -> None:
     hook_code = (
         "                " + sentinel + "\n"
         "                for msg in messages {\n"
-        "                    guard !msg.flags.contains(.Incoming) == false else { continue }\n"
+        "                    guard msg.flags.contains(.Incoming) else { continue }\n"
         "                    var userInfo: [String: Any] = [\n"
         "                        \"msgId\":  NSNumber(value: msg.id.id),\n"
         "                        \"peerId\": NSNumber(value: msg.id.peerId.toInt64()),\n"

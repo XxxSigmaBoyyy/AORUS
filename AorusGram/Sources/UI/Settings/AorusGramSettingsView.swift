@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct AorusGramSettingsView: View {
     // MARK: - State
@@ -346,7 +347,11 @@ struct AorusGramSettingsView: View {
             )
             .onChange(of: siri) { v in
                 AorusGramConfig.setEnabled(.siriShortcuts, v)
-                if v { SiriShortcutsManager.shared.donateAllDefaults() }
+                if v {
+                    if #available(iOS 16.0, *) {
+                        SiriShortcutsManager.shared.donateAllDefaults()
+                    }
+                }
             }
         }
     }

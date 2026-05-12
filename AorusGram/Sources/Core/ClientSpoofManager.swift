@@ -18,9 +18,9 @@ import ObjectiveC
 //   Боты типа @userinfobot и некоторые сервисы читают поле app_version из initConnection.
 //   Если там "AorusGram 1.0" — помечают как "unofficial client".
 //   После спуфинга в "Активных сессиях" будет видно "Telegram 11.5.3" вместо "AorusGram".
-public final class ClientSpoofManager {
+public final class ClientSpoofManager: NSObject {
     public static let shared = ClientSpoofManager()
-    private init() {}
+    override private init() {}
 
     // Синхронизировать с текущей версией Telegram в App Store при каждом обновлении.
     public static let officialAppVersion = "11.5.3"
