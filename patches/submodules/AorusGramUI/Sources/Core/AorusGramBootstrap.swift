@@ -59,6 +59,13 @@ public final class AorusGramBootstrap {
         ) { note in
             DeletedMessagesCache.shared.handleWillDeleteByGlobalIdNotification(note)
         }
+        NotificationCenter.default.addObserver(
+            forName: .aorusWillEditMessage,
+            object: nil,
+            queue: nil
+        ) { note in
+            DeletedMessagesCache.shared.handleWillEditNotification(note)
+        }
 
         // Subscribe to incoming message events (injected by branding.py into AccountStateManager)
         NotificationCenter.default.addObserver(

@@ -24,6 +24,7 @@ struct AorusGramSettingsView: View {
     @State private var showAutoReply     = false
     @State private var showPinboard      = false
     @State private var showDeletedAll    = false
+    @State private var showClearCacheConfirm = false
     @State private var showAorusCode     = false
 
     @State private var deletedCount = 0
@@ -62,6 +63,22 @@ struct AorusGramSettingsView: View {
             }
         }
         .sheet(isPresented: $showAorusCode) { AorusCodeView() }
+        .confirmationDialog(
+            "Очистить кеш удалённых и изменённых сообщений?",
+            isPresented: $showClearCacheConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Очистить", role: .destructive) {
+                DeletedMessagesCache.shared.clearAll()
+                // Refresh the counter shown in the settings row.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    deletedCount = DeletedMessagesCache.shared.allDeletedCount()
+                }
+            }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text("Все сохранённые оригиналы будут удалены. Действие необратимо.")
+        }
     }
 
     // MARK: - Header
@@ -119,13 +136,13 @@ struct AorusGramSettingsView: View {
 
             Divider().opacity(0.15)
 
-            // 2. Deleted Messages — pre-cache + view
+            // 2. Deleted Messages — pre-cache + view + clear-cache button
             VStack(spacing: 0) {
                 GlassToggleRow(
                     icon: "trash.slash.fill", title: "Удалённые сообщения",
                     subtitle: deletedCount > 0
-                        ? "Сохранено: \(deletedCount) сообщ."
-                        : "Сохранять контент сообщений до их удаления",
+                        ? "Сохранено: \(deletedCount) (включая изменённые)"
+                        : "Сохранять оригиналы до удаления или изменения",
                     iconColor: Color(hex: "#EF5350"), isOn: $deletedMessages
                 )
                 .onChange(of: deletedMessages) { v in
@@ -133,16 +150,37 @@ struct AorusGramSettingsView: View {
                 }
 
                 if deletedCount > 0 {
-                    Button { showDeletedAll = true } label: {
-                        HStack {
-                            Spacer()
-                            Text("Просмотреть удалённые (\(deletedCount)) →")
-                                .font(.system(size: 13))
-                                .foregroundColor(Color(hex: "#EF5350"))
+                    HStack(spacing: 10) {
+                        Button { showDeletedAll = true } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "list.bullet.rectangle")
+                                Text("Просмотреть (\(deletedCount))")
+                            }
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(Color(hex: "#EF5350"))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color(hex: "#EF5350").opacity(0.12),
+                                        in: Capsule())
                         }
-                        .padding(.horizontal, 14)
-                        .padding(.bottom, 8)
+
+                        Button { showClearCacheConfirm = true } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "trash")
+                                Text("Очистить кеш")
+                            }
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.secondary.opacity(0.12),
+                                        in: Capsule())
+                        }
+
+                        Spacer()
                     }
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 10)
                 }
             }
 

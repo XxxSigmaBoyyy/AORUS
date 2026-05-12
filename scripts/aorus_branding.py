@@ -668,10 +668,20 @@ def patch_deleted_messages_interception(tg: Path) -> None:
             print("DeleteMessages.swift: hook already present")
         else:
             anchor = "transaction.deleteMessages(ids, forEachMedia: { _ in"
-            # Only post id+peerId. compactDisplayTitle and MessageFlags.Outgoing do not
-            # exist on `any Peer` / MessageFlags in current Postbox — compile error if used.
-            # Text/author are pre-cached by the incoming-message hook so we only need IDs
-            # here; the main-app handler calls markDeleted(id:peerId:) which flips status.
+            # Architecture (when aorusgram_feature_deleted_messages == true, the default):
+            #   1. Post `aorusgram.willDeleteMessage` notification → main-app cache.
+            #   2. For each ID being deleted, rewrite the message body via
+            #      transaction.updateMessage so its text is prefixed with the
+            #      "🗑 [Удалено]" marker (idempotent — already-marked messages skip).
+            #      The message stays in the postbox; the chat UI continues to render
+            #      it because nothing actually removed it. Users see the deletion
+            #      marker prefixed to the original content right inside the bubble.
+            #   3. EARLY-RETURN before the real `transaction.deleteMessages` call
+            #      so the postbox row survives.
+            # StoreMessage construction template copied from
+            #   ManagedSynchronizeMarkAllUnseenPersonalMessagesOperations.swift:230
+            # which is the canonical pattern for "rebuild a StoreMessage from a Message"
+            # used elsewhere in the same module.
             hook = (
                 "    " + sentinel + " — peer-scoped\n"
                 "    for id in ids {\n"
@@ -683,6 +693,31 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "            name: NSNotification.Name(\"aorusgram.willDeleteMessage\"),\n"
                 "            object: nil, userInfo: userInfo)\n"
                 "    }\n"
+                "    let __aorusPreserve = (UserDefaults.standard.object(forKey: \"aorusgram_feature_deleted_messages\") as? Bool) ?? true\n"
+                "    if __aorusPreserve {\n"
+                "        for id in ids {\n"
+                "            transaction.updateMessage(id, update: { currentMessage -> PostboxUpdateMessage in\n"
+                "                if currentMessage.text.hasPrefix(\"\\u{1F5D1}\") { return .skip }\n"
+                "                let newText = \"\\u{1F5D1} [Удалено]\\n\" + currentMessage.text\n"
+                "                return .update(StoreMessage(\n"
+                "                    id: currentMessage.id, customStableId: nil,\n"
+                "                    globallyUniqueId: currentMessage.globallyUniqueId,\n"
+                "                    groupingKey: currentMessage.groupingKey,\n"
+                "                    threadId: currentMessage.threadId,\n"
+                "                    timestamp: currentMessage.timestamp,\n"
+                "                    flags: StoreMessageFlags(currentMessage.flags),\n"
+                "                    tags: currentMessage.tags,\n"
+                "                    globalTags: currentMessage.globalTags,\n"
+                "                    localTags: currentMessage.localTags,\n"
+                "                    forwardInfo: currentMessage.forwardInfo.flatMap(StoreMessageForwardInfo.init),\n"
+                "                    authorId: currentMessage.author?.id,\n"
+                "                    text: newText,\n"
+                "                    attributes: currentMessage.attributes,\n"
+                "                    media: currentMessage.media))\n"
+                "            })\n"
+                "        }\n"
+                "        return\n"
+                "    }\n"
                 "    "
             )
             if anchor in t:
@@ -693,6 +728,101 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 print("DeleteMessages.swift: anchor not found — skipped")
     else:
         print("DeleteMessages.swift: file not found — skipped")
+
+    # --- 1b. Edit-message capture + inline original display ---
+    # Two injection points inside AccountStateManagementUtils.swift:
+    #
+    #   A. Right after `case let .EditMessage(id, message):`
+    #      - Capture the pre-edit message into a `let aorusPrev` so it's reachable
+    #        from the AFTER-edit augmentation block (postbox state will have been
+    #        rewritten by `transaction.updateMessage` by then).
+    #      - Post the willEditMessage notification (cache bookkeeping in main app).
+    #
+    #   B. Right BEFORE the next `case let .UpdateMessagePoll(...)`
+    #      - When the feature flag is on (default true), run a SECOND
+    #        `transaction.updateMessage` that rebuilds the StoreMessage with the
+    #        new text appended by "\n\n✏️ Оригинал:\n<old text>".
+    #      - Idempotent — checks for the marker before re-applying.
+    #
+    # Together these mean: when someone edits a message, the chat keeps showing
+    # the new text but with the original right below it inside the same bubble.
+    utils_path_edit = tg / "submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift"
+    if utils_path_edit.is_file():
+        t = utils_path_edit.read_text(encoding="utf-8")
+        edit_sentinel = "// AorusGram: capture edit"
+        if edit_sentinel not in t:
+            # --- A. capture + notification ---
+            edit_anchor = (
+                "            case let .EditMessage(id, message):\n"
+                "                var generatedEvent:"
+            )
+            edit_hook = (
+                "            case let .EditMessage(id, message):\n"
+                "                " + edit_sentinel + "\n"
+                "                let aorusPrev = transaction.getMessage(id)\n"
+                "                if let prev = aorusPrev, prev.text != message.text {\n"
+                "                    NotificationCenter.default.post(\n"
+                "                        name: NSNotification.Name(\"aorusgram.willEditMessage\"),\n"
+                "                        object: nil,\n"
+                "                        userInfo: [\n"
+                "                            \"msgId\":        NSNumber(value: id.id),\n"
+                "                            \"peerId\":       NSNumber(value: id.peerId.toInt64()),\n"
+                "                            \"originalText\": prev.text,\n"
+                "                            \"newText\":      message.text,\n"
+                "                            \"date\":         NSNumber(value: prev.timestamp),\n"
+                "                        ])\n"
+                "                }\n"
+                "                var generatedEvent:"
+            )
+            if edit_anchor in t:
+                t = t.replace(edit_anchor, edit_hook, 1)
+                print("AccountStateManagementUtils.swift: edit-capture hook injected")
+            else:
+                print("AccountStateManagementUtils.swift: EditMessage anchor not found — skipped")
+
+            # --- B. append original under new text ---
+            tail_anchor = (
+                "                if let generatedEvent = generatedEvent {\n"
+                "                    addedReactionEvents.append(generatedEvent)\n"
+                "                }\n"
+                "            case let .UpdateMessagePoll(pollId, apiPoll, results):"
+            )
+            tail_hook = (
+                "                if let generatedEvent = generatedEvent {\n"
+                "                    addedReactionEvents.append(generatedEvent)\n"
+                "                }\n"
+                "                // AorusGram: inline original under edited text\n"
+                "                let __aorusEditEnabled = (UserDefaults.standard.object(forKey: \"aorusgram_feature_deleted_messages\") as? Bool) ?? true\n"
+                "                if __aorusEditEnabled, let prev = aorusPrev, prev.text != message.text, !prev.text.isEmpty {\n"
+                "                    transaction.updateMessage(id, update: { currentMessage -> PostboxUpdateMessage in\n"
+                "                        if currentMessage.text.contains(\"\\n\\n\\u{270F}\\u{FE0F} Оригинал:\") { return .skip }\n"
+                "                        let newText = currentMessage.text + \"\\n\\n\\u{270F}\\u{FE0F} Оригинал:\\n\" + prev.text\n"
+                "                        return .update(StoreMessage(\n"
+                "                            id: currentMessage.id, customStableId: nil,\n"
+                "                            globallyUniqueId: currentMessage.globallyUniqueId,\n"
+                "                            groupingKey: currentMessage.groupingKey,\n"
+                "                            threadId: currentMessage.threadId,\n"
+                "                            timestamp: currentMessage.timestamp,\n"
+                "                            flags: StoreMessageFlags(currentMessage.flags),\n"
+                "                            tags: currentMessage.tags,\n"
+                "                            globalTags: currentMessage.globalTags,\n"
+                "                            localTags: currentMessage.localTags,\n"
+                "                            forwardInfo: currentMessage.forwardInfo.flatMap(StoreMessageForwardInfo.init),\n"
+                "                            authorId: currentMessage.author?.id,\n"
+                "                            text: newText,\n"
+                "                            attributes: currentMessage.attributes,\n"
+                "                            media: currentMessage.media))\n"
+                "                    })\n"
+                "                }\n"
+                "            case let .UpdateMessagePoll(pollId, apiPoll, results):"
+            )
+            if tail_anchor in t:
+                t = t.replace(tail_anchor, tail_hook, 1)
+                print("AccountStateManagementUtils.swift: edit-augment tail hook injected")
+            else:
+                print("AccountStateManagementUtils.swift: edit-augment tail anchor not found — skipped")
+
+            utils_path_edit.write_text(t, encoding="utf-8")
 
     # --- 2. Global-id deletes in AccountStateManagementUtils ---
     utils_path = tg / "submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift"

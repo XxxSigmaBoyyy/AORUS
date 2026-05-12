@@ -69,10 +69,10 @@ struct DeletedMessagesView: View {
             Image(systemName: "trash.slash")
                 .font(.system(size: 56))
                 .foregroundColor(.secondary.opacity(0.5))
-            Text("Удалённых сообщений нет")
+            Text("Удалённых и изменённых сообщений нет")
                 .font(.headline)
                 .foregroundColor(.secondary)
-            Text("Когда кто-то удалит сообщение, оно сохранится здесь.")
+            Text("Когда кто-то удалит или изменит сообщение, оно сохранится здесь.")
                 .font(.subheadline)
                 .foregroundColor(.secondary.opacity(0.7))
                 .multilineTextAlignment(.center)
@@ -107,16 +107,33 @@ struct DeletedMessageBubble: View {
         return f
     }()
 
+    private var statusColor: Color {
+        if message.isDeleted { return Color(hex: "#EF5350") }   // red — deleted
+        if message.isEdited  { return Color(hex: "#FFA726") }   // amber — edited
+        return Color(hex: "#5C6BC0")
+    }
+
+    private var statusIcon: String {
+        if message.isDeleted { return "trash.fill" }
+        if message.isEdited  { return "pencil" }
+        return "doc.text"
+    }
+
+    private var statusDate: Date {
+        if message.isDeleted        { return message.deletedDate }
+        if let ed = message.editedDate { return ed }
+        return message.sentDate
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            // Direction indicator
             Image(systemName: message.isOutgoing ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
-                .foregroundColor(message.isOutgoing ? Color(hex: "#5C6BC0") : Color(hex: "#EF5350"))
+                .foregroundColor(message.isOutgoing ? Color(hex: "#5C6BC0") : statusColor)
                 .font(.system(size: 18))
                 .padding(.top, 2)
 
             VStack(alignment: .leading, spacing: 4) {
-                // Header
+                // Header: sender + status badge
                 HStack(spacing: 6) {
                     Text(message.senderName.isEmpty ? "Unknown" : message.senderName)
                         .font(.system(size: 13, weight: .semibold))
@@ -124,17 +141,16 @@ struct DeletedMessageBubble: View {
 
                     Spacer()
 
-                    // Deleted badge
                     HStack(spacing: 3) {
-                        Image(systemName: "trash.fill")
+                        Image(systemName: statusIcon)
                             .font(.system(size: 10))
-                        Text(Self.dateFormatter.string(from: message.deletedDate))
+                        Text(Self.dateFormatter.string(from: statusDate))
                             .font(.system(size: 11))
                     }
-                    .foregroundColor(Color(hex: "#EF5350"))
+                    .foregroundColor(statusColor)
                 }
 
-                // Text body
+                // Current text (after edit, or final-before-delete)
                 if message.text.isEmpty {
                     if message.hasMedia {
                         Label("Медиафайл", systemImage: mediaIcon(for: message.mediaType))
@@ -153,7 +169,25 @@ struct DeletedMessageBubble: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                // Sent date
+                // For edits: show the original text below in a quote-style block.
+                if message.isEdited, let original = message.originalText {
+                    HStack(alignment: .top, spacing: 6) {
+                        Rectangle()
+                            .fill(Color(hex: "#FFA726"))
+                            .frame(width: 2)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Оригинал")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(Color(hex: "#FFA726"))
+                            Text(original)
+                                .font(.system(size: 13))
+                                .foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(.top, 4)
+                }
+
                 Text("Отправлено: \(Self.dateFormatter.string(from: message.sentDate))")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary.opacity(0.7))
