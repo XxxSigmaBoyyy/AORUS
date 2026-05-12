@@ -909,56 +909,17 @@ def patch_settings_entry_point(tg: Path) -> None:
 
 
 def patch_download_accelerator(tg: Path) -> None:
-    """Patch MTProto download/upload parameters for faster transfers.
+    """Legacy hook for “download accelerator”.
 
-    Targets MTProtoKit's MTDatacenterTransferAuthAction or the TelegramCore
-    FetchMediaResource / MultipartUpload paths to increase parallel connections
-    and chunk size when DownloadAccelerator is enabled.
-
-    Falls back to UserDefaults-observable values that TelegramCore reads on start.
+    Injecting UserDefaults scaffolding into TelegramCore multipart sources matched
+    fragile anchors and repeatedly broke Swift parsing (expected declaration) on
+    CI. The accelerator UI still writes UserDefaults keys; we no longer mutate
+    TelegramCore network sources here — keeps the client buildable and stable.
     """
-    sentinel = "// AorusGram: download accelerator"
-    candidates = [
-        # MultipartUpload.swift: anchors like "let parallelParts =" hit property/context lines — injection breaks Swift (expected declaration). Skip.
-        tg / "submodules/TelegramCore/Sources/Network/MultipartFetch.swift",
-        tg / "submodules/TelegramCore/Sources/Network/FetchMediaResource.swift",
-        tg / "submodules/TelegramCore/Sources/Network/Upload.swift",
-    ]
-    anchors = [
-        "let parallelParts =",
-        "parallelParts:",
-        "let partSize =",
-        "var partSize =",
-        "maximumFetchSize",
-        "defaultPartSize",
-    ]
-    inject = (
-        "\n        " + sentinel + "\n"
-        "        let _aorusParallelParts = UserDefaults.standard.integer(forKey: \"aorusgram_mtproto_maxDownloadConnections\")\n"
-        "        let _aorusChunkSize     = UserDefaults.standard.integer(forKey: \"aorusgram_mtproto_downloadChunkSize\")\n"
-        "        // Overrides are applied only when set (non-zero) and feature is enabled\n"
-        "        if _aorusParallelParts > 0, UserDefaults.standard.bool(forKey: \"aorusgram_feature_download_accel\") {\n"
-        "            // parallel part count and chunk size are overridden below via local variable shadowing\n"
-        "            let _ = (_aorusParallelParts, _aorusChunkSize)\n"
-        "        }\n"
+    print(
+        "DownloadAccelerator: skip TelegramCore file injection (anchor drift breaks builds); "
+        "UserDefaults keys from AorusGram UI remain for future / local experiments"
     )
-    for path in candidates:
-        if not path.is_file():
-            continue
-        t = path.read_text(encoding="utf-8")
-        if sentinel in t:
-            print(f"DownloadAccelerator: already patched {path.name}")
-            return
-        for anchor in anchors:
-            if anchor in t:
-                # Inject before the first matching anchor
-                idx = t.find(anchor)
-                line_start = t.rfind("\n", 0, idx) + 1
-                t = t[:line_start] + inject + t[line_start:]
-                path.write_text(t, encoding="utf-8")
-                print(f"DownloadAccelerator: injected UserDefaults override in {path.name}")
-                return
-    print("DownloadAccelerator: no matching MTProto file found — using UserDefaults signaling only")
 
 
 def patch_ghost_mode_hooks(tg: Path) -> None:
