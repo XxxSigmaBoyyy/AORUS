@@ -111,6 +111,23 @@ struct AorusGramSettingsView: View {
                 GhostModeManager.shared.setEnabled(v)
             }
 
+            // "Hide typing" is a read-only sub-indicator: it always mirrors Ghost Mode.
+            // The user wanted this explicit in the UI: when Ghost is on, typing is hidden,
+            // and you can't independently disable it. The Binding's setter is a no-op so
+            // the toggle visually flips back if tapped; .allowsHitTesting(false) ensures
+            // taps don't reach it at all.
+            GlassToggleRow(
+                icon: "keyboard",
+                title: "Скрыть «печатает...»",
+                subtitle: ghostMode
+                    ? "Включено вместе с призраком"
+                    : "Включится при активации призрака",
+                iconColor: Color(hex: "#5C6BC0").opacity(0.7),
+                isOn: .constant(ghostMode)
+            )
+            .opacity(0.55)
+            .allowsHitTesting(false)
+
             Divider().opacity(0.15)
 
             VStack(spacing: 0) {
