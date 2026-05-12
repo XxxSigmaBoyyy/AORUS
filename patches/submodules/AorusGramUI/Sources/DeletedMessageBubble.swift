@@ -144,16 +144,16 @@ public final class DeletedMessagesInjector {
     // Вызывается из ChatHistoryListNode при построении списка сообщений
     public func deletedMessages(for peerId: Int64) -> [DeletedChatMessage] {
         return DeletedMessagesCache.shared.deletedMessages(peerId: peerId)
-            .map { cached in
+            .map { dm in
                 DeletedChatMessage(
-                    id:          cached.id,
-                    peerId:      cached.peerId,
-                    senderName:  cached.senderName,
-                    text:        cached.text,
-                    sentAt:      cached.sentDate,
-                    deletedAt:   cached.deletedDate,
-                    isOutgoing:  cached.isOutgoing,
-                    mediaPath:   cached.mediaPath.isEmpty ? nil : cached.mediaPath
+                    id:          dm.id,
+                    peerId:      dm.peerId,
+                    senderName:  dm.senderName,
+                    text:        dm.text,
+                    sentAt:      dm.sentDate,
+                    deletedAt:   dm.deletedDate,
+                    isOutgoing:  dm.isOutgoing,
+                    mediaPath:   dm.mediaPath.isEmpty ? nil : dm.mediaPath
                 )
             }
     }

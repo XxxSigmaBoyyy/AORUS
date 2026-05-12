@@ -293,7 +293,7 @@ private func aorusEntries(state: AorusState, theme: PresentationTheme) -> [Aorus
 public func aorusGramController(context: AccountContext) -> ViewController {
     let mgr   = AorusGramManager.shared
     let spoof = AntiSpoofManager.shared
-    let code  = AorusCodeManager.shared
+    let stealth = AorusStealthCodec.shared
 
     let initialState = AorusState(
         ghostMode:          mgr.ghostMode,
@@ -312,7 +312,7 @@ public func aorusGramController(context: AccountContext) -> ViewController {
         siriShortcuts:      mgr.siriShortcuts,
         antiSpoofDeleted:   spoof.antiSpoofDeleted,
         antiSpoofOnline:    spoof.antiSpoofOnline,
-        aorusCodeEnabled:   code.isEnabled
+        aorusCodeEnabled:   stealth.isEnabled
     )
     let statePromise = ValuePromise(initialState, ignoreRepeated: true)
     let stateValue   = Atomic(value: initialState)
@@ -346,7 +346,7 @@ public func aorusGramController(context: AccountContext) -> ViewController {
             mgr.siriShortcuts       = s.siriShortcuts
             spoof.antiSpoofDeleted  = s.antiSpoofDeleted
             spoof.antiSpoofOnline   = s.antiSpoofOnline
-            code.isEnabled          = s.aorusCodeEnabled
+            stealth.isEnabled       = s.aorusCodeEnabled
         },
         openChannel: {
             context.sharedContext.applicationBindings.openUrl("https://t.me/aorusgram")
