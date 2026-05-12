@@ -1089,26 +1089,35 @@ def patch_auto_reply_send_hook(tg: Path) -> None:
         print("AutoReplySend: AppDelegate.swift not found, skip")
         return
     t = path.read_text(encoding="utf-8")
-    # Legacy bug: `context` on AppDelegate is a Promise, not AuthorizedApplicationContext.
-    if (
-        "aorusgram.sendAutoReply" in t
-        and "let context = self?.context else { return }" in t
-        and "context.engine.messages.enqueueMessages" in t
-    ):
-        t = (
-            t.replace(
+
+    # --- Repair previously injected broken hooks (CI cache / older branding) ---
+    repaired = False
+    if "aorusgram.sendAutoReply" in t:
+        if "let context = self?.context else { return }" in t:
+            t = t.replace(
                 "let context = self?.context else { return }",
                 "let app = self?.contextValue else { return }",
                 1,
-            ).replace(
-                "let _ = context.engine.messages.enqueueMessages",
-                "let _ = app.context.engine.messages.enqueueMessages",
-                1,
             )
-        )
-        path.write_text(t, encoding="utf-8")
-        print("AutoReplySend: repaired legacy injection (Promise context → contextValue)")
-        return
+            repaired = True
+        # Telegram iOS uses top-level enqueueMessages(account:peerId:messages:), not *.engine.messages.enqueueMessages
+        for wrong_lead, fixed_lead in (
+            (
+                "let _ = context.engine.messages.enqueueMessages(\n                peerId: peerId,",
+                "let _ = enqueueMessages(\n                account: app.context.account,\n                peerId: peerId,",
+            ),
+            (
+                "let _ = app.context.engine.messages.enqueueMessages(\n                peerId: peerId,",
+                "let _ = enqueueMessages(\n                account: app.context.account,\n                peerId: peerId,",
+            ),
+        ):
+            if wrong_lead in t:
+                t = t.replace(wrong_lead, fixed_lead, 1)
+                repaired = True
+        if repaired:
+            path.write_text(t, encoding="utf-8")
+            print("AutoReplySend: repaired legacy auto-reply injection")
+            return
 
     if "aorusgram.sendAutoReply" in t:
         print("AutoReplySend: already injected")
@@ -1125,7 +1134,8 @@ def patch_auto_reply_send_hook(tg: Path) -> None:
         "                  let text = info[\"text\"] as? String,\n"
         "                  let app = self?.contextValue else { return }\n"
         "            let peerId = PeerId(peerIdNum.int64Value)\n"
-        "            let _ = app.context.engine.messages.enqueueMessages(\n"
+        "            let _ = enqueueMessages(\n"
+        "                account: app.context.account,\n"
         "                peerId: peerId,\n"
         "                messages: [EnqueueMessage.message(\n"
         "                    text: text, attributes: [], inlineStickers: [:],\n"
