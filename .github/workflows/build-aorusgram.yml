@@ -313,7 +313,10 @@ jobs:
           PY
 
           # 1. Copy AorusGramUI module (all new code, no conflicts)
-          mkdir -p $TG/submodules/AorusGramUI/Sources
+          # Wipe the tree first: cached telegram-ios may still contain renamed/removed Swift
+          # files; plain cp -r merges and leaves stale basenames → Bazel "filename used twice".
+          rm -rf $TG/submodules/AorusGramUI
+          mkdir -p $TG/submodules/AorusGramUI
           cp -r $PATCHES/submodules/AorusGramUI/. $TG/submodules/AorusGramUI/
 
           # 2. Copy PeerInfoScreen BUILD (adds AorusGramUI dep)
