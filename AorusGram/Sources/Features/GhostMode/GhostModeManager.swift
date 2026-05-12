@@ -26,7 +26,9 @@ final class GhostModeManager {
         isEnabled = UserDefaults.standard.bool(forKey: "aorusgram_ghost_mode")
     }
 
-    func toggle() { isEnabled.toggle() }
+    func toggle() { setEnabled(!isEnabled) }
+
+    func setEnabled(_ value: Bool) { isEnabled = value }
 
     func configure(hideLastSeen: Bool, blockReadReceipts: Bool, hidePeekStatus: Bool) {
         self.hideLastSeen = hideLastSeen
@@ -72,21 +74,40 @@ private let kGhostBlockedConstructors: Set<UInt32> = [
 //   NSObject._aorusGhost_addRequest:     →  original addRequest: implementation
 // Calling self._aorusGhost_addRequest() from inside _aorusGhost_addRequest therefore
 // calls the original — the standard ObjC swizzle-with-call-through pattern.
+// Ghost-mode keywords in the class name / description of MTRequest body objects.
+// MtProtoKit TL-generated ObjC classes follow patterns like:
+//   TL_account_updateStatus, TLaccount_updateStatus, Api_functions_account_updateStatus
+// Swift-generated wrappers bridged to ObjC may have mangled names containing:
+//   "updateStatus", "setTyping", "readHistory", "readMessageContents"
+private let kGhostBlockedKeywords: [String] = [
+    "updateStatus",       // account.updateStatus  — online/offline
+    "setTyping",          // messages.setTyping    — typing indicator
+    "readHistory",        // messages.readHistory  — read receipts (older API)
+    "readMessageContents",// messages.readMessageContents
+]
+
 private extension NSObject {
     @objc func _aorusGhost_addRequest(_ request: AnyObject) {
         if UserDefaults.standard.bool(forKey: "aorusgram_ghost_mode") {
-            // MTRequest body is NSData (serialised TL). First 4 bytes = constructor id (LE).
-            // Try both "bodyData" (older MtProtoKit) and "data" (newer).
-            var bodyData: Data? = nil
-            for key in ["bodyData", "data", "rawData"] {
-                if let d = (try? request.value(forKeyPath: key)) as? Data {
-                    bodyData = d; break
+            // Layer 1: inspect body class name (MtProtoKit ObjC TL-generated classes)
+            if let body = request.value(forKey: "body") {
+                let className = NSStringFromClass(type(of: body as AnyObject))
+                if kGhostBlockedKeywords.contains(where: { className.contains($0) }) {
+                    return
+                }
+                // Layer 2: check description (catches Swift-bridged types)
+                let desc = (body as AnyObject).description ?? ""
+                if kGhostBlockedKeywords.contains(where: { desc.contains($0) }) {
+                    return
                 }
             }
-            if let d = bodyData, d.count >= 4 {
-                let constructor = d.withUnsafeBytes { $0.load(as: UInt32.self) }
-                if kGhostBlockedConstructors.contains(constructor) {
-                    return // drop this request silently
+            // Layer 3: try binary TL constructor ID in body bytes (multiple property names)
+            let byteKeys = ["bodyData", "payload", "data", "rawData", "serializedData"]
+            for key in byteKeys {
+                if let d = request.value(forKey: key) as? Data, d.count >= 4 {
+                    let c = d.withUnsafeBytes { $0.load(as: UInt32.self) }
+                    if kGhostBlockedConstructors.contains(c) { return }
+                    break
                 }
             }
         }

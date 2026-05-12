@@ -107,7 +107,7 @@ struct AorusGramSettingsView: View {
             )
             .onChange(of: ghostMode) { v in
                 AorusGramConfig.setEnabled(.ghostMode, v)
-                GhostModeManager.shared.toggle()
+                GhostModeManager.shared.setEnabled(v)
             }
 
             Divider().opacity(0.15)
@@ -255,7 +255,10 @@ struct AorusGramSettingsView: View {
                 subtitle: "×2 скорость через параллельные соединения",
                 iconColor: Color(hex: "#FDD835"), isOn: $downloadAccel
             )
-            .onChange(of: downloadAccel) { v in AorusGramConfig.setEnabled(.downloadAccel, v) }
+            .onChange(of: downloadAccel) { v in
+                AorusGramConfig.setEnabled(.downloadAccel, v)
+                if v { DownloadAccelerator.shared.updateConfig(DownloadAccelerator.shared.config) }
+            }
 
             Divider().opacity(0.15)
 
@@ -265,7 +268,10 @@ struct AorusGramSettingsView: View {
                     subtitle: "Автоблок по ключевым словам",
                     iconColor: Color(hex: "#EF5350"), isOn: $antiSpam
                 )
-                .onChange(of: antiSpam) { v in AorusGramConfig.setEnabled(.antiSpam, v) }
+                .onChange(of: antiSpam) { v in
+                AorusGramConfig.setEnabled(.antiSpam, v)
+                AntiSpamManager.shared.setEnabled(v)
+            }
 
                 if antiSpam {
                     Button { showSpamKeywords = true } label: {
