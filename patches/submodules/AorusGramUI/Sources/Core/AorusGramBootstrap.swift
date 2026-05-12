@@ -52,6 +52,13 @@ public final class AorusGramBootstrap {
         ) { note in
             DeletedMessagesCache.shared.handleWillDeleteNotification(note)
         }
+        NotificationCenter.default.addObserver(
+            forName: .aorusWillDeleteMessageGlobalId,
+            object: nil,
+            queue: nil
+        ) { note in
+            DeletedMessagesCache.shared.handleWillDeleteByGlobalIdNotification(note)
+        }
 
         // Subscribe to incoming message events (injected by branding.py into AccountStateManager)
         NotificationCenter.default.addObserver(
@@ -71,6 +78,10 @@ public final class AorusGramBootstrap {
         guard let info = note.userInfo else { return }
         let peerId = (info["peerId"] as? NSNumber)?.int64Value ?? 0
         let text   = info["text"]   as? String ?? ""
+
+        // Pre-cache for deleted-messages feature — captures content before any deletion.
+        // Without this the cache only sees messages whose delete-hook fires, which is unreliable.
+        DeletedMessagesCache.shared.handleIncomingNotification(note)
 
         // Anti-spam gate
         if AorusGramConfig.isEnabled(.antiSpam) {

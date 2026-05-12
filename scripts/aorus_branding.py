@@ -644,76 +644,86 @@ def patch_callkit_brand_name(tg: Path) -> None:
 def patch_deleted_messages_interception(tg: Path) -> None:
     """Post NotificationCenter event before postbox.deleteMessages() in TelegramCore.
 
-    Architecture:
-      - TelegramCore is a separate Swift module — we can't call main-app code directly.
-      - NotificationCenter (Foundation) works across module boundaries without
-        circular dependency issues.
-      - We inject a NotificationCenter.default.post(...) call right before the
-        deleteMessages transaction. The main app observes this notification in
-        AorusGramBootstrap and calls DeletedMessagesCache.shared.cacheMessage().
-      - No global callback declarations needed — pure Foundation bridging.
+    Two real delete entry points in current Telegram-iOS (verified against upstream):
+      1. submodules/TelegramCore/Sources/TelegramEngine/Messages/DeleteMessages.swift
+         — `_internal_deleteMessages(transaction:, mediaBox:, ids: [MessageId], ...)`
+         The function ends with `transaction.deleteMessages(ids, forEachMedia: { _ in })`.
+         Used for channel + cloud chat deletes; ids are full peer-scoped MessageId so we
+         can call `transaction.getMessage(id)` to grab text/author before the row is gone.
+      2. submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift
+         — `case let .DeleteMessagesWithGlobalIds(ids):` branch.
+         Used for legacy non-channel deletes; ids are bare `Int32` globals (no peer).
+         We post a global-id-only notification — main app updates pre-cached rows by id.
+
+    The previous version targeted AccountStateManager.swift which doesn't contain
+    delete calls at all in current upstream — the hook silently no-op'd.
     """
-    candidates = [
-        tg / "submodules/TelegramCore/Sources/State/AccountStateManager.swift",
-        tg / "submodules/TelegramCore/Sources/AccountStateManager.swift",
-    ]
-    path: Path | None = next((p for p in candidates if p.is_file()), None)
-    if path is None:
-        print("AccountStateManager.swift not found, skip deleted-messages hook")
-        return
-
-    t = path.read_text(encoding="utf-8")
-    orig = t
-
-    # Sentinel — injected once only
     sentinel = "// AorusGram: NotificationCenter delete bridge"
-    if sentinel in t:
-        print("AccountStateManager: deleted-messages hook already present")
-        return
 
-    # NotificationCenter hook — pure Foundation, no cross-module imports needed.
-    # Tries to get message content via transaction.getMessage(id) before deletion.
-    # If getMessage is not available / returns nil, posts without content (id only).
-    hook_prefix = (
-        "                " + sentinel + "\n"
-        "                for id in ids {\n"
-        "                    var userInfo: [String: Any] = [\n"
-        "                        \"msgId\":  NSNumber(value: id.id),\n"
-        "                        \"peerId\": NSNumber(value: id.peerId.toInt64()),\n"
-        "                    ]\n"
-        "                    if let msg = transaction.getMessage(id) {\n"
-        "                        userInfo[\"senderId\"]   = NSNumber(value: msg.author?.id.toInt64() ?? 0)\n"
-        "                        userInfo[\"senderName\"] = msg.author?.compactDisplayTitle ?? \"\"\n"
-        "                        userInfo[\"text\"]       = msg.text\n"
-        "                        userInfo[\"date\"]       = NSNumber(value: msg.timestamp)\n"
-        "                        userInfo[\"isOutgoing\"] = NSNumber(value: msg.flags.contains(.Outgoing))\n"
-        "                    }\n"
-        "                    NotificationCenter.default.post(\n"
-        "                        name: NSNotification.Name(\"aorusgram.willDeleteMessage\"),\n"
-        "                        object: nil, userInfo: userInfo)\n"
-        "                }\n"
-        "                "
-    )
+    # --- 1. Peer-scoped deletes in _internal_deleteMessages ---
+    delete_msgs_path = tg / "submodules/TelegramCore/Sources/TelegramEngine/Messages/DeleteMessages.swift"
+    if delete_msgs_path.is_file():
+        t = delete_msgs_path.read_text(encoding="utf-8")
+        if sentinel in t:
+            print("DeleteMessages.swift: hook already present")
+        else:
+            anchor = "transaction.deleteMessages(ids, forEachMedia: { _ in"
+            hook = (
+                "    " + sentinel + " — peer-scoped\n"
+                "    for id in ids {\n"
+                "        var userInfo: [String: Any] = [\n"
+                "            \"msgId\":  NSNumber(value: id.id),\n"
+                "            \"peerId\": NSNumber(value: id.peerId.toInt64()),\n"
+                "        ]\n"
+                "        if let msg = transaction.getMessage(id) {\n"
+                "            userInfo[\"senderId\"]   = NSNumber(value: msg.author?.id.toInt64() ?? 0)\n"
+                "            userInfo[\"senderName\"] = msg.author?.compactDisplayTitle ?? \"\"\n"
+                "            userInfo[\"text\"]       = msg.text\n"
+                "            userInfo[\"date\"]       = NSNumber(value: msg.timestamp)\n"
+                "            userInfo[\"isOutgoing\"] = NSNumber(value: msg.flags.contains(.Outgoing))\n"
+                "        }\n"
+                "        NotificationCenter.default.post(\n"
+                "            name: NSNotification.Name(\"aorusgram.willDeleteMessage\"),\n"
+                "            object: nil, userInfo: userInfo)\n"
+                "    }\n"
+                "    "
+            )
+            if anchor in t:
+                t = t.replace(anchor, hook + anchor, 1)
+                delete_msgs_path.write_text(t, encoding="utf-8")
+                print("DeleteMessages.swift: peer-scoped delete hook injected")
+            else:
+                print("DeleteMessages.swift: anchor not found — skipped")
+    else:
+        print("DeleteMessages.swift: file not found — skipped")
 
-    # Try multiple anchor patterns across Telegram iOS versions
-    anchors = [
-        "transaction.deleteMessages(ids, forEachMedia: {",
-        "transaction.deleteMessages(messageIds, forEachMedia: {",
-        ".deleteMessages(ids, forEachMedia: {",
-    ]
-    injected = False
-    for anchor in anchors:
+    # --- 2. Global-id deletes in AccountStateManagementUtils ---
+    utils_path = tg / "submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift"
+    if utils_path.is_file():
+        t = utils_path.read_text(encoding="utf-8")
+        if (sentinel + " — global") in t:
+            print("AccountStateManagementUtils.swift: global-id hook already present")
+            return
+        # Anchor: `transaction.deleteMessagesWithGlobalIds(ids, forEachMedia: { media in`
+        anchor = "transaction.deleteMessagesWithGlobalIds(ids, forEachMedia:"
+        hook = (
+            "                " + sentinel + " — global\n"
+            "                for gid in ids {\n"
+            "                    NotificationCenter.default.post(\n"
+            "                        name: NSNotification.Name(\"aorusgram.willDeleteMessageGlobalId\"),\n"
+            "                        object: nil,\n"
+            "                        userInfo: [\"msgId\": NSNumber(value: gid)])\n"
+            "                }\n"
+            "                "
+        )
         if anchor in t:
-            t = t.replace(anchor, hook_prefix + anchor, 1)
-            print(f"AccountStateManager: NotificationCenter delete bridge injected (anchor: {anchor[:55]}...)")
-            injected = True
-            break
-
-    if not injected:
-        print("AccountStateManager: deleteMessages anchor not found (upstream drift) — hook skipped gracefully")
-
-    if t != orig:
-        path.write_text(t, encoding="utf-8")
+            t = t.replace(anchor, hook + anchor, 1)
+            utils_path.write_text(t, encoding="utf-8")
+            print("AccountStateManagementUtils.swift: global-id delete hook injected")
+        else:
+            print("AccountStateManagementUtils.swift: deleteMessagesWithGlobalIds anchor not found — skipped")
+    else:
+        print("AccountStateManagementUtils.swift: file not found — skipped")
 
 
 def patch_app_delegate_import_aorusgram(tg: Path) -> None:
@@ -1011,19 +1021,20 @@ def _inject_ghost_guard(candidates: list, anchors: list, label: str,
 def patch_incoming_message_hook(tg: Path) -> None:
     """Post NotificationCenter event for each incoming message.
 
-    The main-app AorusGramBootstrap observes 'aorusgram.didReceiveMessage' and
-    dispatches to AntiSpamManager.processIncoming() and AutoReplyManager.handleIncoming().
+    Verified upstream call site is AccountStateManagementUtils.swift around the
+    `let _ = transaction.addMessages(messages, location: location)` line that runs
+    inside the .UpperHistoryBlock branch — that's the path server-sent message updates
+    flow through after they're materialised as `[StoreMessage]`.
 
-    Uses the same architecture as the deleted-messages hook:
-      TelegramCore (closed module) → NotificationCenter.default.post → main app.
+    The main-app AorusGramBootstrap observes 'aorusgram.didReceiveMessage' and
+    dispatches to:
+      - AntiSpamManager.processIncoming (anti-spam keyword scan)
+      - AutoReplyManager.handleIncoming  (auto-reply trigger)
+      - DeletedMessagesCache.handleIncomingNotification (pre-cache for delete recovery)
     """
-    candidates = [
-        tg / "submodules/TelegramCore/Sources/State/AccountStateManager.swift",
-        tg / "submodules/TelegramCore/Sources/AccountStateManager.swift",
-    ]
-    path: "Path | None" = next((p for p in candidates if p.is_file()), None)
-    if path is None:
-        print("IncomingMessageHook: AccountStateManager.swift not found, skip")
+    path = tg / "submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift"
+    if not path.is_file():
+        print("IncomingMessageHook: AccountStateManagementUtils.swift not found, skip")
         return
 
     t = path.read_text(encoding="utf-8")
@@ -1033,28 +1044,29 @@ def patch_incoming_message_hook(tg: Path) -> None:
 
     sentinel = "// AorusGram: incoming message hook"
 
-    # Anchor: addMessages (incoming) in the postbox transaction.
-    # Try multiple patterns used across Telegram iOS versions.
-    anchors = [
-        "transaction.addMessages(messages,",
-        "transaction.addMessages(storeMessages,",
-        ".addMessages(messages,",
-        "addMessages(transaction: transaction",
-    ]
+    # Anchor is intentionally precise — this line exists in current upstream and
+    # gives us `messages: [StoreMessage]` in scope.
+    anchor = "let _ = transaction.addMessages(messages, location: location)"
+    if anchor not in t:
+        print("IncomingMessageHook: addMessages(messages, location: location) anchor not found — skipped")
+        return
 
+    # StoreMessage.id is StoreMessageId — `.Id(MessageId)` or `.Partial(...)`.
+    # We only post for fully-resolved IDs (the .Id case) on the StoreMessage's
+    # author/text/timestamp. Filter for .Incoming flag.
     hook_code = (
-        "                " + sentinel + "\n"
-        "                for msg in messages {\n"
-        "                    guard msg.flags.contains(.Incoming) else { continue }\n"
+        sentinel + "\n"
+        "                for storeMsg in messages {\n"
+        "                    guard storeMsg.flags.contains(.Incoming) else { continue }\n"
+        "                    guard case let .Id(mid) = storeMsg.id else { continue }\n"
         "                    var userInfo: [String: Any] = [\n"
-        "                        \"msgId\":  NSNumber(value: msg.id.id),\n"
-        "                        \"peerId\": NSNumber(value: msg.id.peerId.toInt64()),\n"
-        "                        \"text\":   msg.text,\n"
-        "                        \"date\":   NSNumber(value: msg.timestamp),\n"
+        "                        \"msgId\":  NSNumber(value: mid.id),\n"
+        "                        \"peerId\": NSNumber(value: mid.peerId.toInt64()),\n"
+        "                        \"text\":   storeMsg.text,\n"
+        "                        \"date\":   NSNumber(value: storeMsg.timestamp),\n"
         "                    ]\n"
-        "                    if let author = msg.author {\n"
-        "                        userInfo[\"senderId\"]   = NSNumber(value: author.id.toInt64())\n"
-        "                        userInfo[\"senderName\"] = author.compactDisplayTitle\n"
+        "                    if let authorId = storeMsg.authorId {\n"
+        "                        userInfo[\"senderId\"] = NSNumber(value: authorId.toInt64())\n"
         "                    }\n"
         "                    NotificationCenter.default.post(\n"
         "                        name: NSNotification.Name(\"aorusgram.didReceiveMessage\"),\n"
@@ -1063,18 +1075,9 @@ def patch_incoming_message_hook(tg: Path) -> None:
         "                "
     )
 
-    injected = False
-    for anchor in anchors:
-        if anchor in t:
-            t = t.replace(anchor, hook_code + anchor, 1)
-            print(f"IncomingMessageHook: injected before '{anchor[:55]}…'")
-            injected = True
-            break
-
-    if not injected:
-        print("IncomingMessageHook: anchor not found — skipped gracefully")
-    else:
-        path.write_text(t, encoding="utf-8")
+    t = t.replace(anchor, hook_code + anchor, 1)
+    path.write_text(t, encoding="utf-8")
+    print("IncomingMessageHook: injected at addMessages(messages, location: location)")
 
 
 def patch_auto_reply_send_hook(tg: Path) -> None:
@@ -1196,7 +1199,13 @@ def main() -> None:
     patch_settings_entry_point(tg)
     patch_download_accelerator(tg)
     patch_deleted_messages_interception(tg)
-    patch_ghost_mode_hooks(tg)
+    # patch_ghost_mode_hooks: removed — source-level guards injected `if { return }`
+    # inside `network.request(Api.functions.X(...))` expressions, which is syntactically
+    # invalid Swift. They silently skipped when anchors didn't match (graceful fall-through)
+    # but would crash the build the moment any anchor did match. Ghost mode is now handled
+    # exclusively at the MTProto layer by GhostModeSwizzler in GhostModeManager.swift,
+    # which is the correct architectural seam — it intercepts every outgoing TL request
+    # by class name (Swift-mangled TL wrapper) and binary constructor ID.
     patch_incoming_message_hook(tg)
     patch_auto_reply_send_hook(tg)
     patch_client_spoof_app_version(tg)
