@@ -1,0 +1,324 @@
+import SwiftUI
+
+// Standalone screen listing deleted messages for a specific chat (or all chats).
+// Open from the chat context menu: "Удалённые сообщения".
+struct DeletedMessagesView: View {
+    let peerId: Int64
+    let peerName: String
+
+    @State private var messages: [DeletedMessage] = []
+    @State private var isLoading = true
+    @State private var searchText = ""
+
+    private var filtered: [DeletedMessage] {
+        guard !searchText.isEmpty else { return messages }
+        let q = searchText.lowercased()
+        return messages.filter {
+            $0.text.lowercased().contains(q) ||
+            $0.senderName.lowercased().contains(q)
+        }
+    }
+
+    var body: some View {
+        ZStack {
+            AorusAnimatedBackground()
+
+            if isLoading {
+                ProgressView("Загрузка...")
+                    .foregroundColor(.secondary)
+            } else if filtered.isEmpty {
+                emptyState
+            } else {
+                messageList
+            }
+        }
+        .navigationTitle("Удалённые · \(peerName)")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $searchText, prompt: "Поиск...")
+        .onAppear { reload() }
+        .toolbar {
+            ToolbarItem(placement: .destructiveAction) {
+                if !messages.isEmpty {
+                    Button(role: .destructive) {
+                        DeletedMessagesCache.shared.clearAll()
+                        reload()
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Subviews
+
+    private var messageList: some View {
+        ScrollView {
+            LazyVStack(spacing: 8) {
+                ForEach(filtered) { msg in
+                    DeletedMessageBubble(message: msg)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "trash.slash")
+                .font(.system(size: 56))
+                .foregroundColor(.secondary.opacity(0.5))
+            Text("Удалённых сообщений нет")
+                .font(.headline)
+                .foregroundColor(.secondary)
+            Text("Когда кто-то удалит сообщение, оно сохранится здесь.")
+                .font(.subheadline)
+                .foregroundColor(.secondary.opacity(0.7))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+        }
+    }
+
+    // MARK: - Data
+
+    private func reload() {
+        isLoading = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = DeletedMessagesCache.shared.deletedMessages(peerId: peerId)
+            DispatchQueue.main.async {
+                self.messages = result
+                self.isLoading = false
+            }
+        }
+    }
+}
+
+// MARK: - Message Bubble
+
+struct DeletedMessageBubble: View {
+    let message: DeletedMessage
+
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        f.locale = Locale.current
+        return f
+    }()
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            // Direction indicator
+            Image(systemName: message.isOutgoing ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
+                .foregroundColor(message.isOutgoing ? Color(hex: "#5C6BC0") : Color(hex: "#EF5350"))
+                .font(.system(size: 18))
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 4) {
+                // Header
+                HStack(spacing: 6) {
+                    Text(message.senderName.isEmpty ? "Unknown" : message.senderName)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.primary)
+
+                    Spacer()
+
+                    // Deleted badge
+                    HStack(spacing: 3) {
+                        Image(systemName: "trash.fill")
+                            .font(.system(size: 10))
+                        Text(Self.dateFormatter.string(from: message.deletedDate))
+                            .font(.system(size: 11))
+                    }
+                    .foregroundColor(Color(hex: "#EF5350"))
+                }
+
+                // Text body
+                if message.text.isEmpty {
+                    if message.hasMedia {
+                        Label("Медиафайл", systemImage: mediaIcon(for: message.mediaType))
+                            .font(.system(size: 13))
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text("[пустое сообщение]")
+                            .font(.system(size: 13, weight: .light))
+                            .foregroundColor(.secondary)
+                            .italic()
+                    }
+                } else {
+                    Text(message.text)
+                        .font(.system(size: 15))
+                        .foregroundColor(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                // Sent date
+                Text("Отправлено: \(Self.dateFormatter.string(from: message.sentDate))")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary.opacity(0.7))
+            }
+        }
+        .padding(12)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func mediaIcon(for type: String) -> String {
+        switch type.lowercased() {
+        case "photo":  return "photo.fill"
+        case "video":  return "video.fill"
+        case "audio", "voice": return "waveform"
+        case "sticker": return "face.smiling.fill"
+        default: return "paperclip"
+        }
+    }
+}
+
+// MARK: - Pinboard View
+
+struct PinboardView: View {
+    @ObservedObject private var store = PinboardStore.shared
+    @State private var editingNote: PinnedMessage? = nil
+    @State private var noteText = ""
+
+    var body: some View {
+        ZStack {
+            AorusAnimatedBackground()
+
+            if store.items.isEmpty {
+                emptyState
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 10) {
+                        ForEach(store.items) { item in
+                            PinnedCard(item: item) {
+                                editingNote = item
+                                noteText = item.note
+                            }
+                            .contextMenu {
+                                Button(role: .destructive) {
+                                    PinboardManager.shared.unpin(id: item.id)
+                                } label: {
+                                    Label("Открепить", systemImage: "pin.slash.fill")
+                                }
+                            }
+                        }
+                    }
+                    .padding(12)
+                }
+            }
+        }
+        .navigationTitle("Pinboard")
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $editingNote) { item in
+            noteEditor(for: item)
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "pin.slash")
+                .font(.system(size: 56))
+                .foregroundColor(.secondary.opacity(0.5))
+            Text("Нет закреплённых сообщений")
+                .font(.headline)
+                .foregroundColor(.secondary)
+            Text("Долгое нажатие на сообщение → «Закрепить в Pinboard»")
+                .font(.subheadline)
+                .foregroundColor(.secondary.opacity(0.7))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+        }
+    }
+
+    private func noteEditor(for item: PinnedMessage) -> some View {
+        NavigationView {
+            ZStack {
+                AorusAnimatedBackground()
+                Form {
+                    Section("Заметка к сообщению") {
+                        TextEditor(text: $noteText)
+                            .frame(minHeight: 100)
+                    }
+                    Section {
+                        Text(item.text)
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    } header: {
+                        Text("Сообщение от \(item.senderName)")
+                    }
+                }
+                .scrollContentBackground(.hidden)
+            }
+            .navigationTitle("Редактировать заметку")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Сохранить") {
+                        PinboardManager.shared.updateNote(id: item.id, note: noteText)
+                        editingNote = nil
+                    }
+                }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Отмена") { editingNote = nil }
+                }
+            }
+        }
+    }
+}
+
+struct PinnedCard: View {
+    let item: PinnedMessage
+    let onEditNote: () -> Void
+
+    private static let df: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .short
+        f.timeStyle = .short
+        return f
+    }()
+
+    var body: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Label(item.peerName, systemImage: "bubble.left.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(Color(hex: "#FFA726"))
+                    Spacer()
+                    Text(Self.df.string(from: item.pinDate))
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+
+                Text(item.text)
+                    .font(.system(size: 14))
+                    .lineLimit(4)
+
+                if !item.note.isEmpty {
+                    HStack(spacing: 4) {
+                        Image(systemName: "note.text")
+                            .font(.system(size: 11))
+                        Text(item.note)
+                            .font(.system(size: 12))
+                            .italic()
+                    }
+                    .foregroundColor(.secondary)
+                }
+
+                HStack {
+                    Text("от \(item.senderName)")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary.opacity(0.7))
+                    Spacer()
+                    Button(action: onEditNote) {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+            .padding(12)
+        }
+    }
+}
