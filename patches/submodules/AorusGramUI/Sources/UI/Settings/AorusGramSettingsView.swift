@@ -98,12 +98,18 @@ struct AorusGramSettingsView: View {
     }
 
     // MARK: - Privacy
+    //
+    // Three top-level toggles only, in this exact order:
+    //   1. Режим призрака   — single switch that hides online + typing + read receipts
+    //   2. Удалённые сообщения — pre-caches incoming + reveals deleted via dedicated screen
+    //   3. Скрытие экрана при записи — blurs app when system screen recording is active
 
     private var privacySection: some View {
         settingsSection(title: "Приватность", icon: "lock.shield.fill", color: Color(hex: "#5C6BC0")) {
+            // 1. Ghost Mode — one switch covers hide online + hide typing + block read receipts
             GlassToggleRow(
                 icon: "eye.slash.fill", title: "Режим призрака",
-                subtitle: "Скрыть онлайн, прочтение и «печатает...»",
+                subtitle: "Скрывает онлайн, «печатает...» и галочки прочтения",
                 iconColor: Color(hex: "#5C6BC0"), isOn: $ghostMode
             )
             .onChange(of: ghostMode) { v in
@@ -111,31 +117,15 @@ struct AorusGramSettingsView: View {
                 GhostModeManager.shared.setEnabled(v)
             }
 
-            // "Hide typing" is a read-only sub-indicator: it always mirrors Ghost Mode.
-            // The user wanted this explicit in the UI: when Ghost is on, typing is hidden,
-            // and you can't independently disable it. The Binding's setter is a no-op so
-            // the toggle visually flips back if tapped; .allowsHitTesting(false) ensures
-            // taps don't reach it at all.
-            GlassToggleRow(
-                icon: "keyboard",
-                title: "Скрыть «печатает...»",
-                subtitle: ghostMode
-                    ? "Включено вместе с призраком"
-                    : "Включится при активации призрака",
-                iconColor: Color(hex: "#5C6BC0").opacity(0.7),
-                isOn: .constant(ghostMode)
-            )
-            .opacity(0.55)
-            .allowsHitTesting(false)
-
             Divider().opacity(0.15)
 
+            // 2. Deleted Messages — pre-cache + view
             VStack(spacing: 0) {
                 GlassToggleRow(
                     icon: "trash.slash.fill", title: "Удалённые сообщения",
                     subtitle: deletedCount > 0
                         ? "Сохранено: \(deletedCount) сообщ."
-                        : "Сохранять контент до удаления",
+                        : "Сохранять контент сообщений до их удаления",
                     iconColor: Color(hex: "#EF5350"), isOn: $deletedMessages
                 )
                 .onChange(of: deletedMessages) { v in
@@ -158,43 +148,18 @@ struct AorusGramSettingsView: View {
 
             Divider().opacity(0.15)
 
+            // 3. Screen recording protection — clearer name than "Защита от скриншотов"
+            //    Original wording was ambiguous (who is protecting whom from what).
             GlassToggleRow(
-                icon: "camera.fill", title: "Защита от скриншотов",
-                subtitle: "Блюр при скриншоте и записи экрана",
+                icon: "rectangle.on.rectangle.slash",
+                title: "Скрытие экрана при записи",
+                subtitle: "Блюрит содержимое во время записи экрана и при скриншотах",
                 iconColor: Color(hex: "#AB47BC"), isOn: $antiScreenshot
             )
             .onChange(of: antiScreenshot) { v in
                 AorusGramConfig.setEnabled(.antiScreenshot, v)
                 if v { AntiScreenshotManager.shared.enable() }
                 else { AntiScreenshotManager.shared.disable() }
-            }
-
-            Divider().opacity(0.15)
-
-            VStack(spacing: 0) {
-                GlassToggleRow(
-                    icon: "lock.rectangle.stack.fill", title: "Секретный пин",
-                    subtitle: "Другой код — другой аккаунт",
-                    iconColor: Color(hex: "#26A69A"), isOn: $secretPin
-                )
-                .onChange(of: secretPin) { v in
-                    AorusGramConfig.setEnabled(.secretPin, v)
-                    if v { showSecretPin = true }
-                    else { SecretPinManager.shared.clearPins() }
-                }
-
-                if secretPin && SecretPinManager.shared.isConfigured {
-                    Button { showSecretPin = true } label: {
-                        HStack {
-                            Spacer()
-                            Text("Изменить пин-коды →")
-                                .font(.system(size: 13))
-                                .foregroundColor(Color(hex: "#26A69A"))
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.bottom, 8)
-                    }
-                }
             }
         }
     }

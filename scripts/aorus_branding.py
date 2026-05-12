@@ -1093,10 +1093,9 @@ def patch_ghost_mode_hide_typing(tg: Path) -> None:
     `postbox.transaction { transaction -> Signal<Void, NoError> in ... }`.
 
     We inject an early `return .complete()` BEFORE the postbox transaction when
-    both the master ghost flag AND the per-feature hide-typing flag are set.
-    This is the cleanest seam: one anchor, valid Swift in expression context,
-    blocks every typing-related setTyping/setEncryptedTyping API call upstream
-    of the network layer.
+    the master ghost flag is set. This is the cleanest seam: one anchor, valid
+    Swift in expression context, blocks every typing-related setTyping API call
+    upstream of the network layer.
     """
     path = tg / "submodules/TelegramCore/Sources/State/ManagedLocalInputActivities.swift"
     if not path.is_file():
@@ -1114,11 +1113,6 @@ def patch_ghost_mode_hide_typing(tg: Path) -> None:
         print("HideTyping: anchor not found — skipped (upstream drift)")
         return
 
-    # Hide typing whenever Ghost Mode is on. The per-feature sub-toggle is not
-    # required — when the user enables Ghost Mode they expect everything (online,
-    # typing, read receipts) to be hidden by default. If they want finer control
-    # later, the GhostModeManager.configure(hidePeekStatus:) setter still writes
-    # the sub-key; we just don't require it as a gate.
     guard = (
         sentinel + "\n"
         "    if UserDefaults.standard.bool(forKey: \"aorusgram_ghost_mode\") {\n"
@@ -1129,6 +1123,93 @@ def patch_ghost_mode_hide_typing(tg: Path) -> None:
     t = t.replace(anchor, guard + anchor, 1)
     path.write_text(t, encoding="utf-8")
     print("HideTyping: injected early-return guard in requestActivity")
+
+
+def patch_ghost_mode_hide_online(tg: Path) -> None:
+    """Hide online status (suppress account.updateStatus) when Ghost Mode is on.
+
+    Patched file: submodules/TelegramCore/Sources/State/ManagedAccountPresence.swift
+
+    `updatePresence(_ isOnline: Bool)` is the single function that calls
+    Api.functions.account.updateStatus(offline:). Injecting an early return at
+    the very top of the function suppresses ALL presence broadcasts to the server,
+    so peers never see the user as 'online' or 'recently'.
+
+    Note: this stops the OUTGOING update. The user's last-seen timestamp on the
+    server stays whatever it was when ghost was first enabled, which is exactly
+    the behaviour you want (frozen presence).
+    """
+    path = tg / "submodules/TelegramCore/Sources/State/ManagedAccountPresence.swift"
+    if not path.is_file():
+        print("HideOnline: ManagedAccountPresence.swift not found, skip")
+        return
+
+    t = path.read_text(encoding="utf-8")
+    sentinel = "// AorusGram: hide online presence"
+    if sentinel in t:
+        print("HideOnline: already injected")
+        return
+
+    anchor = "private func updatePresence(_ isOnline: Bool) {"
+    if anchor not in t:
+        print("HideOnline: updatePresence anchor not found — skipped")
+        return
+
+    guard = (
+        anchor + "\n"
+        "        " + sentinel + "\n"
+        "        if UserDefaults.standard.bool(forKey: \"aorusgram_ghost_mode\") { return }"
+    )
+    t = t.replace(anchor, guard, 1)
+    path.write_text(t, encoding="utf-8")
+    print("HideOnline: injected early-return guard in updatePresence")
+
+
+def patch_ghost_mode_block_read(tg: Path) -> None:
+    """Block read-receipt sync (messages.readHistory / channels.readHistory)
+    when Ghost Mode is on.
+
+    Patched file: submodules/TelegramCore/Sources/State/SynchronizePeerReadState.swift
+
+    `synchronizePeerReadState(...)` is the main pipeline that pushes read state
+    to the server. It returns Signal<Never, PeerReadStateValidationError>.
+    Returning .complete() at the top short-circuits the entire flow — no
+    readHistory/channels.readHistory request leaves the device.
+
+    This covers the bulk path. readMessageContents in AccountViewTracker still
+    fires for mention/media markers, but those are edge cases that don't broadcast
+    a 'message read' indicator the same way.
+    """
+    path = tg / "submodules/TelegramCore/Sources/State/SynchronizePeerReadState.swift"
+    if not path.is_file():
+        print("BlockRead: SynchronizePeerReadState.swift not found, skip")
+        return
+
+    t = path.read_text(encoding="utf-8")
+    sentinel = "// AorusGram: block read receipts"
+    if sentinel in t:
+        print("BlockRead: already injected")
+        return
+
+    anchor = (
+        "func synchronizePeerReadState(network: Network, postbox: Postbox, "
+        "stateManager: AccountStateManager, peerId: PeerId, push: Bool, validate: Bool) "
+        "-> Signal<Never, PeerReadStateValidationError> {"
+    )
+    if anchor not in t:
+        print("BlockRead: synchronizePeerReadState anchor not found — skipped")
+        return
+
+    guard = (
+        anchor + "\n"
+        "    " + sentinel + "\n"
+        "    if UserDefaults.standard.bool(forKey: \"aorusgram_ghost_mode\") {\n"
+        "        return .complete()\n"
+        "    }"
+    )
+    t = t.replace(anchor, guard, 1)
+    path.write_text(t, encoding="utf-8")
+    print("BlockRead: injected early-return guard in synchronizePeerReadState")
 
 
 def patch_incoming_message_hook(tg: Path) -> None:
@@ -1314,6 +1395,8 @@ def main() -> None:
     patch_deleted_messages_interception(tg)
     patch_block_ads(tg)
     patch_ghost_mode_hide_typing(tg)
+    patch_ghost_mode_hide_online(tg)
+    patch_ghost_mode_block_read(tg)
     patch_incoming_message_hook(tg)
     patch_auto_reply_send_hook(tg)
     patch_client_spoof_app_version(tg)
