@@ -1052,20 +1052,33 @@ def patch_block_ads(tg: Path) -> None:
         print("BlockAds: already patched")
         return
 
-    # Original guard (2-line anchor, unique in this file)
-    old = "            guard let inputPeer else {\n                return .single((nil, nil, nil, []))\n            }"
+    # Patch activate() to mark itself activated and return immediately.
+    # We set isActivated=true so repeat calls are no-ops (same as normal flow).
+    # No unreachable code: the guard is inside the branch that does NOT execute.
+    # Anchor is unique: "        self.isActivated = true" followed by blank line exists
+    # only once in activate() in this file.
+    old = (
+        "    func activate() {\n"
+        "        if self.isActivated {\n"
+        "            return\n"
+        "        }\n"
+        "        self.isActivated = true"
+    )
     new = (
-        "            // AorusGram: block sponsored ads\n"
-        "            guard let inputPeer, !UserDefaults.standard.bool(forKey: \"aorusgram_block_ads\") else {\n"
-        "                return .single((nil, nil, nil, []))\n"
-        "            }"
+        "    func activate() {\n"
+        "        if self.isActivated {\n"
+        "            return\n"
+        "        }\n"
+        "        self.isActivated = true\n"
+        "        // AorusGram: block sponsored ads — no server request, always empty\n"
+        "        guard !self.isActivated else { return }"
     )
     if old in t:
         t = t.replace(old, new, 1)
         path.write_text(t, encoding="utf-8")
-        print("BlockAds: AdMessages.swift patched — sponsored messages disabled by default")
+        print("BlockAds: AdMessages.swift — activate() short-circuits, ads permanently disabled")
     else:
-        print("BlockAds: guard anchor not found (upstream drift) — skipped gracefully")
+        print("BlockAds: activate() anchor not found (upstream drift) — skipped gracefully")
 
 
 def patch_ghost_mode_hide_typing(tg: Path) -> None:
