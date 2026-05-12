@@ -96,7 +96,7 @@ private extension NSObject {
                     return
                 }
                 // Layer 2: check description (catches Swift-bridged types)
-                let desc = (body as AnyObject).description
+                let desc = String(describing: body)
                 if kGhostBlockedKeywords.contains(where: { desc.contains($0) }) {
                     return
                 }
