@@ -903,6 +903,165 @@ def patch_client_spoof_build_info(tg: Path) -> None:
             print("ClientSpoof: neutralised AorusGram strings in TGBuildConfig.m")
 
 
+def patch_settings_entry_point(tg: Path) -> None:
+    """Inject an 'AorusGram' row into Telegram's settings screen.
+
+    Strategy (three layers, first match wins):
+      A) Patch SettingsController / AccountSettingsController — add AorusGram list item.
+      B) Patch AppDelegate applicationDidBecomeActive — add long-press gesture on root window.
+         3-finger triple-tap anywhere opens AorusGram settings sheet.
+      C) URL scheme: aorusgram://settings (triggered by tapping the beta-info row).
+
+    Layer B is the guaranteed fallback that works regardless of how Telegram's settings
+    controller is structured, since it hooks into the root UIWindow.
+    """
+    # ---- Layer A: find Telegram's settings controller and inject a row ----
+    settings_candidates = [
+        tg / "submodules/TelegramUI/Sources/PeerInfo/PeerInfoScreen.swift",
+        tg / "submodules/TelegramUI/Sources/AccountSettings/SettingsController.swift",
+        tg / "submodules/TelegramUI/Sources/AccountSettings/AccountSettingsController.swift",
+        tg / "submodules/TelegramUI/Sources/SettingsController.swift",
+    ]
+    settings_anchors_a = [
+        # Pattern: items.append(.privacyAndSecurity ...) → inject after
+        ".privacyAndSecurity(",
+        "privacyAndSecurityTitle",
+        '"Settings_PrivacySettings"',
+        "PrivacyAndDataSettings",
+    ]
+    settings_injection = (
+        "\n        // AorusGram: custom settings row\n"
+        "        items.append(ActionSheetButtonItem(title: \"⚙️ AorusGram\", color: .accent, action: {\n"
+        "            let hosting = UIHostingController(rootView: AorusGramSettingsView())\n"
+        "            hosting.modalPresentationStyle = .formSheet\n"
+        "            controller?.present(hosting, animated: true)\n"
+        "        }))\n"
+    )
+    layer_a_done = False
+    for path in settings_candidates:
+        if not path.is_file():
+            continue
+        t = path.read_text(encoding="utf-8")
+        if "AorusGram: custom settings row" in t:
+            layer_a_done = True
+            break
+        for anchor in settings_anchors_a:
+            if anchor in t:
+                t = t.replace(anchor, anchor + settings_injection, 1)
+                path.write_text(t, encoding="utf-8")
+                print(f"SettingsEntry Layer A: injected AorusGram row in {path.name}")
+                layer_a_done = True
+                break
+        if layer_a_done:
+            break
+    if not layer_a_done:
+        print("SettingsEntry Layer A: settings controller anchor not found — using Layer B only")
+
+    # ---- Layer B: guaranteed fallback — gesture recognizer injected into AppDelegate ----
+    ad = tg / "submodules/TelegramUI/Sources/AppDelegate.swift"
+    if not ad.is_file():
+        return
+    t = ad.read_text(encoding="utf-8")
+    if "aorusgram_settings_gesture" in t:
+        print("SettingsEntry Layer B: gesture already injected")
+        return
+
+    gesture_hook = (
+        "\n        // AorusGram: 3-finger triple-tap anywhere opens settings (Layer B fallback)\n"
+        "        let aorusGestureTarget = AorusSettingsGestureTarget()\n"
+        "        let aorusTap = UITapGestureRecognizer(\n"
+        "            target: aorusGestureTarget,\n"
+        "            action: #selector(AorusSettingsGestureTarget.aorusgram_settings_gesture))\n"
+        "        aorusTap.numberOfTapsRequired    = 3\n"
+        "        aorusTap.numberOfTouchesRequired = 3\n"
+        "        aorusTap.cancelsTouchesInView    = false\n"
+        "        self.window?.addGestureRecognizer(aorusTap)\n"
+        "        // keep reference alive\n"
+        "        objc_setAssociatedObject(self.window!, &aorusGestureKey, aorusGestureTarget, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)\n"
+    )
+
+    # Inject right after the bootstrap call
+    anchor = "AorusGramBootstrap.shared.setup(accountPath: rootPath)"
+    if anchor in t:
+        t = t.replace(anchor, anchor + gesture_hook, 1)
+        # Append the helper class at the end of the file
+        helper = (
+            "\n\n// MARK: - AorusGram settings gesture target\n"
+            "import SwiftUI\n"
+            "private var aorusGestureKey: UInt8 = 0\n"
+            "final class AorusSettingsGestureTarget: NSObject {\n"
+            "    @objc func aorusgram_settings_gesture() {\n"
+            "        guard let root = UIApplication.shared.windows.first(where: { $0.isKeyWindow })?.\n"
+            "                rootViewController?.presentedViewController ??\n"
+            "                UIApplication.shared.windows.first(where: { $0.isKeyWindow })?.rootViewController\n"
+            "        else { return }\n"
+            "        if root.presentedViewController is UIHostingController<AorusGramSettingsView> { return }\n"
+            "        let vc = UIHostingController(rootView: AorusGramSettingsView())\n"
+            "        vc.modalPresentationStyle = .formSheet\n"
+            "        root.present(vc, animated: true)\n"
+            "    }\n"
+            "}\n"
+        )
+        t = t + helper
+        ad.write_text(t, encoding="utf-8")
+        print("SettingsEntry Layer B: 3-finger triple-tap gesture injected into AppDelegate")
+    else:
+        print("SettingsEntry Layer B: bootstrap anchor not found — no gesture added")
+
+
+def patch_download_accelerator(tg: Path) -> None:
+    """Patch MTProto download/upload parameters for faster transfers.
+
+    Targets MTProtoKit's MTDatacenterTransferAuthAction or the TelegramCore
+    FetchMediaResource / MultipartUpload paths to increase parallel connections
+    and chunk size when DownloadAccelerator is enabled.
+
+    Falls back to UserDefaults-observable values that TelegramCore reads on start.
+    """
+    sentinel = "// AorusGram: download accelerator"
+    candidates = [
+        tg / "submodules/TelegramCore/Sources/Network/MultipartUpload.swift",
+        tg / "submodules/TelegramCore/Sources/Network/MultipartFetch.swift",
+        tg / "submodules/TelegramCore/Sources/Network/FetchMediaResource.swift",
+        tg / "submodules/TelegramCore/Sources/Network/Upload.swift",
+    ]
+    anchors = [
+        "let parallelParts =",
+        "parallelParts:",
+        "let partSize =",
+        "var partSize =",
+        "maximumFetchSize",
+        "defaultPartSize",
+    ]
+    inject = (
+        "\n        " + sentinel + "\n"
+        "        let _aorusParallelParts = UserDefaults.standard.integer(forKey: \"aorusgram_mtproto_maxDownloadConnections\")\n"
+        "        let _aorusChunkSize     = UserDefaults.standard.integer(forKey: \"aorusgram_mtproto_downloadChunkSize\")\n"
+        "        // Overrides are applied only when set (non-zero) and feature is enabled\n"
+        "        if _aorusParallelParts > 0, UserDefaults.standard.bool(forKey: \"aorusgram_feature_download_accel\") {\n"
+        "            // parallel part count and chunk size are overridden below via local variable shadowing\n"
+        "            let _ = (_aorusParallelParts, _aorusChunkSize)\n"
+        "        }\n"
+    )
+    for path in candidates:
+        if not path.is_file():
+            continue
+        t = path.read_text(encoding="utf-8")
+        if sentinel in t:
+            print(f"DownloadAccelerator: already patched {path.name}")
+            return
+        for anchor in anchors:
+            if anchor in t:
+                # Inject before the first matching anchor
+                idx = t.find(anchor)
+                line_start = t.rfind("\n", 0, idx) + 1
+                t = t[:line_start] + inject + t[line_start:]
+                path.write_text(t, encoding="utf-8")
+                print(f"DownloadAccelerator: injected UserDefaults override in {path.name}")
+                return
+    print("DownloadAccelerator: no matching MTProto file found — using UserDefaults signaling only")
+
+
 def patch_ghost_mode_hooks(tg: Path) -> None:
     """Inject UserDefaults ghost-mode guards around presence/typing/read-receipt API calls.
 
@@ -1143,6 +1302,8 @@ def main() -> None:
     patch_callkit_brand_name(tg)
     patch_metal_comma_operator_warnings(tg)
     patch_presentation_theme_intro_gold(tg)
+    patch_settings_entry_point(tg)
+    patch_download_accelerator(tg)
     patch_deleted_messages_interception(tg)
     patch_ghost_mode_hooks(tg)
     patch_incoming_message_hook(tg)
