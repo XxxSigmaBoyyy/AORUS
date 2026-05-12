@@ -2,6 +2,7 @@ import Foundation
 import UIKit
 import Display
 import SwiftSignalKit
+import Postbox
 import TelegramCore
 import TelegramPresentationData
 import ItemListUI
@@ -47,11 +48,14 @@ private struct AorusState: Equatable {
 private final class AorusArguments {
     let set: (WritableKeyPath<AorusState, Bool>, Bool) -> Void
     let openChannel: () -> Void
+    let clearCache: () -> Void
 
     init(set: @escaping (WritableKeyPath<AorusState, Bool>, Bool) -> Void,
-         openChannel: @escaping () -> Void) {
+         openChannel: @escaping () -> Void,
+         clearCache: @escaping () -> Void) {
         self.set = set
         self.openChannel = openChannel
+        self.clearCache = clearCache
     }
 }
 
@@ -60,9 +64,8 @@ private final class AorusArguments {
 private enum AorusEntry: ItemListNodeEntry {
     case privacyHeader(PresentationTheme, String)
     case ghostMode(PresentationTheme, String, Bool)
-    case blockReadReceipts(PresentationTheme, String, Bool)
-    case hideTyping(PresentationTheme, String, Bool)
     case saveDeletedMessages(PresentationTheme, String, Bool)
+    case clearDeletedCache(PresentationTheme, String)
     case antiScreenshot(PresentationTheme, String, Bool)
 
     case aiHeader(PresentationTheme, String)
@@ -91,8 +94,7 @@ private enum AorusEntry: ItemListNodeEntry {
 
     var section: ItemListSectionId {
         switch self {
-        case .privacyHeader, .ghostMode, .blockReadReceipts, .hideTyping,
-             .saveDeletedMessages, .antiScreenshot:
+        case .privacyHeader, .ghostMode, .saveDeletedMessages, .clearDeletedCache, .antiScreenshot:
             return AorusSection.privacy.rawValue
         case .aiHeader, .voiceTranscription, .chatSummary, .translator, .autoReply:
             return AorusSection.ai.rawValue
@@ -113,10 +115,9 @@ private enum AorusEntry: ItemListNodeEntry {
         switch self {
         case .privacyHeader:        return 0
         case .ghostMode:            return 1
-        case .blockReadReceipts:    return 2
-        case .hideTyping:           return 3
         case .saveDeletedMessages:  return 4
-        case .antiScreenshot:       return 5
+        case .clearDeletedCache:    return 5
+        case .antiScreenshot:       return 6
         case .aiHeader:             return 10
         case .voiceTranscription:   return 11
         case .chatSummary:          return 12
@@ -148,12 +149,10 @@ private enum AorusEntry: ItemListNodeEntry {
             if case let .privacyHeader(rt, rs) = rhs { return lt === rt && ls == rs }
         case let .ghostMode(lt, ls, lv):
             if case let .ghostMode(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
-        case let .blockReadReceipts(lt, ls, lv):
-            if case let .blockReadReceipts(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
-        case let .hideTyping(lt, ls, lv):
-            if case let .hideTyping(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
         case let .saveDeletedMessages(lt, ls, lv):
             if case let .saveDeletedMessages(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
+        case let .clearDeletedCache(lt, ls):
+            if case let .clearDeletedCache(rt, rs) = rhs { return lt === rt && ls == rs }
         case let .antiScreenshot(lt, ls, lv):
             if case let .antiScreenshot(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
         case let .aiHeader(lt, ls):
@@ -203,12 +202,10 @@ private enum AorusEntry: ItemListNodeEntry {
             return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: section)
         case let .ghostMode(_, title, value):
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.ghostMode, $0) })
-        case let .blockReadReceipts(_, title, value):
-            return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.blockReadReceipts, $0) })
-        case let .hideTyping(_, title, value):
-            return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.hideTyping, $0) })
         case let .saveDeletedMessages(_, title, value):
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.saveDeletedMessages, $0) })
+        case let .clearDeletedCache(_, title):
+            return ItemListActionItem(presentationData: presentationData, title: title, kind: .destructive, alignment: .natural, sectionId: section, style: .blocks, action: args.clearCache)
         case let .antiScreenshot(_, title, value):
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.antiScreenshot, $0) })
         case let .aiHeader(_, text):
@@ -254,13 +251,20 @@ private enum AorusEntry: ItemListNodeEntry {
 // MARK: - Entries builder
 
 private func aorusEntries(state: AorusState, theme: PresentationTheme) -> [AorusEntry] {
+    // Privacy section: exactly three rows.
+    //   1. Режим призрака — combined toggle that hides online + typing + read receipts
+    //      (the per-feature sub-flags blockReadReceipts/hideTyping are still in state
+    //       but no longer surfaced; source patches gate on aorusgram_ghost_mode only).
+    //   2. Удалённые сообщения — preserves incoming deletes/edits inline in chat.
+    //   3. Скрытие экрана при записи — renamed from the ambiguous «Защита от скриншотов».
+    // A small destructive 'Очистить кеш удалённых' action sits between (2) and (3) and
+    // wipes preserved postbox rows accumulated by the source patches.
     return [
         .privacyHeader(theme, "🔒 ПРИВАТНОСТЬ"),
         .ghostMode(theme, "Режим призрака", state.ghostMode),
-        .blockReadReceipts(theme, "Блокировать прочтение", state.blockReadReceipts),
-        .hideTyping(theme, "Скрыть «печатает...»", state.hideTyping),
         .saveDeletedMessages(theme, "Удалённые сообщения", state.saveDeletedMessages),
-        .antiScreenshot(theme, "Защита от скриншотов", state.antiScreenshot),
+        .clearDeletedCache(theme, "🗑 Очистить кеш удалённых"),
+        .antiScreenshot(theme, "Скрытие экрана при записи", state.antiScreenshot),
 
         .aiHeader(theme, "✨ AI ФУНКЦИИ"),
         .voiceTranscription(theme, "Транскрипция войсов", state.voiceTranscription),
@@ -350,6 +354,24 @@ public func aorusGramController(context: AccountContext) -> ViewController {
         },
         openChannel: {
             context.sharedContext.applicationBindings.openUrl("https://t.me/aorusgram")
+        },
+        clearCache: {
+            // Read accumulated preserved (peerId, msgId) pairs that the source patches
+            // appended every time an incoming delete or incoming edit was intercepted.
+            let stored = (UserDefaults.standard.array(forKey: "aorusgram_preserved_msgs") as? [[String: Int64]]) ?? []
+            guard !stored.isEmpty else { return }
+            let ids: [MessageId] = stored.compactMap { entry in
+                guard let p = entry["peerId"], let m = entry["msgId"], let ns = entry["namespace"] else { return nil }
+                return MessageId(peerId: PeerId(p), namespace: Int32(ns), id: Int32(m))
+            }
+            // postbox.transaction.deleteMessages is the LOW-LEVEL postbox call.
+            // Our source-level preserve hook lives inside _internal_deleteMessages,
+            // NOT on this raw call, so deleting via this path actually removes rows.
+            let _ = (context.account.postbox.transaction { transaction -> Void in
+                transaction.deleteMessages(ids, forEachMedia: { _ in })
+            } |> deliverOnMainQueue).start(completed: {
+                UserDefaults.standard.removeObject(forKey: "aorusgram_preserved_msgs")
+            })
         }
     )
 

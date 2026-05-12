@@ -669,19 +669,22 @@ def patch_deleted_messages_interception(tg: Path) -> None:
         else:
             anchor = "transaction.deleteMessages(ids, forEachMedia: { _ in"
             # Architecture (when aorusgram_feature_deleted_messages == true, the default):
-            #   1. Post `aorusgram.willDeleteMessage` notification → main-app cache.
-            #   2. For each ID being deleted, rewrite the message body via
-            #      transaction.updateMessage so its text is prefixed with the
-            #      "🗑 [Удалено]" marker (idempotent — already-marked messages skip).
-            #      The message stays in the postbox; the chat UI continues to render
-            #      it because nothing actually removed it. Users see the deletion
-            #      marker prefixed to the original content right inside the bubble.
-            #   3. EARLY-RETURN before the real `transaction.deleteMessages` call
-            #      so the postbox row survives.
-            # StoreMessage construction template copied from
+            #   1. For each ID, fetch the message. Only preserve if it's an INCOMING
+            #      message (sent by someone else). When the user deletes their OWN
+            #      outgoing message we let the normal deletion proceed — preserving
+            #      our own deletes would be confusing.
+            #   2. For each preserved ID:
+            #        - Update message text in postbox with prefix "🗑 [Удалено]\n…"
+            #          (idempotent — already-marked messages skip).
+            #        - Append the (peerId, msgId) pair to UserDefaults
+            #          "aorusgram_preserved_msgs" so the "Очистить кеш" button knows
+            #          which postbox rows to wipe later.
+            #   3. Build a filtered `idsToReallyDelete` (outgoing + non-existent),
+            #      replace the parameter to the downstream transaction.deleteMessages
+            #      call so the normal delete still runs for those.
+            # StoreMessage template copied from
             #   ManagedSynchronizeMarkAllUnseenPersonalMessagesOperations.swift:230
-            # which is the canonical pattern for "rebuild a StoreMessage from a Message"
-            # used elsewhere in the same module.
+            # (canonical 'rebuild StoreMessage from Message' pattern).
             hook = (
                 "    " + sentinel + " — peer-scoped\n"
                 "    for id in ids {\n"
@@ -694,36 +697,45 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "            object: nil, userInfo: userInfo)\n"
                 "    }\n"
                 "    let __aorusPreserve = (UserDefaults.standard.object(forKey: \"aorusgram_feature_deleted_messages\") as? Bool) ?? true\n"
-                "    if __aorusPreserve {\n"
-                "        for id in ids {\n"
-                "            transaction.updateMessage(id, update: { currentMessage -> PostboxUpdateMessage in\n"
-                "                if currentMessage.text.hasPrefix(\"\\u{1F5D1}\") { return .skip }\n"
-                "                let newText = \"\\u{1F5D1} [Удалено]\\n\" + currentMessage.text\n"
-                "                return .update(StoreMessage(\n"
-                "                    id: currentMessage.id, customStableId: nil,\n"
-                "                    globallyUniqueId: currentMessage.globallyUniqueId,\n"
-                "                    groupingKey: currentMessage.groupingKey,\n"
-                "                    threadId: currentMessage.threadId,\n"
-                "                    timestamp: currentMessage.timestamp,\n"
-                "                    flags: StoreMessageFlags(currentMessage.flags),\n"
-                "                    tags: currentMessage.tags,\n"
-                "                    globalTags: currentMessage.globalTags,\n"
-                "                    localTags: currentMessage.localTags,\n"
-                "                    forwardInfo: currentMessage.forwardInfo.flatMap(StoreMessageForwardInfo.init),\n"
-                "                    authorId: currentMessage.author?.id,\n"
-                "                    text: newText,\n"
-                "                    attributes: currentMessage.attributes,\n"
-                "                    media: currentMessage.media))\n"
-                "            })\n"
+                "    var __aorusIdsToDelete: [MessageId] = []\n"
+                "    for id in ids {\n"
+                "        guard __aorusPreserve, let currentMessage = transaction.getMessage(id), currentMessage.flags.contains(.Incoming) else {\n"
+                "            __aorusIdsToDelete.append(id)\n"
+                "            continue\n"
                 "        }\n"
-                "        return\n"
+                "        if currentMessage.text.hasPrefix(\"\\u{1F5D1}\") { continue }\n"
+                "        transaction.updateMessage(id, update: { msg -> PostboxUpdateMessage in\n"
+                "            let newText = \"\\u{1F5D1} [Удалено]\\n\" + msg.text\n"
+                "            return .update(StoreMessage(\n"
+                "                id: msg.id, customStableId: nil,\n"
+                "                globallyUniqueId: msg.globallyUniqueId,\n"
+                "                groupingKey: msg.groupingKey,\n"
+                "                threadId: msg.threadId,\n"
+                "                timestamp: msg.timestamp,\n"
+                "                flags: StoreMessageFlags(msg.flags),\n"
+                "                tags: msg.tags,\n"
+                "                globalTags: msg.globalTags,\n"
+                "                localTags: msg.localTags,\n"
+                "                forwardInfo: msg.forwardInfo.flatMap(StoreMessageForwardInfo.init),\n"
+                "                authorId: msg.author?.id,\n"
+                "                text: newText,\n"
+                "                attributes: msg.attributes,\n"
+                "                media: msg.media))\n"
+                "        })\n"
+                "        var preservedList = (UserDefaults.standard.array(forKey: \"aorusgram_preserved_msgs\") as? [[String: Int64]]) ?? []\n"
+                "        preservedList.append([\"peerId\": id.peerId.toInt64(), \"msgId\": Int64(id.id), \"namespace\": Int64(id.namespace)])\n"
+                "        UserDefaults.standard.set(preservedList, forKey: \"aorusgram_preserved_msgs\")\n"
                 "    }\n"
+                "    if __aorusIdsToDelete.isEmpty { return }\n"
                 "    "
             )
             if anchor in t:
-                t = t.replace(anchor, hook + anchor, 1)
+                # Inject hook AND swap the `ids` argument for our filtered list so
+                # only non-preserved (outgoing / unknown) messages actually delete.
+                new_call = "transaction.deleteMessages(__aorusIdsToDelete, forEachMedia: { _ in"
+                t = t.replace(anchor, hook + new_call, 1)
                 delete_msgs_path.write_text(t, encoding="utf-8")
-                print("DeleteMessages.swift: peer-scoped delete hook injected")
+                print("DeleteMessages.swift: peer-scoped delete hook injected (filtered ids)")
             else:
                 print("DeleteMessages.swift: anchor not found — skipped")
     else:
@@ -793,7 +805,7 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "                }\n"
                 "                // AorusGram: inline original under edited text\n"
                 "                let __aorusEditEnabled = (UserDefaults.standard.object(forKey: \"aorusgram_feature_deleted_messages\") as? Bool) ?? true\n"
-                "                if __aorusEditEnabled, let prev = aorusPrev, prev.text != message.text, !prev.text.isEmpty {\n"
+                "                if __aorusEditEnabled, let prev = aorusPrev, prev.flags.contains(.Incoming), prev.text != message.text, !prev.text.isEmpty {\n"
                 "                    transaction.updateMessage(id, update: { currentMessage -> PostboxUpdateMessage in\n"
                 "                        if currentMessage.text.contains(\"\\n\\n\\u{270F}\\u{FE0F} Оригинал:\") { return .skip }\n"
                 "                        let newText = currentMessage.text + \"\\n\\n\\u{270F}\\u{FE0F} Оригинал:\\n\" + prev.text\n"
@@ -813,6 +825,9 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "                            attributes: currentMessage.attributes,\n"
                 "                            media: currentMessage.media))\n"
                 "                    })\n"
+                "                    var preservedList = (UserDefaults.standard.array(forKey: \"aorusgram_preserved_msgs\") as? [[String: Int64]]) ?? []\n"
+                "                    preservedList.append([\"peerId\": id.peerId.toInt64(), \"msgId\": Int64(id.id), \"namespace\": Int64(id.namespace)])\n"
+                "                    UserDefaults.standard.set(preservedList, forKey: \"aorusgram_preserved_msgs\")\n"
                 "                }\n"
                 "            case let .UpdateMessagePoll(pollId, apiPoll, results):"
             )

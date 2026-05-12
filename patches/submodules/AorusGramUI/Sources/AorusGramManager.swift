@@ -31,6 +31,14 @@ public final class AorusGramManager {
     private let key = "aorusgram_settings_v1"
 
     private func load() {
+        // Always mirror current values to the flat keys read by source patches —
+        // this also catches fresh installs where the dictionary doesn't exist yet
+        // (defaults apply, then save() is called once).
+        defer {
+            let ud = UserDefaults.standard
+            ud.set(ghostMode,           forKey: "aorusgram_ghost_mode")
+            ud.set(saveDeletedMessages, forKey: "aorusgram_feature_deleted_messages")
+        }
         guard let d = UserDefaults.standard.dictionary(forKey: key) else { return }
         ghostMode           = d["ghostMode"]           as? Bool ?? false
         blockReadReceipts   = d["blockReadReceipts"]   as? Bool ?? true
@@ -65,6 +73,16 @@ public final class AorusGramManager {
             "siriShortcuts":       siriShortcuts,
             "autoReply":           autoReply,
         ], forKey: key)
+
+        // Mirror to the individual keys read by the source-level patches injected
+        // into TelegramCore (DeleteMessages.swift, ManagedLocalInputActivities.swift,
+        // ManagedAccountPresence.swift, SynchronizePeerReadState.swift, AdMessages.swift).
+        // These patches are in a different module and can't reach this manager, so
+        // they read flat UserDefaults keys instead.
+        let ud = UserDefaults.standard
+        ud.set(ghostMode,           forKey: "aorusgram_ghost_mode")
+        ud.set(saveDeletedMessages, forKey: "aorusgram_feature_deleted_messages")
+
         NotificationCenter.default.post(name: .aorusSettingsChanged, object: nil)
     }
 
