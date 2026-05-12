@@ -1089,6 +1089,27 @@ def patch_auto_reply_send_hook(tg: Path) -> None:
         print("AutoReplySend: AppDelegate.swift not found, skip")
         return
     t = path.read_text(encoding="utf-8")
+    # Legacy bug: `context` on AppDelegate is a Promise, not AuthorizedApplicationContext.
+    if (
+        "aorusgram.sendAutoReply" in t
+        and "let context = self?.context else { return }" in t
+        and "context.engine.messages.enqueueMessages" in t
+    ):
+        t = (
+            t.replace(
+                "let context = self?.context else { return }",
+                "let app = self?.contextValue else { return }",
+                1,
+            ).replace(
+                "let _ = context.engine.messages.enqueueMessages",
+                "let _ = app.context.engine.messages.enqueueMessages",
+                1,
+            )
+        )
+        path.write_text(t, encoding="utf-8")
+        print("AutoReplySend: repaired legacy injection (Promise context → contextValue)")
+        return
+
     if "aorusgram.sendAutoReply" in t:
         print("AutoReplySend: already injected")
         return
@@ -1102,9 +1123,9 @@ def patch_auto_reply_send_hook(tg: Path) -> None:
         "                  let info = note.userInfo,\n"
         "                  let peerIdNum = info[\"peerId\"] as? NSNumber,\n"
         "                  let text = info[\"text\"] as? String,\n"
-        "                  let context = self?.context else { return }\n"
+        "                  let app = self?.contextValue else { return }\n"
         "            let peerId = PeerId(peerIdNum.int64Value)\n"
-        "            let _ = context.engine.messages.enqueueMessages(\n"
+        "            let _ = app.context.engine.messages.enqueueMessages(\n"
         "                peerId: peerId,\n"
         "                messages: [EnqueueMessage.message(\n"
         "                    text: text, attributes: [], inlineStickers: [:],\n"
