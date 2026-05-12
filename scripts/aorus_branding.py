@@ -1018,6 +1018,56 @@ def _inject_ghost_guard(candidates: list, anchors: list, label: str,
     print(f"[GhostMode] {label}: no matching file/anchor found — skipped gracefully")
 
 
+def patch_ghost_mode_hide_typing(tg: Path) -> None:
+    """Hide the 'typing...' indicator from peers when Ghost Mode is on.
+
+    Patched file: submodules/TelegramCore/Sources/State/ManagedLocalInputActivities.swift
+
+    Telegram's `requestActivity(...)` is the single entry point through which the
+    client tells the server about every input action (typing, recording audio,
+    uploading, etc.). It returns Signal<Void, NoError> and is called from the
+    activity-throttling pipeline. The body wraps everything in
+    `postbox.transaction { transaction -> Signal<Void, NoError> in ... }`.
+
+    We inject an early `return .complete()` BEFORE the postbox transaction when
+    both the master ghost flag AND the per-feature hide-typing flag are set.
+    This is the cleanest seam: one anchor, valid Swift in expression context,
+    blocks every typing-related setTyping/setEncryptedTyping API call upstream
+    of the network layer.
+    """
+    path = tg / "submodules/TelegramCore/Sources/State/ManagedLocalInputActivities.swift"
+    if not path.is_file():
+        print("HideTyping: ManagedLocalInputActivities.swift not found, skip")
+        return
+
+    t = path.read_text(encoding="utf-8")
+    sentinel = "// AorusGram: hide typing"
+    if sentinel in t:
+        print("HideTyping: already injected")
+        return
+
+    anchor = "return postbox.transaction { transaction -> Signal<Void, NoError> in"
+    if anchor not in t:
+        print("HideTyping: anchor not found — skipped (upstream drift)")
+        return
+
+    # Hide typing whenever Ghost Mode is on. The per-feature sub-toggle is not
+    # required — when the user enables Ghost Mode they expect everything (online,
+    # typing, read receipts) to be hidden by default. If they want finer control
+    # later, the GhostModeManager.configure(hidePeekStatus:) setter still writes
+    # the sub-key; we just don't require it as a gate.
+    guard = (
+        sentinel + "\n"
+        "    if UserDefaults.standard.bool(forKey: \"aorusgram_ghost_mode\") {\n"
+        "        return .complete()\n"
+        "    }\n"
+        "    "
+    )
+    t = t.replace(anchor, guard + anchor, 1)
+    path.write_text(t, encoding="utf-8")
+    print("HideTyping: injected early-return guard in requestActivity")
+
+
 def patch_incoming_message_hook(tg: Path) -> None:
     """Post NotificationCenter event for each incoming message.
 
@@ -1199,13 +1249,7 @@ def main() -> None:
     patch_settings_entry_point(tg)
     patch_download_accelerator(tg)
     patch_deleted_messages_interception(tg)
-    # patch_ghost_mode_hooks: removed — source-level guards injected `if { return }`
-    # inside `network.request(Api.functions.X(...))` expressions, which is syntactically
-    # invalid Swift. They silently skipped when anchors didn't match (graceful fall-through)
-    # but would crash the build the moment any anchor did match. Ghost mode is now handled
-    # exclusively at the MTProto layer by GhostModeSwizzler in GhostModeManager.swift,
-    # which is the correct architectural seam — it intercepts every outgoing TL request
-    # by class name (Swift-mangled TL wrapper) and binary constructor ID.
+    patch_ghost_mode_hide_typing(tg)
     patch_incoming_message_hook(tg)
     patch_auto_reply_send_hook(tg)
     patch_client_spoof_app_version(tg)
