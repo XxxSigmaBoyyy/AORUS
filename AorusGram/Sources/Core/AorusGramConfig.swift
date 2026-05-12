@@ -1,12 +1,13 @@
 import Foundation
 
-enum AorusGramConfig {
-    static let appName = "AorusGram"
-    static let version = "1.0.0"
-    static let officialChannelURL = "https://t.me/aorusgram"
-    static let officialChannelUsername = "aorusgram"
+/// Shared feature flags (UserDefaults). Public so `TelegramUI` (e.g. AppDelegate hooks) can read them.
+public enum AorusGramConfig {
+    public static let appName = "AorusGram"
+    public static let version = "1.0.0"
+    public static let officialChannelURL = "https://t.me/aorusgram"
+    public static let officialChannelUsername = "aorusgram"
 
-    enum Feature: String, CaseIterable {
+    public enum Feature: String, CaseIterable {
         case ghostMode          = "ghost_mode"
         case deletedMessages    = "deleted_messages"
         case antiSpam           = "anti_spam"
@@ -28,11 +29,11 @@ enum AorusGramConfig {
         case pinboard           = "pinboard"
     }
 
-    static func isEnabled(_ feature: Feature) -> Bool {
+    public static func isEnabled(_ feature: Feature) -> Bool {
         return UserDefaults.standard.object(forKey: "aorusgram_feature_\(feature.rawValue)") as? Bool ?? defaultEnabled(feature)
     }
 
-    static func setEnabled(_ feature: Feature, _ value: Bool) {
+    public static func setEnabled(_ feature: Feature, _ value: Bool) {
         UserDefaults.standard.set(value, forKey: "aorusgram_feature_\(feature.rawValue)")
     }
 
