@@ -309,43 +309,14 @@ extension DeletedMessagesCache {
     }
 
     /// Handle the NotificationCenter event posted by the TelegramCore delete patch.
-    /// If the message was pre-cached, this flips status=1 keeping text intact.
-    /// Otherwise inserts a stub row marked deleted with whatever info was sent.
+    /// The hook now only sends msgId + peerId (no text/author — those APIs don't
+    /// compile on `any Peer` in Postbox). Text is preserved from the pre-cached row.
     func handleWillDeleteNotification(_ note: Notification) {
         guard AorusGramConfig.isEnabled(.deletedMessages),
-              let info     = note.userInfo,
-              let msgId    = (info[AorusDMCNotifKey.msgId]    as? NSNumber)?.int32Value,
-              let peerId   = (info[AorusDMCNotifKey.peerId]   as? NSNumber)?.int64Value
+              let info   = note.userInfo,
+              let msgId  = (info[AorusDMCNotifKey.msgId]  as? NSNumber)?.int32Value,
+              let peerId = (info[AorusDMCNotifKey.peerId] as? NSNumber)?.int64Value
         else { return }
-
-        let senderId   = (info[AorusDMCNotifKey.senderId]   as? NSNumber)?.int64Value
-        let senderName = info[AorusDMCNotifKey.senderName]  as? String
-        let text       = info[AorusDMCNotifKey.text]         as? String
-        let date       = (info[AorusDMCNotifKey.date]       as? NSNumber)?.int32Value ?? 0
-        let isOutgoing = (info[AorusDMCNotifKey.isOutgoing] as? NSNumber)?.boolValue ?? false
-
-        // If pre-cached, just flip status. If not, insert with whatever the hook captured.
-        queue.async { [weak self] in
-            guard let self, let db = self.db else { return }
-            let now = Int64(Date().timeIntervalSince1970)
-            let updateSQL = "UPDATE messages SET status=1, deleted_at=? WHERE id=? AND peer_id=? AND status=0;"
-            var stmt: OpaquePointer?
-            if sqlite3_prepare_v2(db, updateSQL, -1, &stmt, nil) == SQLITE_OK {
-                sqlite3_bind_int64(stmt, 1, now)
-                sqlite3_bind_int(stmt,  2, msgId)
-                sqlite3_bind_int64(stmt, 3, peerId)
-                sqlite3_step(stmt)
-                let changed = sqlite3_changes(db)
-                sqlite3_finalize(stmt)
-                if changed > 0 { return }  // pre-cached row updated successfully
-            }
-            // Fallback: insert with whatever info the delete hook captured
-            self.cacheMessage(
-                id: msgId, peerId: peerId,
-                senderId: senderId, senderName: senderName,
-                text: text, date: date,
-                isOutgoing: isOutgoing, markDeleted: true
-            )
-        }
+        markDeleted(id: msgId, peerId: peerId)
     }
 }

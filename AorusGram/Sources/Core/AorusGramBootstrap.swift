@@ -14,6 +14,13 @@ public final class AorusGramBootstrap {
         guard !didSetup else { return }
         didSetup = true
 
+        // Block sponsored ads by default (like Telegram Premium).
+        // The flag is read by the branding.py patch in AdMessages.swift.
+        // We only set it if not yet registered so the user could toggle it in future.
+        if UserDefaults.standard.object(forKey: "aorusgram_block_ads") == nil {
+            UserDefaults.standard.set(true, forKey: "aorusgram_block_ads")
+        }
+
         // Client spoof — must be before any MTProto connection is made
         ClientSpoofManager.applySwizzle()
 

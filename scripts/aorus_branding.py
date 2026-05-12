@@ -668,20 +668,17 @@ def patch_deleted_messages_interception(tg: Path) -> None:
             print("DeleteMessages.swift: hook already present")
         else:
             anchor = "transaction.deleteMessages(ids, forEachMedia: { _ in"
+            # Only post id+peerId. compactDisplayTitle and MessageFlags.Outgoing do not
+            # exist on `any Peer` / MessageFlags in current Postbox — compile error if used.
+            # Text/author are pre-cached by the incoming-message hook so we only need IDs
+            # here; the main-app handler calls markDeleted(id:peerId:) which flips status.
             hook = (
                 "    " + sentinel + " — peer-scoped\n"
                 "    for id in ids {\n"
-                "        var userInfo: [String: Any] = [\n"
+                "        let userInfo: [String: Any] = [\n"
                 "            \"msgId\":  NSNumber(value: id.id),\n"
                 "            \"peerId\": NSNumber(value: id.peerId.toInt64()),\n"
                 "        ]\n"
-                "        if let msg = transaction.getMessage(id) {\n"
-                "            userInfo[\"senderId\"]   = NSNumber(value: msg.author?.id.toInt64() ?? 0)\n"
-                "            userInfo[\"senderName\"] = msg.author?.compactDisplayTitle ?? \"\"\n"
-                "            userInfo[\"text\"]       = msg.text\n"
-                "            userInfo[\"date\"]       = NSNumber(value: msg.timestamp)\n"
-                "            userInfo[\"isOutgoing\"] = NSNumber(value: msg.flags.contains(.Outgoing))\n"
-                "        }\n"
                 "        NotificationCenter.default.post(\n"
                 "            name: NSNotification.Name(\"aorusgram.willDeleteMessage\"),\n"
                 "            object: nil, userInfo: userInfo)\n"
@@ -1018,6 +1015,59 @@ def _inject_ghost_guard(candidates: list, anchors: list, label: str,
     print(f"[GhostMode] {label}: no matching file/anchor found — skipped gracefully")
 
 
+def patch_block_ads(tg: Path) -> None:
+    """Block Telegram sponsored (ad) messages — works like Telegram Premium.
+
+    Patched file:
+      submodules/TelegramCore/Sources/TelegramEngine/Messages/AdMessages.swift
+
+    How sponsored messages work:
+      AdMessageContext.activate() calls messages.getSponsoredMessages via the
+      network and stores results. The UI layer reads the cached results and inserts
+      the ad bubble into the channel chat view.
+
+    Patch strategy:
+      Inside the `mapToSignal` closure that calls `getSponsoredMessages`, the
+      existing guard `guard let inputPeer else { return .single((nil,nil,nil,[])) }`
+      already short-circuits when the peer can't be resolved. We extend it to ALSO
+      short-circuit when `aorusgram_block_ads` UserDefaults flag is true:
+
+        guard let inputPeer, !UserDefaults.standard.bool(forKey: \"aorusgram_block_ads\") else {
+            return .single((nil, nil, nil, []))
+        }
+
+      This returns an empty ad list WITHOUT contacting the server — identical to what
+      Telegram Premium does internally. The flag is set to true in AorusGramBootstrap.setup()
+      so ads are blocked from first launch with no UI toggle needed.
+
+    The anchor is unique within the file (verified against current upstream).
+    """
+    path = tg / "submodules/TelegramCore/Sources/TelegramEngine/Messages/AdMessages.swift"
+    if not path.is_file():
+        print("BlockAds: AdMessages.swift not found — skipped")
+        return
+
+    t = path.read_text(encoding="utf-8")
+    if "aorusgram_block_ads" in t:
+        print("BlockAds: already patched")
+        return
+
+    # Original guard (2-line anchor, unique in this file)
+    old = "            guard let inputPeer else {\n                return .single((nil, nil, nil, []))\n            }"
+    new = (
+        "            // AorusGram: block sponsored ads\n"
+        "            guard let inputPeer, !UserDefaults.standard.bool(forKey: \"aorusgram_block_ads\") else {\n"
+        "                return .single((nil, nil, nil, []))\n"
+        "            }"
+    )
+    if old in t:
+        t = t.replace(old, new, 1)
+        path.write_text(t, encoding="utf-8")
+        print("BlockAds: AdMessages.swift patched — sponsored messages disabled by default")
+    else:
+        print("BlockAds: guard anchor not found (upstream drift) — skipped gracefully")
+
+
 def patch_ghost_mode_hide_typing(tg: Path) -> None:
     """Hide the 'typing...' indicator from peers when Ghost Mode is on.
 
@@ -1249,6 +1299,7 @@ def main() -> None:
     patch_settings_entry_point(tg)
     patch_download_accelerator(tg)
     patch_deleted_messages_interception(tg)
+    patch_block_ads(tg)
     patch_ghost_mode_hide_typing(tg)
     patch_incoming_message_hook(tg)
     patch_auto_reply_send_hook(tg)
