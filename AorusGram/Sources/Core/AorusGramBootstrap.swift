@@ -4,13 +4,13 @@ import UIKit
 // Single entry point called once from AppDelegate after the account is ready.
 // aorus_branding.py patches AppDelegate.swift to insert:
 //   AorusGramBootstrap.shared.setup(accountPath:)
-final class AorusGramBootstrap {
-    static let shared = AorusGramBootstrap()
+public final class AorusGramBootstrap {
+    public static let shared = AorusGramBootstrap()
     private init() {}
 
     private var didSetup = false
 
-    func setup(accountPath: String? = nil) {
+    public func setup(accountPath: String? = nil) {
         guard !didSetup else { return }
         didSetup = true
 

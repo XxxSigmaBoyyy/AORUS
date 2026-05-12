@@ -18,13 +18,13 @@ import ObjectiveC
 //   Боты типа @userinfobot и некоторые сервисы читают поле app_version из initConnection.
 //   Если там "AorusGram 1.0" — помечают как "unofficial client".
 //   После спуфинга в "Активных сессиях" будет видно "Telegram 11.5.3" вместо "AorusGram".
-final class ClientSpoofManager {
-    static let shared = ClientSpoofManager()
+public final class ClientSpoofManager {
+    public static let shared = ClientSpoofManager()
     private init() {}
 
     // Синхронизировать с текущей версией Telegram в App Store при каждом обновлении.
-    static let officialAppVersion = "11.5.3"
-    static let officialLangPack   = "ios"
+    public static let officialAppVersion = "11.5.3"
+    public static let officialLangPack   = "ios"
 
     // MARK: - Swizzle (главный механизм)
     //
@@ -32,7 +32,7 @@ final class ClientSpoofManager {
     // MTApiEnvironment — ObjC-класс внутри MtProtoKit, поэтому runtime-свиззл работает.
     // Вызывается из AorusGramBootstrap.setup() ДО любого сетевого соединения.
 
-    static func applySwizzle() {
+    public static func applySwizzle() {
         guard let cls = NSClassFromString("MTApiEnvironment") else {
             print("[AorusSpoof] MTApiEnvironment not found — runtime spoof skipped")
             return
@@ -66,7 +66,7 @@ final class ClientSpoofManager {
     // На случай если свиззл не сработал (другая архитектура MTProtoKit).
     // aorus_branding.py инжектирует вызов: ClientSpoofManager.shared.applyToEnvironment(env)
 
-    func applyToEnvironment(_ env: NSObject) {
+    public func applyToEnvironment(_ env: NSObject) {
         env.setValue(ClientSpoofManager.officialAppVersion, forKey: "appVersion")
         env.setValue(ClientSpoofManager.officialLangPack,   forKey: "langPack")
     }
