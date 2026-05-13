@@ -1917,6 +1917,38 @@ def patch_info_plist_bgtask(tg: Path) -> None:
             print(f"{name}: BGTaskSchedulerPermittedIdentifiers already present")
 
 
+def patch_info_plist_speech_usage(tg: Path) -> None:
+    """Add NSSpeechRecognitionUsageDescription to Info.plist.
+
+    Without this key, calling SFSpeechRecognizer.requestAuthorization triggers
+    an immediate hard crash with the system message:
+      "This app has crashed because it attempted to access privacy-sensitive
+       data without a usage description."
+    Required by both the VoiceTranscriberView (microphone live recording) and
+    the long-press transcribe action on voice messages.
+
+    NSMicrophoneUsageDescription is already present upstream (Telegram uses it
+    for voice messages), so we only need to add the speech recognition key.
+    """
+    description = (
+        "AorusGram использует распознавание речи для транскрипции голосовых "
+        "сообщений прямо на устройстве (никакие данные не покидают ваш телефон)."
+    )
+    for name in ("Info.plist", "InfoBazel.plist"):
+        path = tg / "Telegram/Telegram-iOS" / name
+        if not path.is_file():
+            continue
+        with path.open("rb") as f:
+            pl = plistlib.load(f)
+        if pl.get("NSSpeechRecognitionUsageDescription"):
+            print(f"{name}: NSSpeechRecognitionUsageDescription already present")
+            continue
+        pl["NSSpeechRecognitionUsageDescription"] = description
+        with path.open("wb") as f:
+            plistlib.dump(pl, f, fmt=plistlib.FMT_XML)
+        print(f"{name}: added NSSpeechRecognitionUsageDescription")
+
+
 def main() -> None:
     tg = Path(sys.argv[1]).resolve()
     if not tg.is_dir():
@@ -1951,6 +1983,7 @@ def main() -> None:
     for name in ("Info.plist", "InfoBazel.plist"):
         patch_plist_icons_and_urls(tg / "Telegram/Telegram-iOS" / name)
     patch_info_plist_bgtask(tg)
+    patch_info_plist_speech_usage(tg)
     patch_info_plist_strings_only(tg)
     patch_localizable_strings_safe(tg)
 
