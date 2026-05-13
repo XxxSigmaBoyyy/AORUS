@@ -1616,30 +1616,27 @@ def patch_chat_context_menu_translate_transcribe(tg: Path) -> None:
 
     Patched file: submodules/TelegramUI/Sources/ChatInterfaceStateContextMenus.swift
 
-    Telegram already has built-in translate/transcribe but they require Premium
-    (server-side messages.translateText / messages.transcribeAudio). For everyone
-    else they silently fail. We inject TWO additional items into the long-press
-    menu that always work, using free local providers:
+    Injection anchor: the line `if !isPinnedMessages, !isReplyThreadHead, data.canReply {`
+    (a unique line near the Reply action). Injecting BEFORE it means our two actions
+    are added regardless of canReply/isPinned/replyThreadHead, and crucially BEFORE
+    the text-only `if !messageText.isEmpty || (resourceAvailable && isImage)` branch
+    which voice messages skip.
 
-      🌐 AorusGram Перевод   — calls MyMemory free API inline; on success writes
-                              a TranslationMessageAttribute to postbox. Telegram's
-                              own message renderer then displays the translation
-                              inline under the original text automatically.
+    Behavior on tap:
+      🌐 AorusGram Перевод — calls MyMemory free translation API, then REPLACES
+                             current.text in postbox with the translation
+                             (transaction.updateMessage with new StoreMessage.text).
+                             The chat bubble re-renders to show translated text in
+                             place of the original.
 
-      🎙 AorusGram Транскрипция — uses Apple's on-device SFSpeechRecognizer on the
-                                  voice file resolved via account.postbox.mediaBox.
-                                  Writes AudioTranscriptionMessageAttribute that
-                                  Telegram renders as an expandable text block
-                                  attached to the voice bubble.
+      🎙 AorusGram Транскрипция — on-device SFSpeechRecognizer over the resolved
+                                  voice .ogg file. Result is written to
+                                  current.text via the same postbox update path,
+                                  so the voice bubble gains a visible text caption.
 
-    Both items are appended via `actions.append(.action(ContextMenuActionItem(...)))`
-    inside the existing context-menu builder, immediately BEFORE the speak action
-    (anchor: `if isSpeakSelectionEnabled() && !messageText.isEmpty {`).
-
-    The transcribe item is gated on `message.media.contains(file.isVoice)`.
-    The translate item is gated on `!messageText.isEmpty`.
-
-    Speech framework is conditionally imported with #if canImport(Speech).
+    Gating:
+      Translate appears when message.text is non-empty.
+      Transcribe appears when message.media contains a TelegramMediaFile with isVoice.
     """
     path = tg / "submodules/TelegramUI/Sources/ChatInterfaceStateContextMenus.swift"
     if not path.is_file():
@@ -1647,10 +1644,20 @@ def patch_chat_context_menu_translate_transcribe(tg: Path) -> None:
         return
 
     t = path.read_text(encoding="utf-8")
-    sentinel = "// AorusGram: native translate/transcribe"
+    sentinel = "// AorusGram: native translate/transcribe v3"
     if sentinel in t:
-        print("ChatContextMenu: already injected")
+        print("ChatContextMenu: v3 already injected")
         return
+
+    # Strip any earlier v1/v2 injection (recognisable by the older sentinel).
+    old_sentinel = "// AorusGram: native translate/transcribe"
+    if old_sentinel in t:
+        # Find the start of the old block and the end (next occurrence of the speak anchor).
+        start = t.find("                " + old_sentinel)
+        speak = t.find("                if isSpeakSelectionEnabled() && !messageText.isEmpty {")
+        if start != -1 and speak != -1 and speak > start:
+            t = t[:start] + t[speak:]
+            print("ChatContextMenu: stripped previous translate/transcribe injection")
 
     # Add Speech import after Foundation if not present already
     if "import Speech" not in t:
@@ -1660,99 +1667,100 @@ def patch_chat_context_menu_translate_transcribe(tg: Path) -> None:
             1,
         )
 
-    # Anchor: the unique opening of the speak action block.
-    anchor = "                if isSpeakSelectionEnabled() && !messageText.isEmpty {"
+    # New anchor: the Reply-action gate, which runs for both text and voice messages.
+    anchor = "        if !isPinnedMessages, !isReplyThreadHead, data.canReply {"
     if anchor not in t:
-        print("ChatContextMenu: speak-action anchor not found — skipped")
+        print("ChatContextMenu: reply-action anchor not found — skipped")
         return
 
     injection = (
-        "                " + sentinel + "\n"
-        "                if !messageText.isEmpty {\n"
-        "                    actions.append(.action(ContextMenuActionItem(text: \"🌐 AorusGram Перевод\", icon: { theme in\n"
-        "                        return generateTintedImage(image: UIImage(bundleImageName: \"Chat/Context Menu/Translate\"), color: theme.actionSheet.primaryTextColor)\n"
-        "                    }, action: { [weak context] _, f in\n"
-        "                        f(.default)\n"
-        "                        guard let context = context else { return }\n"
-        "                        let aorusMid = message.id\n"
-        "                        let aorusOriginal = messageText\n"
-        "                        let aorusCyr = aorusOriginal.unicodeScalars.filter { $0.value >= 0x0400 && $0.value <= 0x04FF }.count\n"
-        "                        let aorusSrc = Double(aorusCyr) / max(1.0, Double(aorusOriginal.count)) > 0.3 ? \"ru\" : \"en\"\n"
-        "                        let aorusTarget = aorusSrc == \"ru\" ? \"en\" : \"ru\"\n"
-        "                        guard var aorusComps = URLComponents(string: \"https://api.mymemory.translated.net/get\") else { return }\n"
-        "                        aorusComps.queryItems = [\n"
-        "                            URLQueryItem(name: \"q\", value: aorusOriginal),\n"
-        "                            URLQueryItem(name: \"langpair\", value: \"\\(aorusSrc)|\\(aorusTarget)\"),\n"
-        "                            URLQueryItem(name: \"de\", value: \"aorusgram@telegra.ph\")\n"
-        "                        ]\n"
-        "                        guard let aorusURL = aorusComps.url else { return }\n"
-        "                        URLSession.shared.dataTask(with: aorusURL) { data, _, _ in\n"
-        "                            guard let data = data,\n"
-        "                                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],\n"
-        "                                  let rd = json[\"responseData\"] as? [String: Any],\n"
-        "                                  let raw = rd[\"translatedText\"] as? String, !raw.isEmpty else { return }\n"
-        "                            let translated = raw\n"
-        "                                .replacingOccurrences(of: \"&#39;\",  with: \"'\")\n"
-        "                                .replacingOccurrences(of: \"&quot;\", with: \"\\\"\")\n"
-        "                                .replacingOccurrences(of: \"&amp;\",  with: \"&\")\n"
+        "        " + sentinel + "\n"
+        "        do {\n"
+        "            let aorusMsg = messages[0]\n"
+        "            let aorusBody = aorusMsg.text\n"
+        "            var aorusVoiceFile: TelegramMediaFile?\n"
+        "            for aorusMedia in aorusMsg.media {\n"
+        "                if let f = aorusMedia as? TelegramMediaFile, f.isVoice {\n"
+        "                    aorusVoiceFile = f\n"
+        "                    break\n"
+        "                }\n"
+        "            }\n"
+        "            if !aorusBody.isEmpty {\n"
+        "                actions.append(.action(ContextMenuActionItem(text: \"🌐 AorusGram Перевод\", icon: { theme in\n"
+        "                    return generateTintedImage(image: UIImage(bundleImageName: \"Chat/Context Menu/Translate\"), color: theme.actionSheet.primaryTextColor)\n"
+        "                }, action: { [weak context] _, f in\n"
+        "                    f(.default)\n"
+        "                    guard let context = context else { return }\n"
+        "                    let aorusMid = aorusMsg.id\n"
+        "                    let aorusOriginal = aorusBody\n"
+        "                    let aorusCyr = aorusOriginal.unicodeScalars.filter { $0.value >= 0x0400 && $0.value <= 0x04FF }.count\n"
+        "                    let aorusSrc = Double(aorusCyr) / max(1.0, Double(aorusOriginal.count)) > 0.3 ? \"ru\" : \"en\"\n"
+        "                    let aorusTarget = aorusSrc == \"ru\" ? \"en\" : \"ru\"\n"
+        "                    guard var aorusComps = URLComponents(string: \"https://api.mymemory.translated.net/get\") else { return }\n"
+        "                    aorusComps.queryItems = [\n"
+        "                        URLQueryItem(name: \"q\", value: aorusOriginal),\n"
+        "                        URLQueryItem(name: \"langpair\", value: \"\\(aorusSrc)|\\(aorusTarget)\"),\n"
+        "                        URLQueryItem(name: \"de\", value: \"aorusgram@telegra.ph\")\n"
+        "                    ]\n"
+        "                    guard let aorusURL = aorusComps.url else { return }\n"
+        "                    URLSession.shared.dataTask(with: aorusURL) { data, _, _ in\n"
+        "                        guard let data = data,\n"
+        "                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],\n"
+        "                              let rd = json[\"responseData\"] as? [String: Any],\n"
+        "                              let raw = rd[\"translatedText\"] as? String, !raw.isEmpty else { return }\n"
+        "                        let translated = raw\n"
+        "                            .replacingOccurrences(of: \"&#39;\",  with: \"'\")\n"
+        "                            .replacingOccurrences(of: \"&quot;\", with: \"\\\"\")\n"
+        "                            .replacingOccurrences(of: \"&amp;\",  with: \"&\")\n"
+        "                        let _ = context.account.postbox.transaction { transaction -> Void in\n"
+        "                            transaction.updateMessage(aorusMid, update: { current in\n"
+        "                                let storeForwardInfo = current.forwardInfo.flatMap(StoreMessageForwardInfo.init)\n"
+        "                                let attrs = current.attributes.filter { !($0 is TranslationMessageAttribute) }\n"
+        "                                return .update(StoreMessage(id: current.id, customStableId: nil, globallyUniqueId: current.globallyUniqueId, groupingKey: current.groupingKey, threadId: current.threadId, timestamp: current.timestamp, flags: StoreMessageFlags(current.flags), tags: current.tags, globalTags: current.globalTags, localTags: current.localTags, forwardInfo: storeForwardInfo, authorId: current.author?.id, text: translated, attributes: attrs, media: current.media))\n"
+        "                            })\n"
+        "                        }.start()\n"
+        "                    }.resume()\n"
+        "                })))\n"
+        "            }\n"
+        "            if let aorusVoiceFile = aorusVoiceFile {\n"
+        "                actions.append(.action(ContextMenuActionItem(text: \"🎙 AorusGram Транскрипция\", icon: { theme in\n"
+        "                    return generateTintedImage(image: UIImage(bundleImageName: \"Chat/Context Menu/Translate\"), color: theme.actionSheet.primaryTextColor)\n"
+        "                }, action: { [weak context] _, f in\n"
+        "                    f(.default)\n"
+        "                    guard let context = context else { return }\n"
+        "                    let aorusMid = aorusMsg.id\n"
+        "                    let aorusResource = aorusVoiceFile.resource\n"
+        "                    guard let aorusPath = context.account.postbox.mediaBox.completedResourcePath(aorusResource, pathExtension: \"ogg\") else { return }\n"
+        "                    #if canImport(Speech)\n"
+        "                    SFSpeechRecognizer.requestAuthorization { status in\n"
+        "                        guard status == .authorized else { return }\n"
+        "                        guard let aorusRecognizer = SFSpeechRecognizer(locale: Locale.current) ?? SFSpeechRecognizer(locale: Locale(identifier: \"ru-RU\")), aorusRecognizer.isAvailable else { return }\n"
+        "                        let aorusReq = SFSpeechURLRecognitionRequest(url: URL(fileURLWithPath: aorusPath))\n"
+        "                        aorusReq.shouldReportPartialResults = false\n"
+        "                        aorusReq.taskHint = .dictation\n"
+        "                        if aorusRecognizer.supportsOnDeviceRecognition {\n"
+        "                            aorusReq.requiresOnDeviceRecognition = true\n"
+        "                        }\n"
+        "                        _ = aorusRecognizer.recognitionTask(with: aorusReq) { result, error in\n"
+        "                            guard let result = result, result.isFinal else { return }\n"
+        "                            let aorusText = result.bestTranscription.formattedString\n"
         "                            let _ = context.account.postbox.transaction { transaction -> Void in\n"
         "                                transaction.updateMessage(aorusMid, update: { current in\n"
         "                                    let storeForwardInfo = current.forwardInfo.flatMap(StoreMessageForwardInfo.init)\n"
-        "                                    var attrs = current.attributes.filter { !($0 is TranslationMessageAttribute) }\n"
-        "                                    attrs.append(TranslationMessageAttribute(text: translated, entities: [], toLang: aorusTarget))\n"
-        "                                    return .update(StoreMessage(id: current.id, customStableId: nil, globallyUniqueId: current.globallyUniqueId, groupingKey: current.groupingKey, threadId: current.threadId, timestamp: current.timestamp, flags: StoreMessageFlags(current.flags), tags: current.tags, globalTags: current.globalTags, localTags: current.localTags, forwardInfo: storeForwardInfo, authorId: current.author?.id, text: current.text, attributes: attrs, media: current.media))\n"
+        "                                    return .update(StoreMessage(id: current.id, customStableId: nil, globallyUniqueId: current.globallyUniqueId, groupingKey: current.groupingKey, threadId: current.threadId, timestamp: current.timestamp, flags: StoreMessageFlags(current.flags), tags: current.tags, globalTags: current.globalTags, localTags: current.localTags, forwardInfo: storeForwardInfo, authorId: current.author?.id, text: aorusText, attributes: current.attributes, media: current.media))\n"
         "                                })\n"
         "                            }.start()\n"
-        "                        }.resume()\n"
-        "                    })))\n"
-        "                }\n"
-        "                var aorusVoiceFile: TelegramMediaFile?\n"
-        "                for aorusMedia in message.media {\n"
-        "                    if let f = aorusMedia as? TelegramMediaFile, f.isVoice {\n"
-        "                        aorusVoiceFile = f\n"
-        "                        break\n"
-        "                    }\n"
-        "                }\n"
-        "                if let aorusVoiceFile = aorusVoiceFile {\n"
-        "                    actions.append(.action(ContextMenuActionItem(text: \"🎙 AorusGram Транскрипция\", icon: { theme in\n"
-        "                        return generateTintedImage(image: UIImage(bundleImageName: \"Chat/Context Menu/Translate\"), color: theme.actionSheet.primaryTextColor)\n"
-        "                    }, action: { [weak context] _, f in\n"
-        "                        f(.default)\n"
-        "                        guard let context = context else { return }\n"
-        "                        let aorusMid = message.id\n"
-        "                        let aorusResource = aorusVoiceFile.resource\n"
-        "                        guard let aorusPath = context.account.postbox.mediaBox.completedResourcePath(aorusResource, pathExtension: \"ogg\") else { return }\n"
-        "                        #if canImport(Speech)\n"
-        "                        SFSpeechRecognizer.requestAuthorization { status in\n"
-        "                            guard status == .authorized else { return }\n"
-        "                            guard let aorusRecognizer = SFSpeechRecognizer(locale: Locale.current) ?? SFSpeechRecognizer(locale: Locale(identifier: \"ru-RU\")), aorusRecognizer.isAvailable else { return }\n"
-        "                            let aorusReq = SFSpeechURLRecognitionRequest(url: URL(fileURLWithPath: aorusPath))\n"
-        "                            aorusReq.shouldReportPartialResults = false\n"
-        "                            aorusReq.taskHint = .dictation\n"
-        "                            if aorusRecognizer.supportsOnDeviceRecognition {\n"
-        "                                aorusReq.requiresOnDeviceRecognition = true\n"
-        "                            }\n"
-        "                            _ = aorusRecognizer.recognitionTask(with: aorusReq) { result, error in\n"
-        "                                guard let result = result, result.isFinal else { return }\n"
-        "                                let aorusText = result.bestTranscription.formattedString\n"
-        "                                let _ = context.account.postbox.transaction { transaction -> Void in\n"
-        "                                    transaction.updateMessage(aorusMid, update: { current in\n"
-        "                                        let storeForwardInfo = current.forwardInfo.flatMap(StoreMessageForwardInfo.init)\n"
-        "                                        var attrs = current.attributes.filter { !($0 is AudioTranscriptionMessageAttribute) }\n"
-        "                                        attrs.append(AudioTranscriptionMessageAttribute(id: Int64.random(in: 1...Int64.max), text: aorusText, isPending: false, didRate: false, error: nil))\n"
-        "                                        return .update(StoreMessage(id: current.id, customStableId: nil, globallyUniqueId: current.globallyUniqueId, groupingKey: current.groupingKey, threadId: current.threadId, timestamp: current.timestamp, flags: StoreMessageFlags(current.flags), tags: current.tags, globalTags: current.globalTags, localTags: current.localTags, forwardInfo: storeForwardInfo, authorId: current.author?.id, text: current.text, attributes: attrs, media: current.media))\n"
-        "                                    })\n"
-        "                                }.start()\n"
-        "                            }\n"
         "                        }\n"
-        "                        #endif\n"
-        "                    })))\n"
-        "                }\n"
-        "                \n"
+        "                    }\n"
+        "                    #endif\n"
+        "                })))\n"
+        "            }\n"
+        "        }\n"
+        "\n"
     )
     t = t.replace(anchor, injection + anchor, 1)
     path.write_text(t, encoding="utf-8")
-    print("ChatContextMenu: injected AorusGram translate + transcribe actions")
+    print("ChatContextMenu: injected AorusGram translate + transcribe v3")
 
 
 def patch_incoming_message_hook(tg: Path) -> None:

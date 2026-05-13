@@ -74,14 +74,25 @@ public final class AorusGramManager {
             "autoReply":           autoReply,
         ], forKey: key)
 
-        // Mirror to the individual keys read by the source-level patches injected
-        // into TelegramCore (DeleteMessages.swift, ManagedLocalInputActivities.swift,
-        // ManagedAccountPresence.swift, SynchronizePeerReadState.swift, AdMessages.swift).
-        // These patches are in a different module and can't reach this manager, so
-        // they read flat UserDefaults keys instead.
         let ud = UserDefaults.standard
         ud.set(ghostMode,           forKey: "aorusgram_ghost_mode")
         ud.set(saveDeletedMessages, forKey: "aorusgram_feature_deleted_messages")
+        ud.set(antiScreenshot,      forKey: "aorusgram_feature_anti_screenshot")
+        ud.set(voiceTranscription,  forKey: "aorusgram_feature_voice_transcription")
+        ud.set(translator,          forKey: "aorusgram_feature_translator")
+        ud.set(chatSummary,         forKey: "aorusgram_feature_chat_summary")
+        ud.set(autoReply,           forKey: "aorusgram_feature_auto_reply")
+        ud.set(antiSpamEnabled,     forKey: "aorusgram_feature_anti_spam")
+        ud.set(downloadAccel,       forKey: "aorusgram_feature_download_accel")
+        ud.set(glassUI,             forKey: "aorusgram_feature_glass_ui")
+        ud.set(streaks,             forKey: "aorusgram_feature_streaks")
+        ud.set(siriShortcuts,       forKey: "aorusgram_feature_siri_shortcuts")
+
+        if antiScreenshot {
+            AntiScreenshotManager.shared.enable()
+        } else {
+            AntiScreenshotManager.shared.disable()
+        }
 
         NotificationCenter.default.post(name: .aorusSettingsChanged, object: nil)
     }

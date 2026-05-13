@@ -13,8 +13,11 @@ final class AntiScreenshotManager {
     private init() {}
 
     private var overlayWindow: UIWindow?
+    private var isEnabled = false
 
     func enable() {
+        guard !isEnabled else { return }
+        isEnabled = true
         let nc = NotificationCenter.default
         nc.addObserver(self, selector: #selector(didTakeScreenshot),
                        name: UIApplication.userDidTakeScreenshotNotification, object: nil)
@@ -24,13 +27,14 @@ final class AntiScreenshotManager {
                        name: UIApplication.willResignActiveNotification, object: nil)
         nc.addObserver(self, selector: #selector(didBecomeActive),
                        name: UIApplication.didBecomeActiveNotification, object: nil)
-        // Handle recording that was already active before app launch.
         if UIScreen.main.isCaptured {
             showOverlay(persistent: true)
         }
     }
 
     func disable() {
+        guard isEnabled else { return }
+        isEnabled = false
         NotificationCenter.default.removeObserver(self)
         hideOverlay()
     }
