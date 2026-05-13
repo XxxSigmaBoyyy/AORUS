@@ -14,6 +14,11 @@ public final class AorusGramBootstrap {
         guard !didSetup else { return }
         didSetup = true
 
+        // Integrity check — runs async so it never blocks app launch
+        DispatchQueue.global(qos: .utility).async {
+            AorusTamperGuard.shared.verify()
+        }
+
         // Client spoof — must be before any MTProto connection is made
         ClientSpoofManager.applySwizzle()
 

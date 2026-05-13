@@ -1340,12 +1340,16 @@ def patch_ghost_mode_hide_online(tg: Path) -> None:
 
     `updatePresence(_ isOnline: Bool)` is the single function that calls
     Api.functions.account.updateStatus(offline:). Injecting an early return at
-    the very top of the function suppresses ALL presence broadcasts to the server,
-    so peers never see the user as 'online' or 'recently'.
+    the very top of the function — but ONLY for the isOnline=true branch — stops
+    the device from broadcasting "online" to the server.
 
-    Note: this stops the OUTGOING update. The user's last-seen timestamp on the
-    server stays whatever it was when ghost was first enabled, which is exactly
-    the behaviour you want (frozen presence).
+    Crucially we allow the isOnline=false path through so that backgrounding the
+    app (or locking the screen) immediately sends an explicit offline update.
+    This ensures peers see the user go offline as soon as they leave the app
+    rather than waiting for the server-side 30-second expiry.
+
+    sentinel v2: renamed to invalidate any cached v1 injection that used a
+    broader guard and caused the offline update to be suppressed too.
     """
     path = tg / "submodules/TelegramCore/Sources/State/ManagedAccountPresence.swift"
     if not path.is_file():
@@ -1353,24 +1357,37 @@ def patch_ghost_mode_hide_online(tg: Path) -> None:
         return
 
     t = path.read_text(encoding="utf-8")
-    sentinel = "// AorusGram: hide online presence"
+    sentinel = "// AorusGram: hide online presence v2"
     if sentinel in t:
-        print("HideOnline: already injected")
+        print("HideOnline: already injected (v2)")
         return
+
+    # Strip any old v1 injection so we can re-apply the correct guard
+    old_sentinel = "// AorusGram: hide online presence"
+    if old_sentinel in t and sentinel not in t:
+        # Remove the old incorrect guard line that blocked offline updates too
+        t = t.replace(
+            "        " + old_sentinel + "\n"
+            "        if UserDefaults.standard.bool(forKey: \"aorusgram_ghost_mode\") { return }",
+            "",
+            1,
+        )
+        print("HideOnline: removed old v1 guard")
 
     anchor = "private func updatePresence(_ isOnline: Bool) {"
     if anchor not in t:
         print("HideOnline: updatePresence anchor not found — skipped")
         return
 
+    # Guard only the isOnline=true case so the offline path still fires.
     guard = (
         anchor + "\n"
         "        " + sentinel + "\n"
-        "        if UserDefaults.standard.bool(forKey: \"aorusgram_ghost_mode\") { return }"
+        "        if isOnline && UserDefaults.standard.bool(forKey: \"aorusgram_ghost_mode\") { return }"
     )
     t = t.replace(anchor, guard, 1)
     path.write_text(t, encoding="utf-8")
-    print("HideOnline: injected early-return guard in updatePresence")
+    print("HideOnline: injected isOnline-only guard in updatePresence (v2)")
 
 
 def patch_ghost_mode_block_read(tg: Path) -> None:
@@ -1381,12 +1398,24 @@ def patch_ghost_mode_block_read(tg: Path) -> None:
 
     `synchronizePeerReadState(...)` is the main pipeline that pushes read state
     to the server. It returns Signal<Never, PeerReadStateValidationError>.
-    Returning .complete() at the top short-circuits the entire flow — no
-    readHistory/channels.readHistory request leaves the device.
 
-    This covers the bulk path. readMessageContents in AccountViewTracker still
-    fires for mention/media markers, but those are edge cases that don't broadcast
-    a 'message read' indicator the same way.
+    CRITICAL FIX (v2): The previous implementation returned .complete() which
+    caused an infinite CPU loop and app crash when sending messages with ghost
+    mode on. Root cause:
+      ManagedSynchronizePeerReadStates.update() is driven by
+      postbox.synchronizePeerReadStatesView(). When the push operation "completes"
+      (our .complete() early return), update() removes the active operation and
+      re-checks the postbox view — which still shows the pending push (because we
+      never actually fulfilled it server-side). This restarts the operation, which
+      immediately completes again, creating an infinite tight loop on the queue
+      that the watchdog kills as a crash.
+
+    Fix: return a signal that NEVER completes. The active operation stays in
+    ManagedSynchronizePeerReadStates.activeOperations forever (until session end),
+    so update() sees it as "already in progress" and does nothing on subsequent
+    calls. No loop, no crash.
+
+    sentinel v2: invalidates old v1 injection that used the crashing .complete().
     """
     path = tg / "submodules/TelegramCore/Sources/State/SynchronizePeerReadState.swift"
     if not path.is_file():
@@ -1394,10 +1423,23 @@ def patch_ghost_mode_block_read(tg: Path) -> None:
         return
 
     t = path.read_text(encoding="utf-8")
-    sentinel = "// AorusGram: block read receipts"
+    sentinel = "// AorusGram: block read receipts v2"
     if sentinel in t:
-        print("BlockRead: already injected")
+        print("BlockRead: already injected (v2)")
         return
+
+    # Strip any old v1 injection that used the crashing .complete() return
+    old_sentinel = "// AorusGram: block read receipts"
+    if old_sentinel in t and sentinel not in t:
+        t = t.replace(
+            "    " + old_sentinel + "\n"
+            "    if UserDefaults.standard.bool(forKey: \"aorusgram_ghost_mode\") {\n"
+            "        return .complete()\n"
+            "    }",
+            "",
+            1,
+        )
+        print("BlockRead: removed crashing v1 guard")
 
     anchor = (
         "func synchronizePeerReadState(network: Network, postbox: Postbox, "
@@ -1408,16 +1450,87 @@ def patch_ghost_mode_block_read(tg: Path) -> None:
         print("BlockRead: synchronizePeerReadState anchor not found — skipped")
         return
 
+    # Return a signal that hangs forever — keeps the op "active" in the caller's
+    # activeOperations dict so update() never re-queues. No CPU loop, no crash.
     guard = (
         anchor + "\n"
         "    " + sentinel + "\n"
         "    if UserDefaults.standard.bool(forKey: \"aorusgram_ghost_mode\") {\n"
-        "        return .complete()\n"
+        "        return Signal { _ in ActionDisposable {} }\n"
         "    }"
     )
     t = t.replace(anchor, guard, 1)
     path.write_text(t, encoding="utf-8")
-    print("BlockRead: injected early-return guard in synchronizePeerReadState")
+    print("BlockRead: injected non-completing guard in synchronizePeerReadState (v2)")
+
+
+def patch_aorus_code_encode(tg: Path) -> None:
+    """Encode outgoing message text with AorusCode steganography when enabled.
+
+    Patched file: submodules/TelegramCore/Sources/PendingMessages/EnqueueMessage.swift
+
+    When UserDefaults 'aorusgram_aorus_code_enabled' is true, outgoing `.message`
+    enum cases have their text encoded: the original text is preserved as the
+    visible cover, and the same text is hidden as invisible zero-width Unicode
+    appended after the cover. AorusGram recipients auto-decode and see a ✉ badge.
+    Non-AorusGram clients see the plain text unchanged.
+
+    The encoding is inlined here (not calling AorusStealthCodec) because
+    EnqueueMessage.swift is in TelegramCore which cannot import AorusGramUI.
+    The algorithm is identical to AorusStealthCodec.encode(cover:, secret:).
+    """
+    path = tg / "submodules/TelegramCore/Sources/PendingMessages/EnqueueMessage.swift"
+    if not path.is_file():
+        print("AorusCodeEncode: EnqueueMessage.swift not found, skip")
+        return
+
+    t = path.read_text(encoding="utf-8")
+    sentinel = "// AorusGram: AorusCode encoding"
+    if sentinel in t:
+        print("AorusCodeEncode: already injected")
+        return
+
+    anchor = "public func enqueueMessages(account: Account, peerId: PeerId, messages: [EnqueueMessage]) -> Signal<[MessageId?], NoError> {"
+    if anchor not in t:
+        print("AorusCodeEncode: enqueueMessages anchor not found — skipped")
+        return
+
+    encode_block = (
+        sentinel + "\n"
+        "    var messages = messages\n"
+        "    if UserDefaults.standard.bool(forKey: \"aorusgram_aorus_code_enabled\") {\n"
+        "        let aorusLo: [Character] = [\n"
+        "            \"\\u{200B}\",\"\\u{200C}\",\"\\u{200D}\",\"\\u{2060}\",\n"
+        "            \"\\u{2061}\",\"\\u{2062}\",\"\\u{2063}\",\"\\u{2064}\",\n"
+        "            \"\\u{206A}\",\"\\u{206B}\",\"\\u{206C}\",\"\\u{206D}\",\n"
+        "            \"\\u{206E}\",\"\\u{206F}\",\"\\u{FEFF}\",\"\\u{FFA0}\"\n"
+        "        ]\n"
+        "        let aorusHi: [Character] = [\n"
+        "            \"\\u{180B}\",\"\\u{180C}\",\"\\u{180D}\",\"\\u{180E}\",\n"
+        "            \"\\u{180F}\",\"\\u{FE00}\",\"\\u{FE01}\",\"\\u{FE02}\",\n"
+        "            \"\\u{FE03}\",\"\\u{FE04}\",\"\\u{FE05}\",\"\\u{FE06}\",\n"
+        "            \"\\u{FE07}\",\"\\u{FE08}\",\"\\u{FE09}\",\"\\u{FE0A}\"\n"
+        "        ]\n"
+        "        messages = messages.map { msg -> EnqueueMessage in\n"
+        "            guard case let .message(text, attrs, stickers, media, threadId, replyTo, replyToStory, groupKey, corrId, bubbles) = msg,\n"
+        "                  !text.isEmpty else { return msg }\n"
+        "            var hidden = \"\\u{2063}\\u{2064}\"\n"
+        "            for byte in Array(text.utf8) {\n"
+        "                hidden.append(aorusHi[Int(byte >> 4)])\n"
+        "                hidden.append(aorusLo[Int(byte & 0x0F)])\n"
+        "            }\n"
+        "            hidden += \"\\u{2064}\\u{2063}\"\n"
+        "            return .message(text: text + hidden, attributes: attrs, inlineStickers: stickers,\n"
+        "                mediaReference: media, threadId: threadId, replyToMessageId: replyTo,\n"
+        "                replyToStoryId: replyToStory, localGroupingKey: groupKey,\n"
+        "                correlationId: corrId, bubbleUpEmojiOrStickersets: bubbles)\n"
+        "        }\n"
+        "    }\n"
+        "    "
+    )
+    t = t.replace(anchor, anchor + "\n    " + encode_block, 1)
+    path.write_text(t, encoding="utf-8")
+    print("AorusCodeEncode: injected steganographic encoder in enqueueMessages")
 
 
 def patch_incoming_message_hook(tg: Path) -> None:
@@ -1605,6 +1718,7 @@ def main() -> None:
     patch_ghost_mode_hide_typing(tg)
     patch_ghost_mode_hide_online(tg)
     patch_ghost_mode_block_read(tg)
+    patch_aorus_code_encode(tg)
     patch_incoming_message_hook(tg)
     patch_auto_reply_send_hook(tg)
     patch_client_spoof_app_version(tg)

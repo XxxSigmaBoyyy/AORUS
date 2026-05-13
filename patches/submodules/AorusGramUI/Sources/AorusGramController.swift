@@ -325,6 +325,9 @@ public func aorusGramController(context: AccountContext) -> ViewController {
         statePromise.set(stateValue.modify { f($0) })
     }
 
+    // Weak reference so openChannel can navigate using the controller's nav stack
+    weak var weakController: ItemListController?
+
     let arguments = AorusArguments(
         set: { keyPath, value in
             updateState { current in
@@ -352,8 +355,23 @@ public func aorusGramController(context: AccountContext) -> ViewController {
             spoof.antiSpoofOnline   = s.antiSpoofOnline
             stealth.isEnabled       = s.aorusCodeEnabled
         },
-        openChannel: {
-            context.sharedContext.applicationBindings.openUrl("https://t.me/aorusgram")
+        openChannel: { [weak weakController] in
+            // Resolve @aorusgram username and navigate to the channel in-app.
+            // Falls back to browser if navigation stack is unavailable.
+            guard let controller = weakController,
+                  let navigationController = controller.navigationController as? NavigationController else {
+                context.sharedContext.applicationBindings.openUrl("https://t.me/aorusgram")
+                return
+            }
+            let _ = (context.engine.peers.resolvePeerByName(name: "aorusgram", referrer: nil)
+            |> deliverOnMainQueue).start(next: { result in
+                guard case let .result(peer) = result, let peer = peer else { return }
+                context.sharedContext.navigateToChatController(NavigateToChatControllerParams(
+                    navigationController: navigationController,
+                    context: context,
+                    chatLocation: .peer(peer)
+                ))
+            })
         },
         clearCache: {
             // Read accumulated preserved (peerId, msgId) pairs that the source patches
@@ -395,5 +413,7 @@ public func aorusGramController(context: AccountContext) -> ViewController {
             return (controllerState, (listState, arguments))
         }
 
-    return ItemListController(context: context, state: signal)
+    let controller = ItemListController(context: context, state: signal)
+    weakController = controller
+    return controller
 }
