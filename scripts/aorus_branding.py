@@ -839,31 +839,94 @@ def patch_deleted_messages_interception(tg: Path) -> None:
 
             utils_path_edit.write_text(t, encoding="utf-8")
 
-    # --- 2. Global-id deletes in AccountStateManagementUtils ---
+    # --- 2. Global-id deletes in AccountStateManagementUtils (REGULAR CHAT deletes-for-everyone) ---
+    # This is the critical path for "other person deleted a message for everyone" — comes
+    # from `update.DeleteMessages` with Int32 global IDs (NOT MessageId). Goes through
+    # `transaction.deleteMessagesWithGlobalIds(ids, forEachMedia: ...)`. The previous patch
+    # only POSTED a notification (didn't block deletion), so messages still vanished. Now
+    # we resolve global IDs to MessageIds via Postbox.Transaction.messageIdsForGlobalIds,
+    # filter to .Incoming, mark with 🗑 prefix, and skip them from the delete call.
     utils_path = tg / "submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift"
+    new_marker = "__aorusFilteredGlobalIds"
     if utils_path.is_file():
         t = utils_path.read_text(encoding="utf-8")
-        if (sentinel + " — global") in t:
-            print("AccountStateManagementUtils.swift: global-id hook already present")
-            return
-        # Anchor: `transaction.deleteMessagesWithGlobalIds(ids, forEachMedia: { media in`
-        anchor = "transaction.deleteMessagesWithGlobalIds(ids, forEachMedia:"
-        hook = (
-            "                " + sentinel + " — global\n"
-            "                for gid in ids {\n"
-            "                    NotificationCenter.default.post(\n"
-            "                        name: NSNotification.Name(\"aorusgram.willDeleteMessageGlobalId\"),\n"
-            "                        object: nil,\n"
-            "                        userInfo: [\"msgId\": NSNumber(value: gid)])\n"
-            "                }\n"
-            "                "
-        )
-        if anchor in t:
-            t = t.replace(anchor, hook + anchor, 1)
-            utils_path.write_text(t, encoding="utf-8")
-            print("AccountStateManagementUtils.swift: global-id delete hook injected")
+        if new_marker in t:
+            print("AccountStateManagementUtils.swift: global-id preserve already present")
         else:
-            print("AccountStateManagementUtils.swift: deleteMessagesWithGlobalIds anchor not found — skipped")
+            import re as _re_glob
+            # Remove any legacy notification-only hook left in cached trees (idempotent upgrade).
+            old_hook_re = _re_glob.compile(
+                r"                // AorusGram: NotificationCenter delete bridge — global\n"
+                r"                for gid in ids \{\n"
+                r"                    NotificationCenter\.default\.post\(\n"
+                r"                        name: NSNotification\.Name\(\"aorusgram\.willDeleteMessageGlobalId\"\),\n"
+                r"                        object: nil,\n"
+                r"                        userInfo: \[\"msgId\": NSNumber\(value: gid\)\]\)\n"
+                r"                \}\n"
+                r"                "
+            )
+            if old_hook_re.search(t):
+                t = old_hook_re.sub("", t, count=1)
+                print("AccountStateManagementUtils.swift: removed legacy notification-only hook")
+
+            anchor = "transaction.deleteMessagesWithGlobalIds(ids, forEachMedia: { media in"
+            preserve_block = (
+                sentinel + " — server-side preserve\n"
+                "                let __aorusPreserveGlobal = (UserDefaults.standard.object(forKey: \"aorusgram_feature_deleted_messages\") as? Bool) ?? true\n"
+                "                var __aorusFilteredGlobalIds: [Int32] = []\n"
+                "                if __aorusPreserveGlobal {\n"
+                "                    for gid in ids {\n"
+                "                        NotificationCenter.default.post(\n"
+                "                            name: NSNotification.Name(\"aorusgram.willDeleteMessageGlobalId\"),\n"
+                "                            object: nil,\n"
+                "                            userInfo: [\"msgId\": NSNumber(value: gid)])\n"
+                "                        let resolved = transaction.messageIdsForGlobalIds([gid])\n"
+                "                        guard let mid = resolved.first, let msg = transaction.getMessage(mid), msg.flags.contains(.Incoming) else {\n"
+                "                            __aorusFilteredGlobalIds.append(gid)\n"
+                "                            continue\n"
+                "                        }\n"
+                "                        if !msg.text.hasPrefix(\"\\u{1F5D1}\") {\n"
+                "                            transaction.updateMessage(mid, update: { current -> PostboxUpdateMessage in\n"
+                "                                let newText = \"\\u{1F5D1} [Удалено]\\n\" + current.text\n"
+                "                                return .update(StoreMessage(\n"
+                "                                    id: current.id, customStableId: nil,\n"
+                "                                    globallyUniqueId: current.globallyUniqueId,\n"
+                "                                    groupingKey: current.groupingKey,\n"
+                "                                    threadId: current.threadId,\n"
+                "                                    timestamp: current.timestamp,\n"
+                "                                    flags: StoreMessageFlags(current.flags),\n"
+                "                                    tags: current.tags,\n"
+                "                                    globalTags: current.globalTags,\n"
+                "                                    localTags: current.localTags,\n"
+                "                                    forwardInfo: current.forwardInfo.flatMap(StoreMessageForwardInfo.init),\n"
+                "                                    authorId: current.author?.id,\n"
+                "                                    text: newText,\n"
+                "                                    attributes: current.attributes,\n"
+                "                                    media: current.media))\n"
+                "                            })\n"
+                "                            var preservedList = (UserDefaults.standard.array(forKey: \"aorusgram_preserved_msgs\") as? [[String: Int64]]) ?? []\n"
+                "                            preservedList.append([\"peerId\": mid.peerId.toInt64(), \"msgId\": Int64(mid.id), \"namespace\": Int64(mid.namespace)])\n"
+                "                            UserDefaults.standard.set(preservedList, forKey: \"aorusgram_preserved_msgs\")\n"
+                "                        }\n"
+                "                    }\n"
+                "                } else {\n"
+                "                    __aorusFilteredGlobalIds = ids\n"
+                "                }\n"
+                "                "
+            )
+            new_call = "transaction.deleteMessagesWithGlobalIds(__aorusFilteredGlobalIds, forEachMedia: { media in"
+            if anchor in t:
+                t = t.replace(anchor, preserve_block + new_call, 1)
+                # Also rewrite downstream `deletedMessageIds.append(contentsOf: ids.map { .global($0) })`
+                # so consumers don't think we deleted incoming messages we actually preserved.
+                old_tail = "deletedMessageIds.append(contentsOf: ids.map { .global($0) })"
+                new_tail = "deletedMessageIds.append(contentsOf: __aorusFilteredGlobalIds.map { .global($0) })"
+                if old_tail in t:
+                    t = t.replace(old_tail, new_tail, 1)
+                utils_path.write_text(t, encoding="utf-8")
+                print("AccountStateManagementUtils.swift: global-id preserve hook injected (.Incoming-filtered)")
+            else:
+                print("AccountStateManagementUtils.swift: deleteMessagesWithGlobalIds anchor not found — skipped")
     else:
         print("AccountStateManagementUtils.swift: file not found — skipped")
 

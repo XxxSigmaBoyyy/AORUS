@@ -17,9 +17,12 @@ public final class AorusGramBootstrap {
         // Client spoof — must be before any MTProto connection is made
         ClientSpoofManager.applySwizzle()
 
-        // Ghost Mode — restore persisted state + MTProto-level swizzle
+        // Ghost Mode — restore persisted state only. The MTProto-level ObjC swizzle
+        // (GhostModeSwizzler) was REMOVED because its body.perform("serialize") path
+        // caused intermittent crashes on toggling. Source-level patches injected by
+        // aorus_branding.py (ManagedAccountPresence, ManagedLocalInputActivities,
+        // SynchronizePeerReadState) are the sole and sufficient enforcement layer now.
         GhostModeManager.shared.load()
-        GhostModeSwizzler.apply()
 
         // Deleted messages — register BGTask and schedule first sync
         DeletedMessagesCache.shared.registerBackgroundTask()
