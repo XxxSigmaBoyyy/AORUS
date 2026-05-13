@@ -48,123 +48,12 @@ struct VoiceTranscriberView: View {
                 AorusAnimatedBackground()
                 ScrollView {
                     VStack(spacing: 18) {
-                        // Language picker
-                        GlassCard {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Label("Язык распознавания", systemImage: "globe")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundColor(Color(hex: "#5C6BC0"))
-                                Menu {
-                                    ForEach(availableLocales, id: \.id) { l in
-                                        Button { selectedLocale = l.id } label: {
-                                            Label("\(l.flag) \(l.name)", systemImage: selectedLocale == l.id ? "checkmark" : "")
-                                        }
-                                    }
-                                } label: {
-                                    HStack {
-                                        if let l = availableLocales.first(where: { $0.id == selectedLocale }) {
-                                            Text("\(l.flag)  \(l.name)")
-                                                .font(.system(size: 15, weight: .medium))
-                                                .foregroundColor(.primary)
-                                        }
-                                        Spacer()
-                                        Image(systemName: "chevron.down").foregroundColor(.secondary)
-                                    }
-                                    .padding(10)
-                                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-                                }
-                            }
-                            .padding(14)
-                        }
-
-                        // Microphone record card
-                        GlassCard {
-                            VStack(spacing: 12) {
-                                Image(systemName: isRecording ? "waveform.circle.fill" : "mic.circle.fill")
-                                    .font(.system(size: 56))
-                                    .foregroundStyle(
-                                        LinearGradient(
-                                            colors: isRecording ? [.red, .pink] : [Color(hex: "#FF6D00"), Color(hex: "#FF3D00")],
-                                            startPoint: .topLeading, endPoint: .bottomTrailing
-                                        )
-                                    )
-                                    .symbolEffect(.pulse, isActive: isRecording)
-                                Text(isRecording ? "Запись... Говорите" : "Нажмите чтобы записать")
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundColor(.secondary)
-                                Button {
-                                    isRecording ? stopRecording() : startRecording()
-                                } label: {
-                                    Text(isRecording ? "Остановить" : "Записать")
-                                        .font(.system(size: 15, weight: .semibold))
-                                        .foregroundColor(.white)
-                                        .padding(.horizontal, 30).padding(.vertical, 10)
-                                        .background(
-                                            LinearGradient(
-                                                colors: isRecording ? [.red, .pink] : [Color(hex: "#FF6D00"), Color(hex: "#FF3D00")],
-                                                startPoint: .leading, endPoint: .trailing
-                                            ),
-                                            in: Capsule()
-                                        )
-                                }
-                            }
-                            .padding(20)
-                        }
-
-                        // OR file picker
-                        GlassButton(
-                            title: "Выбрать аудио файл",
-                            icon:  "doc.fill",
-                            color: Color(hex: "#5C6BC0")
-                        ) {
-                            showFilePicker = true
-                        }
-                        .disabled(isRecording || isTranscribing)
-
-                        // Result
-                        if !transcribedText.isEmpty {
-                            GlassCard {
-                                VStack(alignment: .leading, spacing: 10) {
-                                    HStack {
-                                        Label("Транскрипция", systemImage: "text.bubble.fill")
-                                            .font(.system(size: 13, weight: .semibold))
-                                            .foregroundColor(.green)
-                                        Spacer()
-                                        Button {
-                                            UIPasteboard.general.string = transcribedText
-                                            UINotificationFeedbackGenerator().notificationOccurred(.success)
-                                        } label: {
-                                            Image(systemName: "doc.on.doc")
-                                                .foregroundColor(Color(hex: "#FF6D00"))
-                                        }
-                                    }
-                                    Text(transcribedText)
-                                        .font(.system(size: 15))
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .padding(10)
-                                        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-                                        .textSelection(.enabled)
-                                }
-                                .padding(14)
-                            }
-                        }
-
-                        if isTranscribing {
-                            HStack {
-                                ProgressView().scaleEffect(0.8)
-                                Text("Распознавание...")
-                                    .font(.system(size: 13))
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-
-                        if showError {
-                            Text(errorMessage)
-                                .font(.system(size: 13))
-                                .foregroundColor(.red)
-                                .padding(.horizontal, 8)
-                        }
-
+                        languagePickerCard
+                        recordCard
+                        filePickerButton
+                        if !transcribedText.isEmpty { resultCard }
+                        if isTranscribing { transcribingIndicator }
+                        if showError { errorView }
                         Spacer(minLength: 30)
                     }
                     .padding(16)
@@ -188,6 +77,125 @@ struct VoiceTranscriberView: View {
                 handleFilePick(result)
             }
         }
+    }
+
+    // MARK: - Sub-views
+
+    private var languagePickerCard: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Язык распознавания", systemImage: "globe")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(Color(hex: "#5C6BC0"))
+                languageMenu
+            }
+            .padding(14)
+        }
+    }
+
+    private var languageMenu: some View {
+        Menu {
+            ForEach(availableLocales, id: \.id) { l in
+                Button { selectedLocale = l.id } label: {
+                    let icon = selectedLocale == l.id ? "checkmark" : ""
+                    Label("\(l.flag) \(l.name)", systemImage: icon)
+                }
+            }
+        } label: {
+            HStack {
+                if let l = availableLocales.first(where: { $0.id == selectedLocale }) {
+                    Text("\(l.flag)  \(l.name)")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundColor(.primary)
+                }
+                Spacer()
+                Image(systemName: "chevron.down").foregroundColor(.secondary)
+            }
+            .padding(10)
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        }
+    }
+
+    private var recordCard: some View {
+        GlassCard {
+            VStack(spacing: 12) {
+                let micIcon = isRecording ? "waveform.circle.fill" : "mic.circle.fill"
+                let gradientColors: [Color] = isRecording ? [.red, .pink] : [Color(hex: "#FF6D00"), Color(hex: "#FF3D00")]
+                Image(systemName: micIcon)
+                    .font(.system(size: 56))
+                    .foregroundStyle(LinearGradient(colors: gradientColors, startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .symbolEffect(.pulse, isActive: isRecording)
+                Text(isRecording ? "Запись... Говорите" : "Нажмите чтобы записать")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.secondary)
+                recordButton
+            }
+            .padding(20)
+        }
+    }
+
+    private var recordButton: some View {
+        let btnColors: [Color] = isRecording ? [.red, .pink] : [Color(hex: "#FF6D00"), Color(hex: "#FF3D00")]
+        return Button {
+            if isRecording { stopRecording() } else { startRecording() }
+        } label: {
+            Text(isRecording ? "Остановить" : "Записать")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(.white)
+                .padding(.horizontal, 30)
+                .padding(.vertical, 10)
+                .background(LinearGradient(colors: btnColors, startPoint: .leading, endPoint: .trailing), in: Capsule())
+        }
+    }
+
+    private var filePickerButton: some View {
+        GlassButton(title: "Выбрать аудио файл", icon: "doc.fill", color: Color(hex: "#5C6BC0")) {
+            showFilePicker = true
+        }
+        .disabled(isRecording || isTranscribing)
+    }
+
+    private var resultCard: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Label("Транскрипция", systemImage: "text.bubble.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.green)
+                    Spacer()
+                    Button {
+                        UIPasteboard.general.string = transcribedText
+                        UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                            .foregroundColor(Color(hex: "#FF6D00"))
+                    }
+                }
+                Text(transcribedText)
+                    .font(.system(size: 15))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                    .textSelection(.enabled)
+            }
+            .padding(14)
+        }
+    }
+
+    private var transcribingIndicator: some View {
+        HStack {
+            ProgressView().scaleEffect(0.8)
+            Text("Распознавание...")
+                .font(.system(size: 13))
+                .foregroundColor(.secondary)
+        }
+    }
+
+    private var errorView: some View {
+        Text(errorMessage)
+            .font(.system(size: 13))
+            .foregroundColor(.red)
+            .padding(.horizontal, 8)
     }
 
     // MARK: - Live recording
@@ -306,7 +314,6 @@ struct VoiceTranscriberView: View {
     }
 
     private func transcribeFile(url: URL) {
-        // Some file pickers return a URL we need to start security-scoped access on
         let needsScopedAccess = url.startAccessingSecurityScopedResource()
         isTranscribing = true
         showError = false
