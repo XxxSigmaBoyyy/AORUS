@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import SwiftUI
 import Display
 import SwiftSignalKit
 import Postbox
@@ -49,13 +50,19 @@ private final class AorusArguments {
     let set: (WritableKeyPath<AorusState, Bool>, Bool) -> Void
     let openChannel: () -> Void
     let clearCache: () -> Void
+    let openTranslator: () -> Void
+    let openTranscriber: () -> Void
 
     init(set: @escaping (WritableKeyPath<AorusState, Bool>, Bool) -> Void,
          openChannel: @escaping () -> Void,
-         clearCache: @escaping () -> Void) {
+         clearCache: @escaping () -> Void,
+         openTranslator: @escaping () -> Void,
+         openTranscriber: @escaping () -> Void) {
         self.set = set
         self.openChannel = openChannel
         self.clearCache = clearCache
+        self.openTranslator = openTranslator
+        self.openTranscriber = openTranscriber
     }
 }
 
@@ -70,8 +77,10 @@ private enum AorusEntry: ItemListNodeEntry {
 
     case aiHeader(PresentationTheme, String)
     case voiceTranscription(PresentationTheme, String, Bool)
+    case openTranscriber(PresentationTheme, String)
     case chatSummary(PresentationTheme, String, Bool)
     case translator(PresentationTheme, String, Bool)
+    case openTranslator(PresentationTheme, String)
     case autoReply(PresentationTheme, String, Bool)
 
     case perfHeader(PresentationTheme, String)
@@ -96,7 +105,7 @@ private enum AorusEntry: ItemListNodeEntry {
         switch self {
         case .privacyHeader, .ghostMode, .saveDeletedMessages, .clearDeletedCache, .antiScreenshot:
             return AorusSection.privacy.rawValue
-        case .aiHeader, .voiceTranscription, .chatSummary, .translator, .autoReply:
+        case .aiHeader, .voiceTranscription, .openTranscriber, .chatSummary, .translator, .openTranslator, .autoReply:
             return AorusSection.ai.rawValue
         case .perfHeader, .downloadAccel, .antiSpam, .streaks:
             return AorusSection.performance.rawValue
@@ -120,9 +129,11 @@ private enum AorusEntry: ItemListNodeEntry {
         case .antiScreenshot:       return 6
         case .aiHeader:             return 10
         case .voiceTranscription:   return 11
-        case .chatSummary:          return 12
-        case .translator:           return 13
-        case .autoReply:            return 14
+        case .openTranscriber:      return 12
+        case .chatSummary:          return 13
+        case .translator:           return 14
+        case .openTranslator:       return 15
+        case .autoReply:            return 16
         case .perfHeader:           return 20
         case .downloadAccel:        return 21
         case .antiSpam:             return 22
@@ -159,10 +170,14 @@ private enum AorusEntry: ItemListNodeEntry {
             if case let .aiHeader(rt, rs) = rhs { return lt === rt && ls == rs }
         case let .voiceTranscription(lt, ls, lv):
             if case let .voiceTranscription(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
+        case let .openTranscriber(lt, ls):
+            if case let .openTranscriber(rt, rs) = rhs { return lt === rt && ls == rs }
         case let .chatSummary(lt, ls, lv):
             if case let .chatSummary(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
         case let .translator(lt, ls, lv):
             if case let .translator(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
+        case let .openTranslator(lt, ls):
+            if case let .openTranslator(rt, rs) = rhs { return lt === rt && ls == rs }
         case let .autoReply(lt, ls, lv):
             if case let .autoReply(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
         case let .perfHeader(lt, ls):
@@ -212,10 +227,14 @@ private enum AorusEntry: ItemListNodeEntry {
             return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: section)
         case let .voiceTranscription(_, title, value):
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.voiceTranscription, $0) })
+        case let .openTranscriber(_, title):
+            return ItemListActionItem(presentationData: presentationData, title: title, kind: .generic, alignment: .natural, sectionId: section, style: .blocks, action: args.openTranscriber)
         case let .chatSummary(_, title, value):
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.chatSummary, $0) })
         case let .translator(_, title, value):
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.translator, $0) })
+        case let .openTranslator(_, title):
+            return ItemListActionItem(presentationData: presentationData, title: title, kind: .generic, alignment: .natural, sectionId: section, style: .blocks, action: args.openTranslator)
         case let .autoReply(_, title, value):
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.autoReply, $0) })
         case let .perfHeader(_, text):
@@ -268,8 +287,10 @@ private func aorusEntries(state: AorusState, theme: PresentationTheme) -> [Aorus
 
         .aiHeader(theme, "✨ AI ФУНКЦИИ"),
         .voiceTranscription(theme, "Транскрипция войсов", state.voiceTranscription),
+        .openTranscriber(theme, "🎙 Открыть транскриптор"),
         .chatSummary(theme, "Саммари чата", state.chatSummary),
         .translator(theme, "Переводчик", state.translator),
+        .openTranslator(theme, "🌐 Открыть переводчик"),
         .autoReply(theme, "Авто-ответчик", state.autoReply),
 
         .perfHeader(theme, "⚡️ ПРОИЗВОДИТЕЛЬНОСТЬ"),
@@ -390,6 +411,29 @@ public func aorusGramController(context: AccountContext) -> ViewController {
             } |> deliverOnMainQueue).start(completed: {
                 UserDefaults.standard.removeObject(forKey: "aorusgram_preserved_msgs")
             })
+        },
+        openTranslator: { [weak weakController] in
+            guard let controller = weakController else { return }
+            let host = UIHostingController(rootView: TranslatorView())
+            host.modalPresentationStyle = .pageSheet
+            if #available(iOS 15.0, *), let sheet = host.sheetPresentationController {
+                sheet.detents = [.large()]
+                sheet.prefersGrabberVisible = true
+            }
+            // Present from the top-most VC in our nav stack via UIKit's standard API.
+            let presenter: UIViewController = controller.navigationController?.topViewController ?? controller
+            presenter.present(host, animated: true, completion: nil)
+        },
+        openTranscriber: { [weak weakController] in
+            guard let controller = weakController else { return }
+            let host = UIHostingController(rootView: VoiceTranscriberView())
+            host.modalPresentationStyle = .pageSheet
+            if #available(iOS 15.0, *), let sheet = host.sheetPresentationController {
+                sheet.detents = [.large()]
+                sheet.prefersGrabberVisible = true
+            }
+            let presenter: UIViewController = controller.navigationController?.topViewController ?? controller
+            presenter.present(host, animated: true, completion: nil)
         }
     )
 

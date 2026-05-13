@@ -1,9 +1,10 @@
 import Foundation
 import Security
 
-// In-message translation. Uses Apple Translation framework (iOS 17.4+) when available,
-// falls back to DeepL free API if the user provides an API key.
-// `#if canImport(Translation)` guards the iOS 17.4-only import correctly.
+// Translator. Three providers, tried in order:
+//   1. Apple Translation framework (iOS 17.4+) — on-device, free, best quality.
+//   2. MyMemory free public API — no key required, 5000 chars/day per IP.
+//   3. DeepL — only if the user provides an API key in TranslatorKeychain.
 #if canImport(Translation)
 import Translation
 #endif
@@ -27,26 +28,30 @@ final class TranslatorManager {
     func translate(
         text: String,
         from sourceLang: String? = nil,
+        to targetLang: String? = nil,
         completion: @escaping (Result<String, TranslationError>) -> Void
     ) {
-        guard AorusGramConfig.isEnabled(.translator) else {
-            completion(.failure(.featureDisabled)); return
-        }
-        let key = "\(sourceLang ?? "auto")|\(targetLanguageCode)|\(text)"
+        let target = targetLang ?? targetLanguageCode
+        let key = "\(sourceLang ?? "auto")|\(target)|\(text)"
         if let cached = cacheQueue.sync(execute: { cache[key] }) {
             completion(.success(cached)); return
         }
 
 #if canImport(Translation)
         if #available(iOS 17.4, *) {
-            translateApple(text: text, from: sourceLang, key: key, completion: completion)
+            translateApple(text: text, from: sourceLang, target: target, key: key) { [weak self] result in
+                if case .success = result { completion(result); return }
+                // Apple Translation failed (no model downloaded etc.) → fall through to MyMemory
+                self?.translateMyMemory(text: text, from: sourceLang, target: target, key: key, completion: completion)
+            }
             return
         }
 #endif
+        // Try DeepL first if a key is configured, otherwise MyMemory.
         if let apiKey = deepLApiKey, !apiKey.isEmpty {
-            translateDeepL(text: text, from: sourceLang, apiKey: apiKey, key: key, completion: completion)
+            translateDeepL(text: text, from: sourceLang, target: target, apiKey: apiKey, key: key, completion: completion)
         } else {
-            completion(.failure(.noProvider))
+            translateMyMemory(text: text, from: sourceLang, target: target, key: key, completion: completion)
         }
     }
 
@@ -55,44 +60,93 @@ final class TranslatorManager {
 #if canImport(Translation)
     @available(iOS 17.4, *)
     private func translateApple(
-        text: String, from sourceLang: String?, key: String,
+        text: String, from sourceLang: String?, target: String, key: String,
         completion: @escaping (Result<String, TranslationError>) -> Void
     ) {
-        // TranslationSession must be presented via SwiftUI overlay.
-        // We post a notification; the active chat VC picks it up, shows the sheet,
-        // then posts .aorusTranslationResult with the translated string.
         let userInfo: [String: Any] = [
             "text":   text,
             "key":    key,
             "source": sourceLang ?? "",
-            "target": targetLanguageCode,
+            "target": target,
         ]
         DispatchQueue.main.async {
             NotificationCenter.default.post(
                 name: .aorusTranslationRequested,
-                object: nil,
-                userInfo: userInfo
+                object: nil, userInfo: userInfo
             )
         }
-        // Register a one-shot observer for the result
+        // One-shot result observer with a 6s timeout fallback
         var token: NSObjectProtocol?
+        let timeoutWork = DispatchWorkItem {
+            if let t = token { NotificationCenter.default.removeObserver(t); token = nil }
+            completion(.failure(.network("Apple Translation timeout")))
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6, execute: timeoutWork)
         token = NotificationCenter.default.addObserver(
             forName: .aorusTranslationResult,
             object: nil, queue: .main
         ) { [weak self] note in
             guard let rKey = note.userInfo?["key"] as? String, rKey == key,
                   let translated = note.userInfo?["translated"] as? String else { return }
-            if let t = token { NotificationCenter.default.removeObserver(t) }
+            if let t = token { NotificationCenter.default.removeObserver(t); token = nil }
+            timeoutWork.cancel()
             self?.cacheQueue.async { self?.cache[key] = translated }
             completion(.success(translated))
         }
     }
 #endif
 
-    // MARK: - DeepL fallback
+    // MARK: - MyMemory free API (no key needed)
+
+    private func translateMyMemory(
+        text: String, from sourceLang: String?, target: String, key: String,
+        completion: @escaping (Result<String, TranslationError>) -> Void
+    ) {
+        // MyMemory expects "en|ru" — source MUST be specified; "auto" is not supported,
+        // so we default to English on unknown source.
+        let source = (sourceLang?.isEmpty == false ? sourceLang! : "en")
+        let pair = "\(source.lowercased())|\(target.lowercased())"
+        guard var comps = URLComponents(string: "https://api.mymemory.translated.net/get") else {
+            completion(.failure(.parse)); return
+        }
+        comps.queryItems = [
+            URLQueryItem(name: "q", value: text),
+            URLQueryItem(name: "langpair", value: pair),
+            URLQueryItem(name: "de", value: "aorusgram@telegra.ph"), // increases daily quota
+        ]
+        guard let url = comps.url else { completion(.failure(.parse)); return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.timeoutInterval = 10
+
+        URLSession.shared.dataTask(with: req) { [weak self] data, _, error in
+            if let error {
+                DispatchQueue.main.async { completion(.failure(.network(error.localizedDescription))) }
+                return
+            }
+            guard let data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let responseData = json["responseData"] as? [String: Any],
+                  let translated = responseData["translatedText"] as? String else {
+                DispatchQueue.main.async { completion(.failure(.parse)) }
+                return
+            }
+            // MyMemory uses HTML entities — decode them.
+            let decoded = translated
+                .replacingOccurrences(of: "&#39;",  with: "'")
+                .replacingOccurrences(of: "&quot;", with: "\"")
+                .replacingOccurrences(of: "&amp;",  with: "&")
+                .replacingOccurrences(of: "&lt;",   with: "<")
+                .replacingOccurrences(of: "&gt;",   with: ">")
+            self?.cacheQueue.async { self?.cache[key] = decoded }
+            DispatchQueue.main.async { completion(.success(decoded)) }
+        }.resume()
+    }
+
+    // MARK: - DeepL premium fallback
 
     private func translateDeepL(
-        text: String, from sourceLang: String?, apiKey: String, key: String,
+        text: String, from sourceLang: String?, target: String, apiKey: String, key: String,
         completion: @escaping (Result<String, TranslationError>) -> Void
     ) {
         guard var comps = URLComponents(string: "https://api-free.deepl.com/v2/translate") else {
@@ -100,7 +154,7 @@ final class TranslatorManager {
         }
         var items: [URLQueryItem] = [
             .init(name: "text",        value: text),
-            .init(name: "target_lang", value: targetLanguageCode.uppercased()),
+            .init(name: "target_lang", value: target.uppercased()),
             .init(name: "auth_key",    value: apiKey),
         ]
         if let src = sourceLang { items.append(.init(name: "source_lang", value: src.uppercased())) }
@@ -125,6 +179,19 @@ final class TranslatorManager {
 
     func cacheResult(key: String, translated: String) {
         cacheQueue.async { self.cache[key] = translated }
+    }
+
+    // MARK: - Detect language (simple heuristic)
+
+    static func detectLanguage(of text: String) -> String {
+        // Cyrillic ratio → Russian
+        let cyrillic = text.unicodeScalars.filter { $0.value >= 0x0400 && $0.value <= 0x04FF }.count
+        if Double(cyrillic) / max(1.0, Double(text.count)) > 0.3 { return "ru" }
+        // CJK ratio → Chinese (rough)
+        let cjk = text.unicodeScalars.filter { $0.value >= 0x4E00 && $0.value <= 0x9FFF }.count
+        if cjk > 0 { return "zh" }
+        // Default to English
+        return "en"
     }
 }
 

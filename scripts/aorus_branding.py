@@ -1390,6 +1390,84 @@ def patch_ghost_mode_hide_online(tg: Path) -> None:
     print("HideOnline: injected isOnline-only guard in updatePresence (v2)")
 
 
+def patch_ghost_mode_proactive_offline(tg: Path) -> None:
+    """Proactively send 'offline' to the server when ghost mode is toggled ON.
+
+    Without this fix, enabling ghost mode while the user is in foreground means:
+      1. updatePresence(true) was previously called → server sees user as online
+      2. New ghost guard blocks future updatePresence(true) calls
+      3. BUT the server-side online status doesn't expire for 30+ seconds
+      → User appears online to peers for up to 30s after enabling ghost mode.
+
+    Fix: patch AccountPresenceManagerImpl.init to observe the AorusGram settings
+    notification. When ghost mode flips on (any settings change re-checks the
+    UserDefaults key), immediately fire a one-shot updateStatus(offline: true)
+    request through the manager's own network/queue. This bypasses the guard
+    because it constructs the request directly without calling updatePresence.
+
+    Patched file: submodules/TelegramCore/Sources/State/ManagedAccountPresence.swift
+    """
+    path = tg / "submodules/TelegramCore/Sources/State/ManagedAccountPresence.swift"
+    if not path.is_file():
+        print("ProactiveOffline: ManagedAccountPresence.swift not found, skip")
+        return
+
+    t = path.read_text(encoding="utf-8")
+    sentinel = "// AorusGram: proactive offline on ghost"
+    if sentinel in t:
+        print("ProactiveOffline: already injected")
+        return
+
+    # Inject inside init(...) right after `self.network = network`, before the
+    # shouldKeepOnlinePresenceDisposable assignment. This gives us access to
+    # self.network and self.queue for sending the offline request.
+    anchor = (
+        "        self.queue = queue\n"
+        "        self.network = network\n"
+        "        \n"
+        "        self.shouldKeepOnlinePresenceDisposable"
+    )
+    if anchor not in t:
+        # Try a more lenient match (no trailing blank line)
+        anchor = (
+            "        self.queue = queue\n"
+            "        self.network = network\n"
+            "        self.shouldKeepOnlinePresenceDisposable"
+        )
+        if anchor not in t:
+            print("ProactiveOffline: init anchor not found — skipped")
+            return
+
+    injection = (
+        "        self.queue = queue\n"
+        "        self.network = network\n"
+        "        \n"
+        "        " + sentinel + "\n"
+        "        let aorusQueue = queue\n"
+        "        let aorusNetwork = network\n"
+        "        let aorusRequestDisposable = self.currentRequestDisposable\n"
+        "        NotificationCenter.default.addObserver(\n"
+        "            forName: NSNotification.Name(\"aorusgram_settings_changed\"),\n"
+        "            object: nil, queue: nil\n"
+        "        ) { [weak self] _ in\n"
+        "            guard UserDefaults.standard.bool(forKey: \"aorusgram_ghost_mode\") else { return }\n"
+        "            aorusQueue.async {\n"
+        "                self?.onlineTimer?.invalidate()\n"
+        "                self?.onlineTimer = nil\n"
+        "                let req = aorusNetwork.request(Api.functions.account.updateStatus(offline: .boolTrue))\n"
+        "                aorusRequestDisposable.set((req\n"
+        "                |> `catch` { _ -> Signal<Api.Bool, NoError> in .single(.boolFalse) }\n"
+        "                |> deliverOn(aorusQueue)).start())\n"
+        "            }\n"
+        "        }\n"
+        "        \n"
+        "        self.shouldKeepOnlinePresenceDisposable"
+    )
+    t = t.replace(anchor, injection, 1)
+    path.write_text(t, encoding="utf-8")
+    print("ProactiveOffline: injected ghost-mode-change observer in init")
+
+
 def patch_ghost_mode_block_read(tg: Path) -> None:
     """Block read-receipt sync (messages.readHistory / channels.readHistory)
     when Ghost Mode is on.
@@ -1717,6 +1795,7 @@ def main() -> None:
     patch_block_ads(tg)
     patch_ghost_mode_hide_typing(tg)
     patch_ghost_mode_hide_online(tg)
+    patch_ghost_mode_proactive_offline(tg)
     patch_ghost_mode_block_read(tg)
     patch_aorus_code_encode(tg)
     patch_incoming_message_hook(tg)
