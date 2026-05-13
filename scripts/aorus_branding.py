@@ -1391,6 +1391,7 @@ def patch_ghost_mode_hide_online(tg: Path) -> None:
         anchor + "\n"
         "        " + sentinel + "\n"
         "        if isOnline && UserDefaults.standard.bool(forKey: \"aorusgram_ghost_mode\") {\n"
+        "            self.onlineTimer?.invalidate()\n"
         "            let aorusTimer = SignalKitTimer(timeout: 30.0, repeat: false, completion: { [weak self] in\n"
         "                guard let s = self else { return }\n"
         "                s.updatePresence(true)\n"
@@ -1410,19 +1411,21 @@ def patch_ghost_mode_hide_online(tg: Path) -> None:
 
 
 def patch_ghost_mode_proactive_offline(tg: Path) -> None:
-    """Proactively send 'offline' to the server when ghost mode is toggled ON.
+    """Kick off the v3 self-sustaining offline-ping chain the moment ghost mode
+    is toggled ON.
 
-    Without this fix, enabling ghost mode while the user is in foreground means:
-      1. updatePresence(true) was previously called → server sees user as online
-      2. New ghost guard blocks future updatePresence(true) calls
-      3. BUT the server-side online status doesn't expire for 30+ seconds
-      → User appears online to peers for up to 30s after enabling ghost mode.
+    When ghost mode flips on, we want the server to be told "offline" right now
+    AND for the recurrence to keep firing so server-side activity inference
+    (caused by e.g. sendMessage RPCs) is continuously countered. The simplest
+    way is to call updatePresence(true) from this observer — that hits the v3
+    ghost-mode branch which: schedules a 30s repeating timer + sends
+    updateStatus(offline: .boolTrue). Subsequent timer fires keep reinvoking
+    updatePresence(true) under the same branch, perpetuating the chain.
 
-    Fix: patch AccountPresenceManagerImpl.init to observe the AorusGram settings
-    notification. When ghost mode flips on (any settings change re-checks the
-    UserDefaults key), immediately fire a one-shot updateStatus(offline: true)
-    request through the manager's own network/queue. This bypasses the guard
-    because it constructs the request directly without calling updatePresence.
+    We intentionally do NOT invalidate the existing onlineTimer here, because
+    a pre-existing online ping cadence (from before ghost was enabled) firing
+    updatePresence(true) will now hit the v3 branch and broadcast offline, so
+    the cadence remains useful.
 
     Patched file: submodules/TelegramCore/Sources/State/ManagedAccountPresence.swift
     """
@@ -1463,20 +1466,13 @@ def patch_ghost_mode_proactive_offline(tg: Path) -> None:
         "        \n"
         "        " + sentinel + "\n"
         "        let aorusQueue = queue\n"
-        "        let aorusNetwork = network\n"
-        "        let aorusRequestDisposable = self.currentRequestDisposable\n"
         "        NotificationCenter.default.addObserver(\n"
         "            forName: NSNotification.Name(\"aorusgram_settings_changed\"),\n"
         "            object: nil, queue: nil\n"
         "        ) { [weak self] _ in\n"
         "            guard UserDefaults.standard.bool(forKey: \"aorusgram_ghost_mode\") else { return }\n"
         "            aorusQueue.async {\n"
-        "                self?.onlineTimer?.invalidate()\n"
-        "                self?.onlineTimer = nil\n"
-        "                let req = aorusNetwork.request(Api.functions.account.updateStatus(offline: .boolTrue))\n"
-        "                aorusRequestDisposable.set((req\n"
-        "                |> `catch` { _ -> Signal<Api.Bool, NoError> in .single(.boolFalse) }\n"
-        "                |> deliverOn(aorusQueue)).start())\n"
+        "                self?.updatePresence(true)\n"
         "            }\n"
         "        }\n"
         "        \n"

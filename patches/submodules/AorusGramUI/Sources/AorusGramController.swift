@@ -1,6 +1,5 @@
 import Foundation
 import UIKit
-import SwiftUI
 import Display
 import SwiftSignalKit
 import Postbox
