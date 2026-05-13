@@ -1334,22 +1334,25 @@ def patch_ghost_mode_hide_typing(tg: Path) -> None:
 
 
 def patch_ghost_mode_hide_online(tg: Path) -> None:
-    """Hide online status (suppress account.updateStatus) when Ghost Mode is on.
+    """Override every "go online" attempt with an explicit "stay offline" broadcast
+    while Ghost Mode is on.
 
     Patched file: submodules/TelegramCore/Sources/State/ManagedAccountPresence.swift
 
-    `updatePresence(_ isOnline: Bool)` is the single function that calls
-    Api.functions.account.updateStatus(offline:). Injecting an early return at
-    the very top of the function — but ONLY for the isOnline=true branch — stops
-    the device from broadcasting "online" to the server.
+    Why v3 isn't just a return:
+    Telegram's server marks an account as online whenever MTProto session activity
+    is detected — e.g. sending a message produces side-effects that the server
+    reads as "this user is active right now" even WITHOUT an explicit
+    account.updateStatus(offline: false) RPC. The v2 patch (early-return) silently
+    let the server make that inference, so peers still saw the account come
+    online every time a message was sent.
 
-    Crucially we allow the isOnline=false path through so that backgrounding the
-    app (or locking the screen) immediately sends an explicit offline update.
-    This ensures peers see the user go offline as soon as they leave the app
-    rather than waiting for the server-side 30-second expiry.
-
-    sentinel v2: renamed to invalidate any cached v1 injection that used a
-    broader guard and caused the offline update to be suppressed too.
+    Fix (v3): when updatePresence(true) is invoked under ghost mode, instead of
+    early-return we PROACTIVELY fire account.updateStatus(offline: .boolTrue)
+    through the same disposable so the server is told "no, still offline" — and
+    re-schedule the same 30s recurrence timer so the offline assertion is kept
+    fresh. The result is that every server-side promotion to "online" is
+    immediately countered by an explicit offline broadcast.
     """
     path = tg / "submodules/TelegramCore/Sources/State/ManagedAccountPresence.swift"
     if not path.is_file():
@@ -1357,37 +1360,53 @@ def patch_ghost_mode_hide_online(tg: Path) -> None:
         return
 
     t = path.read_text(encoding="utf-8")
-    sentinel = "// AorusGram: hide online presence v2"
+    sentinel = "// AorusGram: hide online presence v3"
     if sentinel in t:
-        print("HideOnline: already injected (v2)")
+        print("HideOnline: already injected (v3)")
         return
 
-    # Strip any old v1 injection so we can re-apply the correct guard
-    old_sentinel = "// AorusGram: hide online presence"
-    if old_sentinel in t and sentinel not in t:
-        # Remove the old incorrect guard line that blocked offline updates too
-        t = t.replace(
-            "        " + old_sentinel + "\n"
-            "        if UserDefaults.standard.bool(forKey: \"aorusgram_ghost_mode\") { return }",
-            "",
-            1,
-        )
-        print("HideOnline: removed old v1 guard")
+    # Strip any old v1/v2 injection so we can re-apply the new override.
+    for old in ("// AorusGram: hide online presence v2", "// AorusGram: hide online presence"):
+        if old in t:
+            t = t.replace(
+                "        " + old + "\n"
+                "        if isOnline && UserDefaults.standard.bool(forKey: \"aorusgram_ghost_mode\") { return }\n",
+                "",
+                1,
+            )
+            t = t.replace(
+                "        " + old + "\n"
+                "        if UserDefaults.standard.bool(forKey: \"aorusgram_ghost_mode\") { return }\n",
+                "",
+                1,
+            )
+            print(f"HideOnline: stripped previous '{old}' guard")
 
     anchor = "private func updatePresence(_ isOnline: Bool) {"
     if anchor not in t:
         print("HideOnline: updatePresence anchor not found — skipped")
         return
 
-    # Guard only the isOnline=true case so the offline path still fires.
-    guard = (
+    override = (
         anchor + "\n"
         "        " + sentinel + "\n"
-        "        if isOnline && UserDefaults.standard.bool(forKey: \"aorusgram_ghost_mode\") { return }"
+        "        if isOnline && UserDefaults.standard.bool(forKey: \"aorusgram_ghost_mode\") {\n"
+        "            let aorusTimer = SignalKitTimer(timeout: 30.0, repeat: false, completion: { [weak self] in\n"
+        "                guard let s = self else { return }\n"
+        "                s.updatePresence(true)\n"
+        "            }, queue: self.queue)\n"
+        "            self.onlineTimer = aorusTimer\n"
+        "            aorusTimer.start()\n"
+        "            let aorusOfflineReq = self.network.request(Api.functions.account.updateStatus(offline: .boolTrue))\n"
+        "            self.currentRequestDisposable.set((aorusOfflineReq\n"
+        "            |> `catch` { _ -> Signal<Api.Bool, NoError> in return .single(.boolFalse) }\n"
+        "            |> deliverOn(self.queue)).start())\n"
+        "            return\n"
+        "        }"
     )
-    t = t.replace(anchor, guard, 1)
+    t = t.replace(anchor, override, 1)
     path.write_text(t, encoding="utf-8")
-    print("HideOnline: injected isOnline-only guard in updatePresence (v2)")
+    print("HideOnline: injected proactive offline override in updatePresence (v3)")
 
 
 def patch_ghost_mode_proactive_offline(tg: Path) -> None:
