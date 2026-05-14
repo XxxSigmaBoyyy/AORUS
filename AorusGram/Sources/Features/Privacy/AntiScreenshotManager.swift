@@ -118,11 +118,16 @@ final class AntiScreenshotManager {
         brandingWindow = brand
 
         // 2. Secure text field — its private canvas layer is excluded from
-        //    screen capture by iOS. We hide the field itself (zero frame,
-        //    no interaction) and use only its layer hierarchy.
+        //    screen capture by iOS. The field must be full-screen (NOT zero)
+        //    so its secure sublayer has proper bounds and doesn't clip content.
+        //    We make it completely transparent so the user never sees it.
         let field = UITextField()
         field.isSecureTextEntry = true
-        field.frame = .zero
+        field.frame = keyWindow.bounds
+        field.backgroundColor = .clear
+        field.borderStyle = .none
+        field.textColor = .clear
+        field.tintColor = .clear
         field.isUserInteractionEnabled = false
         keyWindow.addSubview(field)
 
