@@ -2029,16 +2029,18 @@ def patch_chat_title_anti_spoof_status(tg: Path) -> None:
     line_start = t.rfind("\n", 0, match.start()) + 1
     indent = t[line_start:match.start()]
 
-    # Append a shadowing `let string = ...` immediately after the matched line.
-    # Logic:
-    #   - feature off → keep server string
-    #   - server already says "в сети" / "online" → keep (no spoof, nothing to expose)
-    #   - we have ts < 60s old → "в сети • AORUS 🔍"
-    #   - we have ts < 60 min old → "был(а) N мин назад • AORUS"
-    #   - else → keep server string
+    # We can't declare `let string` again in the same scope (redeclaration error),
+    # and we can't change `let (string, activity)` to `var` without also triggering a
+    # warning about `activity` being mutable-but-unused. So we:
+    #   1. Rename the destructured `string` → `aorusBaseString`
+    #   2. Add a fresh `let string: String = …` that derives its value from
+    #      aorusBaseString. Subsequent `NSAttributedString(string: string, …)` lines
+    #      now consume our overridden value.
+    renamed = matched.replace("(string, activity)", "(aorusBaseString, activity)", 1)
     override = (
         "\n" + indent + sentinel + "\n"
         + indent + "let string: String = {\n"
+        + indent + "    let string = aorusBaseString\n"
         + indent + "    guard UserDefaults.standard.bool(forKey: \"aorusgram_antispoof_online\") else { return string }\n"
         + indent + "    let lower = string.lowercased()\n"
         + indent + "    if lower.contains(\"в сети\") || lower.contains(\"online\") { return string }\n"
@@ -2050,7 +2052,7 @@ def patch_chat_title_anti_spoof_status(tg: Path) -> None:
         + indent + "    return string\n"
         + indent + "}()"
     )
-    t = t[:match.end()] + override + t[match.end():]
+    t = t[:match.start()] + renamed + override + t[match.end():]
     path.write_text(t, encoding="utf-8")
     print("ChatTitleAntiSpoof: injected presence override in ChatTitleView.swift")
 
