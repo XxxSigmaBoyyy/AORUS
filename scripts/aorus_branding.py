@@ -2011,23 +2011,22 @@ def patch_chat_title_anti_spoof_status(tg: Path) -> None:
         print("ChatTitleAntiSpoof: already injected")
         return
 
-    # The whole one-line call we're patching after. We don't pin the exact
-    # argument order in case upstream tweaks it — match the unique prefix +
-    # `EnginePeer.Presence(userPresence)` substring.
+    # Match the entire source line that contains this binding — using ^ / $ with
+    # MULTILINE so `.*` consumes everything including nested parens on that one line.
+    # The previous DOTALL + [^)]* approach stopped at Int32(timestamp)'s closing `)`
+    # and left the outer `)` of stringAndActivityForUserPresence dangling after }().
     import re as _re
     pattern = _re.compile(
-        r"let \(string, activity\) = stringAndActivityForUserPresence\([^)]*?presence: EnginePeer\.Presence\(userPresence\)[^)]*?\)",
-        flags=_re.DOTALL,
+        r"^([ \t]*)let \(string, activity\) = stringAndActivityForUserPresence\(.*\)$",
+        flags=_re.MULTILINE,
     )
     match = pattern.search(t)
     if not match:
         print("ChatTitleAntiSpoof: stringAndActivityForUserPresence anchor not found — skipped")
         return
 
+    indent = match.group(1)
     matched = match.group(0)
-    # Compute the leading indentation of the matched line (whitespace before the let).
-    line_start = t.rfind("\n", 0, match.start()) + 1
-    indent = t[line_start:match.start()]
 
     # We can't declare `let string` again in the same scope (redeclaration error),
     # and we can't change `let (string, activity)` to `var` without also triggering a
