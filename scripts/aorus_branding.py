@@ -2082,16 +2082,15 @@ def patch_app_delegate_import_telegram_api(tg: Path) -> None:
 
 
 def patch_app_delegate_anti_spoof_delete_observer(tg: Path) -> None:
-    """Observe aorusgram.antiSpoofDelete notification and send raw editMessage RPC.
+    """Observe aorusgram.antiSpoofDelete notification and send editMessage RPC.
 
     The notification is posted by the patched transaction.deleteMessages hook for
-    each outgoing message the user is deleting. We can't use
-    engine.messages.requestEditMessage because by the time our observer's signal
-    runs, the postbox row may already be gone. Instead we go RAW: look up the
-    peer (still in postbox) → build InputPeer → send Api.functions.messages.editMessage
-    directly via account.network.request. The server processes the edit RPC, then
-    when the delete RPC arrives later (from the operation queue) the message text
-    on the server is already the decoy.
+    each outgoing message the user is deleting. We go through the public engine
+    API (context.engine.messages.requestEditMessage) which handles InputPeer
+    construction internally via the postbox. The peer (not the message) stays in
+    postbox even after a message is deleted, so the engine call always finds it.
+    The server processes the edit RPC, then when the delete RPC arrives later
+    (from the operation queue) the message text on the server is already the decoy.
     """
     path = tg / "submodules/TelegramUI/Sources/AppDelegate.swift"
     if not path.is_file():
@@ -2113,24 +2112,17 @@ def patch_app_delegate_anti_spoof_delete_observer(tg: Path) -> None:
         "                  let app = self?.contextValue else { return }\n"
         "            let peerId = PeerId(peerIdNum.int64Value)\n"
         "            let msgId  = msgIdNum.int32Value\n"
-        "            let decoy  = \"Ты не увидишь это сообщение. Привет от AORUS! 🔥\"\n"
-        "            let lookup: Signal<Api.InputPeer?, NoError> = app.context.account.postbox.transaction { transaction in\n"
-        "                return transaction.getPeer(peerId).flatMap(apiInputPeer)\n"
-        "            }\n"
-        "            let _ = (lookup |> mapToSignal { (inputPeer: Api.InputPeer?) -> Signal<Void, NoError> in\n"
-        "                guard let inputPeer = inputPeer else { return .complete() }\n"
-        "                return app.context.account.network.request(Api.functions.messages.editMessage(\n"
-        "                    flags: Int32(1 << 11),\n"
-        "                    peer: inputPeer,\n"
-        "                    id: msgId,\n"
-        "                    message: decoy,\n"
-        "                    media: nil,\n"
-        "                    replyMarkup: nil,\n"
-        "                    entities: nil,\n"
-        "                    scheduleDate: nil,\n"
-        "                    quickReplyShortcutId: nil))\n"
-        "                |> map { _ in } |> `catch` { _ in .complete() }\n"
-        "            }).start()\n"
+        "            let messageId = MessageId(peerId: peerId, namespace: Namespaces.Message.Cloud, id: msgId)\n"
+        "            let decoy = \"Ты не увидишь это сообщение. Привет от AORUS! 🔥\"\n"
+        "            let _ = (app.context.engine.messages.requestEditMessage(\n"
+        "                messageId: messageId,\n"
+        "                text: decoy,\n"
+        "                media: .keep,\n"
+        "                entities: nil,\n"
+        "                inlineStickers: [:],\n"
+        "                disableUrlPreview: false\n"
+        "            )\n"
+        "            |> map { _ in } |> `catch` { _ in .complete() }).start()\n"
         "        }\n"
     )
     anchor = "AorusGramBootstrap.shared.setup(accountPath: rootPath)"

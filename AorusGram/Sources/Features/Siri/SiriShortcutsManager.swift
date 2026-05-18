@@ -5,11 +5,11 @@ import IntentsUI
 // MARK: - Intent definitions (дублируем Intent для Siri)
 
 @available(iOS 16.0, *)
-final class SiriShortcutsManager {
-    static let shared = SiriShortcutsManager()
+public final class SiriShortcutsManager {
+    public static let shared = SiriShortcutsManager()
     private init() {}
 
-    enum ShortcutType: String, CaseIterable {
+    public enum ShortcutType: String, CaseIterable {
         case sendMessage      = "SendTelegramMessage"
         case openChat         = "OpenTelegramChat"
         case toggleGhostMode  = "ToggleGhostMode"
@@ -29,7 +29,7 @@ final class SiriShortcutsManager {
 
     // MARK: - Donate shortcuts to Siri
 
-    func donateShortcut(_ type: ShortcutType, contact: String? = nil) {
+    public func donateShortcut(_ type: ShortcutType, contact: String? = nil) {
         let activity = NSUserActivity(activityType: "com.aorusgram.\(type.rawValue)")
         activity.title          = type.suggestedPhrase
         activity.isEligibleForSearch      = true
@@ -43,7 +43,7 @@ final class SiriShortcutsManager {
         activity.becomeCurrent()
     }
 
-    func donateAllDefaults() {
+    public func donateAllDefaults() {
         ShortcutType.allCases.forEach { donate($0) }
     }
 
@@ -53,7 +53,7 @@ final class SiriShortcutsManager {
 
     // MARK: - Handle Siri intent from AppDelegate
 
-    func handle(activity: NSUserActivity) -> Bool {
+    public func handle(activity: NSUserActivity) -> Bool {
         guard let type = ShortcutType(rawValue: activity.activityType
             .replacingOccurrences(of: "com.aorusgram.", with: "")) else { return false }
 
@@ -95,7 +95,7 @@ final class SiriShortcutsManager {
 
     // MARK: - Add to Siri button helper
 
-    func addToSiriViewController(for type: ShortcutType) -> INUIAddVoiceShortcutViewController? {
+    public func addToSiriViewController(for type: ShortcutType) -> INUIAddVoiceShortcutViewController? {
         let activity = NSUserActivity(activityType: "com.aorusgram.\(type.rawValue)")
         activity.title                     = type.suggestedPhrase
         activity.suggestedInvocationPhrase = type.suggestedPhrase
