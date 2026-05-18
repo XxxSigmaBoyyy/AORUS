@@ -52,6 +52,10 @@ public final class AorusGramBootstrap {
         // Anti-spam
         AntiSpamManager.shared.setEnabled(AorusGramConfig.isEnabled(.antiSpam))
 
+        // Anti-spoof — touch shared instance so load() runs and mirrors current
+        // dictionary state to flat UserDefaults keys that TelegramCore patches read.
+        _ = AntiSpoofManager.shared
+
         // Subscribe to TelegramCore delete events (cross-module NotificationCenter bridge)
         NotificationCenter.default.addObserver(
             forName: .aorusWillDeleteMessage,
@@ -84,6 +88,42 @@ public final class AorusGramBootstrap {
             self?.handleIncomingMessage(note)
         }
 
+        // Siri Shortcuts — donate on bootstrap if enabled, re-donate / clear when toggled.
+        // We use a raw notification name because `.aorusSettingsChanged` is defined in
+        // the AorusGramUI module (AorusGramManager) which AorusGram doesn't depend on.
+        if #available(iOS 16.0, *) {
+            if AorusGramConfig.isEnabled(.siriShortcuts) {
+                SiriShortcutsManager.shared.donateAllDefaults()
+            }
+            NotificationCenter.default.addObserver(
+                forName: NSNotification.Name("aorusgram_settings_changed"),
+                object: nil,
+                queue: .main
+            ) { _ in
+                if AorusGramConfig.isEnabled(.siriShortcuts) {
+                    SiriShortcutsManager.shared.donateAllDefaults()
+                } else {
+                    NSUserActivity.deleteAllSavedUserActivities(completionHandler: {})
+                }
+            }
+        }
+
+        // Anti-spoof online — subscribe to peer activity notifications posted from
+        // TelegramCore typing/status patches. Each recorded event updates
+        // AntiSpoofManager so realLastSeen() returns fresher data than the
+        // (possibly ghost-mode-hidden) server value.
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("aorusgram.peerActivity"),
+            object: nil,
+            queue: nil
+        ) { note in
+            guard let info = note.userInfo,
+                  let peerIdNum = info["peerId"] as? NSNumber else { return }
+            let kindRaw = (info["kind"] as? String) ?? "online"
+            let kind = AntiSpoofManager.ActivityKind(rawValue: kindRaw) ?? .online
+            AntiSpoofManager.shared.recordActivity(peerId: peerIdNum.int64Value, kind: kind)
+        }
+
         observeAppLifecycle()
     }
 
@@ -97,6 +137,12 @@ public final class AorusGramBootstrap {
         // Pre-cache for deleted-messages feature — captures content before any deletion.
         // Without this the cache only sees messages whose delete-hook fires, which is unreliable.
         DeletedMessagesCache.shared.handleIncomingNotification(note)
+
+        // Anti-spoof online — record peer activity so we can show real "last seen"
+        // even when the peer hides it client-side. Each incoming message is direct
+        // proof they were online at that moment.
+        let senderId = (note.userInfo?["senderId"] as? NSNumber)?.int64Value ?? peerId
+        AntiSpoofManager.shared.recordActivity(peerId: senderId, kind: .message)
 
         // Anti-spam gate
         if AorusGramConfig.isEnabled(.antiSpam) {

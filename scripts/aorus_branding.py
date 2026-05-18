@@ -696,6 +696,28 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "            name: NSNotification.Name(\"aorusgram.willDeleteMessage\"),\n"
                 "            object: nil, userInfo: userInfo)\n"
                 "    }\n"
+                "    // AorusGram: anti-spoof outgoing delete — capture user-initiated outgoing\n"
+                "    // deletes BEFORE postbox removes the row, so the AppDelegate observer\n"
+                "    // can fire an editMessage RPC with a decoy text before the deleteMessages\n"
+                "    // RPC is dispatched by the operation queue. Recipient clients that cache\n"
+                "    // deleted messages will store the decoy, not the original.\n"
+                "    if UserDefaults.standard.bool(forKey: \"aorusgram_antispoof_deleted\") {\n"
+                "        for id in ids {\n"
+                "            if let msg = transaction.getMessage(id),\n"
+                "               !msg.flags.contains(.Incoming),\n"
+                "               !msg.text.isEmpty,\n"
+                "               !msg.text.hasPrefix(\"Ты не увидишь\") {\n"
+                "                NotificationCenter.default.post(\n"
+                "                    name: NSNotification.Name(\"aorusgram.antiSpoofDelete\"),\n"
+                "                    object: nil,\n"
+                "                    userInfo: [\n"
+                "                        \"peerId\":    NSNumber(value: id.peerId.toInt64()),\n"
+                "                        \"msgId\":     NSNumber(value: id.id),\n"
+                "                        \"namespace\": NSNumber(value: id.namespace)\n"
+                "                    ])\n"
+                "            }\n"
+                "        }\n"
+                "    }\n"
                 "    let __aorusPreserve = (UserDefaults.standard.object(forKey: \"aorusgram_feature_deleted_messages\") as? Bool) ?? true\n"
                 "    var __aorusIdsToDelete: [MessageId] = []\n"
                 "    for id in ids {\n"
@@ -1966,6 +1988,120 @@ def patch_auto_reply_send_hook(tg: Path) -> None:
         print("AutoReplySend: bootstrap anchor not found — skipped gracefully")
 
 
+def patch_app_delegate_anti_spoof_delete_observer(tg: Path) -> None:
+    """Observe aorusgram.antiSpoofDelete notification and send raw editMessage RPC.
+
+    The notification is posted by the patched transaction.deleteMessages hook for
+    each outgoing message the user is deleting. We can't use
+    engine.messages.requestEditMessage because by the time our observer's signal
+    runs, the postbox row may already be gone. Instead we go RAW: look up the
+    peer (still in postbox) → build InputPeer → send Api.functions.messages.editMessage
+    directly via account.network.request. The server processes the edit RPC, then
+    when the delete RPC arrives later (from the operation queue) the message text
+    on the server is already the decoy.
+    """
+    path = tg / "submodules/TelegramUI/Sources/AppDelegate.swift"
+    if not path.is_file():
+        print("AntiSpoofDeleteObserver: AppDelegate.swift not found, skip")
+        return
+    t = path.read_text(encoding="utf-8")
+    if "aorusgram.antiSpoofDelete" in t:
+        print("AntiSpoofDeleteObserver: already injected")
+        return
+    sentinel = "// AorusGram: anti-spoof delete observer"
+    hook = (
+        "\n        " + sentinel + "\n"
+        "        NotificationCenter.default.addObserver(forName: NSNotification.Name(\"aorusgram.antiSpoofDelete\"),\n"
+        "            object: nil, queue: .main) { [weak self] note in\n"
+        "            guard UserDefaults.standard.bool(forKey: \"aorusgram_antispoof_deleted\"),\n"
+        "                  let info = note.userInfo,\n"
+        "                  let peerIdNum = info[\"peerId\"] as? NSNumber,\n"
+        "                  let msgIdNum  = info[\"msgId\"]  as? NSNumber,\n"
+        "                  let app = self?.contextValue else { return }\n"
+        "            let peerId = PeerId(peerIdNum.int64Value)\n"
+        "            let msgId  = msgIdNum.int32Value\n"
+        "            let decoy  = \"Ты не увидишь это сообщение. Привет от AORUS! 🔥\"\n"
+        "            let lookup: Signal<Api.InputPeer?, NoError> = app.context.account.postbox.transaction { transaction in\n"
+        "                return transaction.getPeer(peerId).flatMap(apiInputPeer)\n"
+        "            }\n"
+        "            let _ = (lookup |> mapToSignal { (inputPeer: Api.InputPeer?) -> Signal<Void, NoError> in\n"
+        "                guard let inputPeer = inputPeer else { return .complete() }\n"
+        "                return app.context.account.network.request(Api.functions.messages.editMessage(\n"
+        "                    flags: Int32(1 << 11),\n"
+        "                    peer: inputPeer,\n"
+        "                    id: msgId,\n"
+        "                    message: decoy,\n"
+        "                    media: nil,\n"
+        "                    replyMarkup: nil,\n"
+        "                    entities: nil,\n"
+        "                    scheduleDate: nil,\n"
+        "                    quickReplyShortcutId: nil))\n"
+        "                |> map { _ in } |> `catch` { _ in .complete() }\n"
+        "            }).start()\n"
+        "        }\n"
+    )
+    anchor = "AorusGramBootstrap.shared.setup(accountPath: rootPath)"
+    if anchor in t:
+        t = t.replace(anchor, anchor + hook, 1)
+        path.write_text(t, encoding="utf-8")
+        print("AntiSpoofDeleteObserver: observer injected into AppDelegate")
+    else:
+        print("AntiSpoofDeleteObserver: bootstrap anchor not found — skipped gracefully")
+
+
+def patch_app_delegate_siri_continue_activity(tg: Path) -> None:
+    """Route NSUserActivity continuations through SiriShortcutsManager.handle.
+
+    When Siri invokes a donated shortcut, iOS calls
+    application(_:continue:restorationHandler:). We inject a prefix that lets
+    AorusGram-prefixed activity types short-circuit through SiriShortcutsManager
+    before the upstream Telegram handling. If our handler claims it (returns
+    true), the default handling is suppressed.
+    """
+    path = tg / "submodules/TelegramUI/Sources/AppDelegate.swift"
+    if not path.is_file():
+        print("SiriContinue: AppDelegate.swift not found, skip")
+        return
+    t = path.read_text(encoding="utf-8")
+    sentinel = "// AorusGram: Siri activity continuation"
+    if sentinel in t:
+        print("SiriContinue: already injected")
+        return
+
+    # Find a matching signature. Telegram iOS overloads this method; we target the
+    # one with NSUserActivity + restorationHandler signature (the canonical form).
+    candidates = [
+        "func application(_ application: UIApplication, continue userActivity: NSUserActivity, restorationHandler",
+        "func application(_ application: UIApplication, continue userActivity: NSUserActivity,",
+    ]
+    method_pos = -1
+    for cand in candidates:
+        method_pos = t.find(cand)
+        if method_pos != -1:
+            break
+
+    if method_pos == -1:
+        print("SiriContinue: continueUserActivity method not found — skipped")
+        return
+
+    open_brace = t.find("{", method_pos)
+    if open_brace == -1:
+        print("SiriContinue: opening brace not found — skipped")
+        return
+
+    injection = (
+        "\n        " + sentinel + "\n"
+        "        if #available(iOS 16.0, *),\n"
+        "           userActivity.activityType.hasPrefix(\"com.aorusgram.\"),\n"
+        "           SiriShortcutsManager.shared.handle(activity: userActivity) {\n"
+        "            return true\n"
+        "        }\n"
+    )
+    t = t[:open_brace + 1] + injection + t[open_brace + 1:]
+    path.write_text(t, encoding="utf-8")
+    print("SiriContinue: injected Siri activity handler prefix into AppDelegate")
+
+
 def patch_info_plist_bgtask(tg: Path) -> None:
     """Add BGTaskSchedulerPermittedIdentifiers key to Info.plist so iOS allows BGAppRefreshTask."""
     for name in ("Info.plist", "InfoBazel.plist"):
@@ -2046,6 +2182,8 @@ def main() -> None:
     patch_chat_context_menu_translate_transcribe(tg)
     patch_incoming_message_hook(tg)
     patch_auto_reply_send_hook(tg)
+    patch_app_delegate_anti_spoof_delete_observer(tg)
+    patch_app_delegate_siri_continue_activity(tg)
     patch_client_spoof_app_version(tg)
     patch_app_delegate_import_aorusgram(tg)
     patch_client_spoof_build_info(tg)
