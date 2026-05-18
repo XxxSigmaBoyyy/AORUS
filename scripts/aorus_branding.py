@@ -1988,6 +1988,98 @@ def patch_auto_reply_send_hook(tg: Path) -> None:
         print("AutoReplySend: bootstrap anchor not found — skipped gracefully")
 
 
+def patch_chat_title_anti_spoof_status(tg: Path) -> None:
+    """Override the chat-header status string when AntiSpoofManager has fresher data.
+
+    The conversation-view header shows "online" / "last seen X min ago" derived from
+    the server-provided TelegramUserPresence. When the recipient uses ghost mode the
+    server value is stale or "recently/lastWeek/lastMonth" — but we have direct
+    evidence they were online from incoming-message timestamps recorded by
+    AntiSpoofManager (UserDefaults key aorusgram_peer_last_seen_<peerId>).
+
+    Patch shadows the existing `string` binding with our override, keeping `activity`
+    intact. Reads UserDefaults directly to avoid adding a cross-module dep on
+    AorusGramUI / AorusGram from the ChatTitleView module.
+    """
+    path = tg / "submodules/TelegramUI/Components/ChatTitleView/Sources/ChatTitleView.swift"
+    if not path.is_file():
+        print("ChatTitleAntiSpoof: ChatTitleView.swift not found, skip")
+        return
+    t = path.read_text(encoding="utf-8")
+    sentinel = "// AorusGram: anti-spoof presence override"
+    if sentinel in t:
+        print("ChatTitleAntiSpoof: already injected")
+        return
+
+    # The whole one-line call we're patching after. We don't pin the exact
+    # argument order in case upstream tweaks it — match the unique prefix +
+    # `EnginePeer.Presence(userPresence)` substring.
+    import re as _re
+    pattern = _re.compile(
+        r"let \(string, activity\) = stringAndActivityForUserPresence\([^)]*?presence: EnginePeer\.Presence\(userPresence\)[^)]*?\)",
+        flags=_re.DOTALL,
+    )
+    match = pattern.search(t)
+    if not match:
+        print("ChatTitleAntiSpoof: stringAndActivityForUserPresence anchor not found — skipped")
+        return
+
+    matched = match.group(0)
+    # Compute the leading indentation of the matched line (whitespace before the let).
+    line_start = t.rfind("\n", 0, match.start()) + 1
+    indent = t[line_start:match.start()]
+
+    # Append a shadowing `let string = ...` immediately after the matched line.
+    # Logic:
+    #   - feature off → keep server string
+    #   - server already says "в сети" / "online" → keep (no spoof, nothing to expose)
+    #   - we have ts < 60s old → "в сети • AORUS 🔍"
+    #   - we have ts < 60 min old → "был(а) N мин назад • AORUS"
+    #   - else → keep server string
+    override = (
+        "\n" + indent + sentinel + "\n"
+        + indent + "let string: String = {\n"
+        + indent + "    guard UserDefaults.standard.bool(forKey: \"aorusgram_antispoof_online\") else { return string }\n"
+        + indent + "    let lower = string.lowercased()\n"
+        + indent + "    if lower.contains(\"в сети\") || lower.contains(\"online\") { return string }\n"
+        + indent + "    let aorusTs = UserDefaults.standard.double(forKey: \"aorusgram_peer_last_seen_\\(peer.id.toInt64())\")\n"
+        + indent + "    guard aorusTs > 0 else { return string }\n"
+        + indent + "    let ago = Date().timeIntervalSince1970 - aorusTs\n"
+        + indent + "    if ago < 60 { return \"в сети • AORUS 🔍\" }\n"
+        + indent + "    if ago < 3600 { return \"был(а) \\(Int(ago / 60)) мин назад • AORUS\" }\n"
+        + indent + "    return string\n"
+        + indent + "}()"
+    )
+    t = t[:match.end()] + override + t[match.end():]
+    path.write_text(t, encoding="utf-8")
+    print("ChatTitleAntiSpoof: injected presence override in ChatTitleView.swift")
+
+
+def patch_app_delegate_import_telegram_api(tg: Path) -> None:
+    """Ensure AppDelegate.swift imports TelegramApi so we can call Api.functions.*.
+
+    Most Telegram-iOS builds already import TelegramApi here, but we add it
+    defensively because the anti-spoof-delete observer references
+    Api.functions.messages.editMessage / Api.InputPeer.
+    """
+    path = tg / "submodules/TelegramUI/Sources/AppDelegate.swift"
+    if not path.is_file():
+        return
+    t = path.read_text(encoding="utf-8")
+    if "import TelegramApi" in t:
+        return
+    needle = "import TelegramCore"
+    pos = t.find(needle)
+    if pos == -1:
+        return
+    line_end = t.find("\n", pos)
+    if line_end == -1:
+        return
+    t = t[:line_end + 1] + "import TelegramApi\n" + t[line_end + 1:]
+    path.write_text(t, encoding="utf-8")
+    print("AppDelegate: added import TelegramApi after import TelegramCore")
+
+
 def patch_app_delegate_anti_spoof_delete_observer(tg: Path) -> None:
     """Observe aorusgram.antiSpoofDelete notification and send raw editMessage RPC.
 
@@ -2182,8 +2274,10 @@ def main() -> None:
     patch_chat_context_menu_translate_transcribe(tg)
     patch_incoming_message_hook(tg)
     patch_auto_reply_send_hook(tg)
+    patch_app_delegate_import_telegram_api(tg)
     patch_app_delegate_anti_spoof_delete_observer(tg)
     patch_app_delegate_siri_continue_activity(tg)
+    patch_chat_title_anti_spoof_status(tg)
     patch_client_spoof_app_version(tg)
     patch_app_delegate_import_aorusgram(tg)
     patch_client_spoof_build_info(tg)

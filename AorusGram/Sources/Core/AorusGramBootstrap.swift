@@ -108,22 +108,6 @@ public final class AorusGramBootstrap {
             }
         }
 
-        // Anti-spoof online — subscribe to peer activity notifications posted from
-        // TelegramCore typing/status patches. Each recorded event updates
-        // AntiSpoofManager so realLastSeen() returns fresher data than the
-        // (possibly ghost-mode-hidden) server value.
-        NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("aorusgram.peerActivity"),
-            object: nil,
-            queue: nil
-        ) { note in
-            guard let info = note.userInfo,
-                  let peerIdNum = info["peerId"] as? NSNumber else { return }
-            let kindRaw = (info["kind"] as? String) ?? "online"
-            let kind = AntiSpoofManager.ActivityKind(rawValue: kindRaw) ?? .online
-            AntiSpoofManager.shared.recordActivity(peerId: peerIdNum.int64Value, kind: kind)
-        }
-
         observeAppLifecycle()
     }
 
