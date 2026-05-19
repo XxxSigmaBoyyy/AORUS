@@ -30,7 +30,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: telegram-ios
-          key: tg-ios-src-v12-aorus-import
+          key: tg-ios-src-v13-aorus-import
 
       - name: Clone Telegram iOS
         if: steps.tg-cache.outputs.cache-hit != 'true'
