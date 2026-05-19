@@ -696,28 +696,11 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "            name: NSNotification.Name(\"aorusgram.willDeleteMessage\"),\n"
                 "            object: nil, userInfo: userInfo)\n"
                 "    }\n"
-                "    // AorusGram: anti-spoof outgoing delete — capture user-initiated outgoing\n"
-                "    // deletes BEFORE postbox removes the row, so the AppDelegate observer\n"
-                "    // can fire an editMessage RPC with a decoy text before the deleteMessages\n"
-                "    // RPC is dispatched by the operation queue. Recipient clients that cache\n"
-                "    // deleted messages will store the decoy, not the original.\n"
-                "    if UserDefaults.standard.bool(forKey: \"aorusgram_antispoof_deleted\") {\n"
-                "        for id in ids {\n"
-                "            if let msg = transaction.getMessage(id),\n"
-                "               !msg.flags.contains(.Incoming),\n"
-                "               !msg.text.isEmpty,\n"
-                "               !msg.text.hasPrefix(\"Ты не увидишь\") {\n"
-                "                NotificationCenter.default.post(\n"
-                "                    name: NSNotification.Name(\"aorusgram.antiSpoofDelete\"),\n"
-                "                    object: nil,\n"
-                "                    userInfo: [\n"
-                "                        \"peerId\":    NSNumber(value: id.peerId.toInt64()),\n"
-                "                        \"msgId\":     NSNumber(value: id.id),\n"
-                "                        \"namespace\": NSNumber(value: id.namespace)\n"
-                "                    ])\n"
-                "            }\n"
-                "        }\n"
-                "    }\n"
+                "    // anti-spoof for outgoing deletes is handled deterministically by the\n"
+                "    // preflight Signal chain in _internal_deleteMessagesInteractively (see\n"
+                "    // patch_anti_spoof_delete_preflight). The previous notification post here\n"
+                "    // raced the edit and delete RPCs in parallel; we now run edit synchronously\n"
+                "    // (Signal-chain) before delete is even queued, so no fallback is needed.\n"
                 "    let __aorusPreserve = (UserDefaults.standard.object(forKey: \"aorusgram_feature_deleted_messages\") as? Bool) ?? true\n"
                 "    var __aorusIdsToDelete: [MessageId] = []\n"
                 "    for id in ids {\n"
@@ -2041,8 +2024,8 @@ def patch_chat_title_anti_spoof_status(tg: Path) -> None:
         + indent + "let string: String = {\n"
         + indent + "    let string = aorusBaseString\n"
         + indent + "    guard UserDefaults.standard.bool(forKey: \"aorusgram_antispoof_online\") else { return string }\n"
-        + indent + "    let lower = string.lowercased()\n"
-        + indent + "    if lower.contains(\"в сети\") || lower.contains(\"online\") { return string }\n"
+        + indent + "    if string.range(of: \"в сети\", options: .caseInsensitive) != nil { return string }\n"
+        + indent + "    if string.range(of: \"online\", options: .caseInsensitive) != nil { return string }\n"
         + indent + "    let aorusTs = UserDefaults.standard.double(forKey: \"aorusgram_peer_last_seen_\\(peer.id.toInt64())\")\n"
         + indent + "    guard aorusTs > 0 else { return string }\n"
         + indent + "    let ago = Date().timeIntervalSince1970 - aorusTs\n"
@@ -2054,6 +2037,94 @@ def patch_chat_title_anti_spoof_status(tg: Path) -> None:
     t = t[:match.start()] + renamed + override + t[match.end():]
     path.write_text(t, encoding="utf-8")
     print("ChatTitleAntiSpoof: injected presence override in ChatTitleView.swift")
+
+
+def patch_anti_spoof_delete_preflight(tg: Path) -> None:
+    """Guarantee anti-spoof edit completes BEFORE the delete RPC is even queued.
+
+    Rewrites `_internal_deleteMessagesInteractively` (in TelegramCore) to wrap
+    its body in a Signal chain:
+
+        editPreflight  |> then(normalDeleteTransaction)
+
+    The preflight reads outgoing message ids inside a postbox transaction,
+    builds a sequential chain of `_internal_requestEditMessage` signals (one
+    per id, errors swallowed), and only after the LAST edit's server response
+    arrives does the original delete transaction run. The cloud delete operation
+    (which schedules the server delete RPC) is registered inside that
+    transaction — so it cannot fire before the edits are confirmed.
+
+    This is the deterministic replacement for the previous notification-based
+    fire-and-forget approach which raced the edit and delete RPCs in parallel.
+    """
+    path = tg / "submodules/TelegramCore/Sources/TelegramEngine/Messages/DeleteMessagesInteractively.swift"
+    if not path.is_file():
+        print("AntiSpoofDeletePreflight: DeleteMessagesInteractively.swift not found")
+        return
+    t = path.read_text(encoding="utf-8")
+    sentinel = "// AorusGram: anti-spoof deleted preflight"
+    if sentinel in t:
+        print("AntiSpoofDeletePreflight: already injected")
+        return
+
+    needle = (
+        "func _internal_deleteMessagesInteractively(account: Account, messageIds: [MessageId], "
+        "type: InteractiveMessagesDeletionType, deleteAllInGroup: Bool = false) -> Signal<Void, NoError> {\n"
+        "    return account.postbox.transaction { transaction -> Void in\n"
+        "        deleteMessagesInteractively(transaction: transaction, stateManager: account.stateManager, "
+        "postbox: account.postbox, messageIds: messageIds, type: type, removeIfPossiblyDelivered: true)\n"
+        "    }\n"
+        "}"
+    )
+    if needle not in t:
+        print("AntiSpoofDeletePreflight: anchor not found — skipped")
+        return
+
+    replacement = (
+        "func _internal_deleteMessagesInteractively(account: Account, messageIds: [MessageId], "
+        "type: InteractiveMessagesDeletionType, deleteAllInGroup: Bool = false) -> Signal<Void, NoError> {\n"
+        "    " + sentinel + "\n"
+        "    let normalDelete: Signal<Void, NoError> = account.postbox.transaction { transaction -> Void in\n"
+        "        deleteMessagesInteractively(transaction: transaction, stateManager: account.stateManager, "
+        "postbox: account.postbox, messageIds: messageIds, type: type, removeIfPossiblyDelivered: true)\n"
+        "    }\n"
+        "    guard UserDefaults.standard.bool(forKey: \"aorusgram_antispoof_deleted\"), type == .forEveryone else {\n"
+        "        return normalDelete\n"
+        "    }\n"
+        "    return account.postbox.transaction { transaction -> [MessageId] in\n"
+        "        return messageIds.filter { id in\n"
+        "            guard let msg = transaction.getMessage(id) else { return false }\n"
+        "            return !msg.flags.contains(.Incoming) && !msg.text.isEmpty && !msg.text.hasPrefix(\"Ты не увидишь\")\n"
+        "        }\n"
+        "    }\n"
+        "    |> mapToSignal { (outgoingIds: [MessageId]) -> Signal<Void, NoError> in\n"
+        "        guard !outgoingIds.isEmpty else { return normalDelete }\n"
+        "        let decoy = \"Ты не увидишь это сообщение. Привет от AORUS! 🔥\"\n"
+        "        let initial: Signal<Void, NoError> = .complete()\n"
+        "        let editPreflight: Signal<Void, NoError> = outgoingIds.reduce(initial) { acc, msgId -> Signal<Void, NoError> in\n"
+        "            let editSignal: Signal<Void, NoError> = _internal_requestEditMessage(\n"
+        "                account: account,\n"
+        "                messageId: msgId,\n"
+        "                text: decoy,\n"
+        "                media: .keep,\n"
+        "                entities: nil,\n"
+        "                inlineStickers: [:],\n"
+        "                webpagePreviewAttribute: nil,\n"
+        "                disableUrlPreview: false,\n"
+        "                scheduleInfoAttribute: nil,\n"
+        "                invertMediaAttribute: nil\n"
+        "            )\n"
+        "            |> map { _ -> Void in }\n"
+        "            |> `catch` { _ -> Signal<Void, NoError> in .complete() }\n"
+        "            return acc |> then(editSignal)\n"
+        "        }\n"
+        "        return editPreflight |> then(normalDelete)\n"
+        "    }\n"
+        "}"
+    )
+    t = t.replace(needle, replacement, 1)
+    path.write_text(t, encoding="utf-8")
+    print("AntiSpoofDeletePreflight: rewrote _internal_deleteMessagesInteractively with edit-before-delete chain")
 
 
 def patch_app_delegate_import_telegram_api(tg: Path) -> None:
@@ -2257,6 +2328,7 @@ def main() -> None:
     patch_settings_entry_point(tg)
     patch_download_accelerator(tg)
     patch_deleted_messages_interception(tg)
+    patch_anti_spoof_delete_preflight(tg)
     patch_block_ads(tg)
     patch_ghost_mode_hide_typing(tg)
     patch_ghost_mode_hide_online(tg)
@@ -2267,7 +2339,6 @@ def main() -> None:
     patch_incoming_message_hook(tg)
     patch_auto_reply_send_hook(tg)
     patch_app_delegate_import_telegram_api(tg)
-    patch_app_delegate_anti_spoof_delete_observer(tg)
     patch_app_delegate_siri_continue_activity(tg)
     patch_chat_title_anti_spoof_status(tg)
     patch_client_spoof_app_version(tg)
