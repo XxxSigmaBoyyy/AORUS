@@ -408,7 +408,10 @@ public func aorusGramController(context: AccountContext) -> ViewController {
                 UserDefaults.standard.removeObject(forKey: "aorusgram_preserved_msgs")
             })
         },
-        openAccountBackup: { [weak weakController] in
+        openAccountBackup: {
+            // Reference `weakController` directly (no capture list): the closure
+            // captures the variable by reference, so it reads the value assigned
+            // *after* this closure is created, not the nil it holds right now.
             guard let controller = weakController,
                   let navigationController = controller.navigationController as? NavigationController else {
                 return

@@ -2292,6 +2292,64 @@ def patch_app_delegate_siri_continue_activity(tg: Path) -> None:
     print("SiriContinue: injected Siri activity handler prefix into AppDelegate")
 
 
+def patch_peer_info_account_details(tg: Path) -> None:
+    """Add a "Подробнее" row to a user's profile.
+
+    Patches PeerInfoProfileItems.swift (the `infoItems` builder) to append a
+    PeerInfoScreenDisclosureItem in the user section. Tapping it pushes
+    accountDetailsController (AorusGramUI) which shows the account ID, the
+    data-center, and an approximate registration date derived from the id.
+    """
+    path = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoProfileItems.swift"
+    if not path.is_file():
+        print("PeerInfoAccountDetails: PeerInfoProfileItems.swift not found, skip")
+        return
+    t = path.read_text(encoding="utf-8")
+    if "AorusGram: account details" in t:
+        print("PeerInfoAccountDetails: already injected")
+        return
+
+    # 1. import AorusGramUI (so accountDetailsController is visible)
+    if "import AorusGramUI" not in t:
+        needle = "import Foundation\n"
+        if needle not in t:
+            print("PeerInfoAccountDetails: import anchor not found — skipped")
+            return
+        t = t.replace(needle, needle + "import AorusGramUI\n", 1)
+
+    # 2. inject the disclosure item right after the user-block item-id constants
+    anchor = "        let ItemVerification = 9004\n"
+    if anchor not in t:
+        print("PeerInfoAccountDetails: ItemVerification anchor not found — skipped")
+        return
+    injection = (
+        "        let ItemVerification = 9004\n"
+        "\n"
+        "        // AorusGram: account details (\"Подробнее\") row\n"
+        "        do {\n"
+        "            let aorusUserId = user.id.id._internalGetInt64Value()\n"
+        "            var aorusDcId: Int = 0\n"
+        "            for aorusRep in user.photo {\n"
+        "                if let aorusRes = aorusRep.resource as? CloudPeerPhotoSizeMediaResource {\n"
+        "                    aorusDcId = aorusRes.datacenterId\n"
+        "                    break\n"
+        "                }\n"
+        "            }\n"
+        "            let aorusTitle = EnginePeer(user).compactDisplayTitle\n"
+        "            items[currentPeerInfoSection]!.append(PeerInfoScreenDisclosureItem(id: 770077, text: \"Подробнее\", action: {\n"
+        "                guard let aorusParent = interaction.getController(),\n"
+        "                      let aorusNav = aorusParent.navigationController as? NavigationController else {\n"
+        "                    return\n"
+        "                }\n"
+        "                aorusNav.pushViewController(accountDetailsController(context: context, userId: aorusUserId, dcId: aorusDcId, title: aorusTitle))\n"
+        "            }))\n"
+        "        }\n"
+    )
+    t = t.replace(anchor, injection, 1)
+    path.write_text(t, encoding="utf-8")
+    print("PeerInfoAccountDetails: injected Подробнее row into PeerInfoProfileItems.swift")
+
+
 def patch_info_plist_bgtask(tg: Path) -> None:
     """Add BGTaskSchedulerPermittedIdentifiers key to Info.plist so iOS allows BGAppRefreshTask."""
     for name in ("Info.plist", "InfoBazel.plist"):
@@ -2376,6 +2434,7 @@ def main() -> None:
     patch_app_delegate_import_telegram_api(tg)
     patch_app_delegate_account_restore_hook(tg)
     patch_app_delegate_siri_continue_activity(tg)
+    patch_peer_info_account_details(tg)
     patch_chat_title_anti_spoof_status(tg)
     patch_client_spoof_app_version(tg)
     patch_app_delegate_import_aorusgram(tg)
