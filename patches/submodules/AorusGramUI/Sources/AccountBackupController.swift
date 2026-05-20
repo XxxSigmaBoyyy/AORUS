@@ -138,9 +138,9 @@ private func backupEntries(state: BackupState, theme: PresentationTheme) -> [Bac
     let hasBackup = mgr.hasBackup()
     var entries: [BackupEntry] = []
 
-    entries.append(.backupAction(theme, "🔑 Бэкап в Keychain", !state.busy))
-    entries.append(.restoreAction(theme, "🔄 Восстановить из Keychain", hasBackup && !state.busy))
-    entries.append(.deleteAction(theme, "🗑 Удалить Бэкап из Keychain", hasBackup && !state.busy))
+    entries.append(.backupAction(theme, "Бэкап в Keychain", !state.busy))
+    entries.append(.restoreAction(theme, "Восстановить из Keychain", hasBackup && !state.busy))
+    entries.append(.deleteAction(theme, "Удалить Бэкап из Keychain", hasBackup && !state.busy))
 
     entries.append(.info(theme,
         "Сессии шифруются (AES-256) и хранятся в Keychain устройства. "
@@ -153,9 +153,9 @@ private func backupEntries(state: BackupState, theme: PresentationTheme) -> [Bac
 
     entries.append(.statusHeader(theme, "СОСТОЯНИЕ"))
     if state.busy {
-        entries.append(.status(theme, "⏳ Выполняется операция…"))
+        entries.append(.status(theme, "Выполняется операция…"))
     } else if mgr.isRestorePending() {
-        entries.append(.status(theme, "✅ Бэкап подготовлен к восстановлению.\nПерезапустите приложение для применения."))
+        entries.append(.status(theme, "Бэкап подготовлен к восстановлению.\nПерезапустите приложение для применения."))
     } else if let info = mgr.backupInfo() {
         let df = DateFormatter()
         df.dateFormat = "dd.MM.yyyy HH:mm"
@@ -172,7 +172,7 @@ private func backupEntries(state: BackupState, theme: PresentationTheme) -> [Bac
         entries.append(.session(theme, 0, "Нет активных сессий"))
     } else {
         for (i, id) in ids.enumerated() {
-            entries.append(.session(theme, Int32(i), "👤 Аккаунт · \(id)"))
+            entries.append(.session(theme, Int32(i), "Аккаунт · \(id)"))
         }
     }
 

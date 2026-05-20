@@ -184,18 +184,18 @@ private func accountDetailEntries(theme: PresentationTheme, userId: Int64, dcId:
     var entries: [AccountDetailEntry] = []
 
     entries.append(.accountHeader(theme, "АККАУНТ"))
-    entries.append(.idRow(theme, "🆔 ID аккаунта", "\(userId)"))
-    entries.append(.dcRow(theme, "🌐 Дата-центр", dcId > 0 ? aorusDataCenterName(dcId) : "Неизвестно"))
+    entries.append(.idRow(theme, "ID аккаунта", "\(userId)"))
+    entries.append(.dcRow(theme, "Дата-центр", dcId > 0 ? aorusDataCenterName(dcId) : "Неизвестно"))
 
     entries.append(.regHeader(theme, "РЕГИСТРАЦИЯ"))
     if let date = aorusEstimateRegistration(userId: userId) {
         let df = DateFormatter()
         df.locale = Locale(identifier: "ru_RU")
         df.dateFormat = "LLLL yyyy"
-        entries.append(.regDateRow(theme, "📅 Дата (примерно)", df.string(from: date)))
-        entries.append(.ageRow(theme, "⏳ Возраст аккаунта", aorusAccountAge(from: date)))
+        entries.append(.regDateRow(theme, "Дата (примерно)", df.string(from: date)))
+        entries.append(.ageRow(theme, "Возраст аккаунта", aorusAccountAge(from: date)))
     } else {
-        entries.append(.regDateRow(theme, "📅 Дата (примерно)", "Неизвестно"))
+        entries.append(.regDateRow(theme, "Дата (примерно)", "Неизвестно"))
     }
 
     entries.append(.footer(theme,

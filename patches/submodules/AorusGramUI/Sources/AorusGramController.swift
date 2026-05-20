@@ -279,38 +279,38 @@ private func aorusEntries(state: AorusState, theme: PresentationTheme) -> [Aorus
     // A small destructive 'Очистить кеш удалённых' action sits between (2) and (3) and
     // wipes preserved postbox rows accumulated by the source patches.
     return [
-        .privacyHeader(theme, "🔒 ПРИВАТНОСТЬ"),
+        .privacyHeader(theme, "ПРИВАТНОСТЬ"),
         .ghostMode(theme, "Режим призрака", state.ghostMode),
         .saveDeletedMessages(theme, "Удалённые сообщения", state.saveDeletedMessages),
-        .clearDeletedCache(theme, "🗑 Очистить кеш удалённых"),
+        .clearDeletedCache(theme, "Очистить кеш удалённых"),
         .antiScreenshot(theme, "Скрытие экрана при записи", state.antiScreenshot),
 
-        .aiHeader(theme, "✨ AI ФУНКЦИИ"),
+        .aiHeader(theme, "AI ФУНКЦИИ"),
         .voiceTranscription(theme, "Транскрипция войсов", state.voiceTranscription),
         .chatSummary(theme, "Саммари чата", state.chatSummary),
         .translator(theme, "Переводчик", state.translator),
         .autoReply(theme, "Авто-ответчик", state.autoReply),
 
-        .perfHeader(theme, "⚡️ ПРОИЗВОДИТЕЛЬНОСТЬ"),
+        .perfHeader(theme, "ПРОИЗВОДИТЕЛЬНОСТЬ"),
         .downloadAccel(theme, "Ускоритель загрузок", state.downloadAccel),
         .antiSpam(theme, "Анти-спам", state.antiSpamEnabled),
-        .streaks(theme, "Streak счётчик 🔥", state.streaks),
+        .streaks(theme, "Streak счётчик", state.streaks),
 
-        .uiHeader(theme, "🎨 ИНТЕРФЕЙС"),
+        .uiHeader(theme, "ИНТЕРФЕЙС"),
         .glassUI(theme, "Glass UI", state.glassUI),
         .siriShortcuts(theme, "Siri Shortcuts", state.siriShortcuts),
 
-        .antiSpoofHeader(theme, "🕵️ АНТИ-СПУФ"),
+        .antiSpoofHeader(theme, "АНТИ-СПУФ"),
         .antiSpoofDeleted(theme, "Анти-спуф удалёнок", state.antiSpoofDeleted),
         .antiSpoofOnline(theme, "Анти-спуф онлайна", state.antiSpoofOnline),
 
-        .accountBackupHeader(theme, "💾 БЭКАП"),
+        .accountBackupHeader(theme, "БЭКАП"),
         .accountBackup(theme, "Бэкап аккаунтов"),
 
-        .aorusCodeHeader(theme, "🔐 AORUS CODE"),
+        .aorusCodeHeader(theme, "AORUS CODE"),
         .aorusCodeEnabled(theme, "AorusCode", state.aorusCodeEnabled),
 
-        .officialChannel(theme, "📢 Официальный канал @aorusgram"),
+        .officialChannel(theme, "Официальный канал @aorusgram"),
     ]
 }
 
@@ -430,7 +430,7 @@ public func aorusGramController(context: AccountContext) -> ViewController {
             let entries = aorusEntries(state: state, theme: presentationData.theme)
             let controllerState = ItemListControllerState(
                 presentationData: ItemListPresentationData(presentationData),
-                title: .text("🔥 AorusGram"),
+                title: .text("AorusGram"),
                 leftNavigationButton: nil,
                 rightNavigationButton: nil,
                 backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back)
