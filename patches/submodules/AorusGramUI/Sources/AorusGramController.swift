@@ -17,6 +17,7 @@ private enum AorusSection: Int32 {
     case performance
     case ui
     case antiSpoof
+    case accountBackup
     case aorusCode
     case channel
 }
@@ -49,13 +50,16 @@ private final class AorusArguments {
     let set: (WritableKeyPath<AorusState, Bool>, Bool) -> Void
     let openChannel: () -> Void
     let clearCache: () -> Void
+    let openAccountBackup: () -> Void
 
     init(set: @escaping (WritableKeyPath<AorusState, Bool>, Bool) -> Void,
          openChannel: @escaping () -> Void,
-         clearCache: @escaping () -> Void) {
+         clearCache: @escaping () -> Void,
+         openAccountBackup: @escaping () -> Void) {
         self.set = set
         self.openChannel = openChannel
         self.clearCache = clearCache
+        self.openAccountBackup = openAccountBackup
     }
 }
 
@@ -87,6 +91,9 @@ private enum AorusEntry: ItemListNodeEntry {
     case antiSpoofDeleted(PresentationTheme, String, Bool)
     case antiSpoofOnline(PresentationTheme, String, Bool)
 
+    case accountBackupHeader(PresentationTheme, String)
+    case accountBackup(PresentationTheme, String)
+
     case aorusCodeHeader(PresentationTheme, String)
     case aorusCodeEnabled(PresentationTheme, String, Bool)
 
@@ -104,6 +111,8 @@ private enum AorusEntry: ItemListNodeEntry {
             return AorusSection.ui.rawValue
         case .antiSpoofHeader, .antiSpoofDeleted, .antiSpoofOnline:
             return AorusSection.antiSpoof.rawValue
+        case .accountBackupHeader, .accountBackup:
+            return AorusSection.accountBackup.rawValue
         case .aorusCodeHeader, .aorusCodeEnabled:
             return AorusSection.aorusCode.rawValue
         case .officialChannel:
@@ -133,6 +142,8 @@ private enum AorusEntry: ItemListNodeEntry {
         case .antiSpoofHeader:      return 50
         case .antiSpoofDeleted:     return 51
         case .antiSpoofOnline:      return 52
+        case .accountBackupHeader:  return 55
+        case .accountBackup:        return 56
         case .aorusCodeHeader:      return 60
         case .aorusCodeEnabled:     return 61
         case .officialChannel:      return 70
@@ -185,6 +196,10 @@ private enum AorusEntry: ItemListNodeEntry {
             if case let .antiSpoofDeleted(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
         case let .antiSpoofOnline(lt, ls, lv):
             if case let .antiSpoofOnline(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
+        case let .accountBackupHeader(lt, ls):
+            if case let .accountBackupHeader(rt, rs) = rhs { return lt === rt && ls == rs }
+        case let .accountBackup(lt, ls):
+            if case let .accountBackup(rt, rs) = rhs { return lt === rt && ls == rs }
         case let .aorusCodeHeader(lt, ls):
             if case let .aorusCodeHeader(rt, rs) = rhs { return lt === rt && ls == rs }
         case let .aorusCodeEnabled(lt, ls, lv):
@@ -238,6 +253,10 @@ private enum AorusEntry: ItemListNodeEntry {
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.antiSpoofDeleted, $0) })
         case let .antiSpoofOnline(_, title, value):
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.antiSpoofOnline, $0) })
+        case let .accountBackupHeader(_, text):
+            return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: section)
+        case let .accountBackup(_, title):
+            return ItemListDisclosureItem(presentationData: presentationData, title: title, label: "", sectionId: section, style: .blocks, action: args.openAccountBackup)
         case let .aorusCodeHeader(_, text):
             return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: section)
         case let .aorusCodeEnabled(_, title, value):
@@ -284,6 +303,9 @@ private func aorusEntries(state: AorusState, theme: PresentationTheme) -> [Aorus
         .antiSpoofHeader(theme, "🕵️ АНТИ-СПУФ"),
         .antiSpoofDeleted(theme, "Анти-спуф удалёнок", state.antiSpoofDeleted),
         .antiSpoofOnline(theme, "Анти-спуф онлайна", state.antiSpoofOnline),
+
+        .accountBackupHeader(theme, "💾 БЭКАП"),
+        .accountBackup(theme, "Бэкап аккаунтов"),
 
         .aorusCodeHeader(theme, "🔐 AORUS CODE"),
         .aorusCodeEnabled(theme, "AorusCode", state.aorusCodeEnabled),
@@ -385,6 +407,13 @@ public func aorusGramController(context: AccountContext) -> ViewController {
             } |> deliverOnMainQueue).start(completed: {
                 UserDefaults.standard.removeObject(forKey: "aorusgram_preserved_msgs")
             })
+        },
+        openAccountBackup: { [weak weakController] in
+            guard let controller = weakController,
+                  let navigationController = controller.navigationController as? NavigationController else {
+                return
+            }
+            navigationController.pushViewController(accountBackupController(context: context))
         }
     )
 

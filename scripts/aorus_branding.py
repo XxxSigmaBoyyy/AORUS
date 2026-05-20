@@ -2204,6 +2204,41 @@ def patch_app_delegate_anti_spoof_delete_observer(tg: Path) -> None:
         print("AntiSpoofDeleteObserver: bootstrap anchor not found — skipped gracefully")
 
 
+def patch_app_delegate_account_restore_hook(tg: Path) -> None:
+    """Apply a pending account-backup restore at the very start of app launch.
+
+    AccountBackupManager.prepareRestore() (run from the settings UI) decrypts a
+    backup into a staging directory and raises a UserDefaults flag. This hook —
+    injected right after `rootPath` is resolved and BEFORE performAppGroupUpgrades
+    or any postbox is opened — swaps the staged account data into place, taking a
+    safety snapshot of the current data first. Running this pre-postbox is what
+    makes the restore safe: nothing has the account databases open yet.
+    """
+    path = tg / "submodules/TelegramUI/Sources/AppDelegate.swift"
+    if not path.is_file():
+        print("AccountRestoreHook: AppDelegate.swift not found, skip")
+        return
+    t = path.read_text(encoding="utf-8")
+    if "AccountBackupManager.applyPendingRestoreIfNeeded" in t:
+        print("AccountRestoreHook: already injected")
+        return
+    anchor = (
+        "        if !isUITest {\n"
+        "            performAppGroupUpgrades(appGroupPath: appGroupUrl.path, rootPath: rootPath)\n"
+        "        }\n"
+    )
+    if anchor not in t:
+        print("AccountRestoreHook: performAppGroupUpgrades anchor not found — skipped")
+        return
+    hook = (
+        "        // AorusGram: apply a pending account-backup restore before any postbox opens\n"
+        "        AccountBackupManager.applyPendingRestoreIfNeeded(rootPath: rootPath)\n"
+    )
+    t = t.replace(anchor, hook + anchor, 1)
+    path.write_text(t, encoding="utf-8")
+    print("AccountRestoreHook: injected applyPendingRestoreIfNeeded before performAppGroupUpgrades")
+
+
 def patch_app_delegate_siri_continue_activity(tg: Path) -> None:
     """Route NSUserActivity continuations through SiriShortcutsManager.handle.
 
@@ -2339,6 +2374,7 @@ def main() -> None:
     patch_incoming_message_hook(tg)
     patch_auto_reply_send_hook(tg)
     patch_app_delegate_import_telegram_api(tg)
+    patch_app_delegate_account_restore_hook(tg)
     patch_app_delegate_siri_continue_activity(tg)
     patch_chat_title_anti_spoof_status(tg)
     patch_client_spoof_app_version(tg)

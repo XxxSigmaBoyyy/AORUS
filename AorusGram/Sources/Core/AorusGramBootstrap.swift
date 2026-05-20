@@ -14,6 +14,12 @@ public final class AorusGramBootstrap {
         guard !didSetup else { return }
         didSetup = true
 
+        // Persist the account-data root so AccountBackupManager can locate the
+        // accounts-metadata / account-* directories for backup & restore.
+        if let accountPath = accountPath, !accountPath.isEmpty {
+            AccountBackupManager.shared.rootPath = accountPath
+        }
+
         // Integrity check — runs async so it never blocks app launch
         DispatchQueue.global(qos: .utility).async {
             AorusTamperGuard.shared.verify()
