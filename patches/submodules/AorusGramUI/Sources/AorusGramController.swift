@@ -377,9 +377,12 @@ public func aorusGramController(context: AccountContext) -> ViewController {
             spoof.antiSpoofOnline   = s.antiSpoofOnline
             stealth.isEnabled       = s.aorusCodeEnabled
         },
-        openChannel: { [weak weakController] in
-            // Resolve @aorusgram username and navigate to the channel in-app.
-            // Falls back to browser if navigation stack is unavailable.
+        openChannel: {
+            // Resolve @aorusgram and navigate to the channel inside AorusGram.
+            // `weakController` is referenced directly (no capture list) so the
+            // closure reads the value assigned after it is created — capturing
+            // `[weak weakController]` would freeze the nil it holds right now.
+            // Browser fallback only if the nav stack is genuinely unavailable.
             guard let controller = weakController,
                   let navigationController = controller.navigationController as? NavigationController else {
                 context.sharedContext.applicationBindings.openUrl("https://t.me/aorusgram")
