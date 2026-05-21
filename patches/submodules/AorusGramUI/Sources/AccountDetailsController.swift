@@ -20,6 +20,7 @@ private enum DetailSection: Int32 {
 private enum AccountDetailEntry: ItemListNodeEntry {
     case accountHeader(PresentationTheme, String)
     case idRow(PresentationTheme, String, String)
+    case copyIdAction(PresentationTheme, String)
     case dcRow(PresentationTheme, String, String)
 
     case regHeader(PresentationTheme, String)
@@ -30,7 +31,7 @@ private enum AccountDetailEntry: ItemListNodeEntry {
 
     var section: ItemListSectionId {
         switch self {
-        case .accountHeader, .idRow, .dcRow:
+        case .accountHeader, .idRow, .copyIdAction, .dcRow:
             return DetailSection.account.rawValue
         case .regHeader, .regDateRow, .ageRow:
             return DetailSection.registration.rawValue
@@ -43,11 +44,12 @@ private enum AccountDetailEntry: ItemListNodeEntry {
         switch self {
         case .accountHeader: return 0
         case .idRow:         return 1
-        case .dcRow:         return 2
-        case .regHeader:     return 3
-        case .regDateRow:    return 4
-        case .ageRow:        return 5
-        case .footer:        return 6
+        case .copyIdAction:  return 2
+        case .dcRow:         return 3
+        case .regHeader:     return 4
+        case .regDateRow:    return 5
+        case .ageRow:        return 6
+        case .footer:        return 7
         }
     }
 
@@ -61,6 +63,8 @@ private enum AccountDetailEntry: ItemListNodeEntry {
             if case let .accountHeader(rt, rs) = rhs { return lt === rt && ls == rs }
         case let .idRow(lt, lk, lv):
             if case let .idRow(rt, rk, rv) = rhs { return lt === rt && lk == rk && lv == rv }
+        case let .copyIdAction(lt, ls):
+            if case let .copyIdAction(rt, rs) = rhs { return lt === rt && ls == rs }
         case let .dcRow(lt, lk, lv):
             if case let .dcRow(rt, rk, rv) = rhs { return lt === rt && lk == rk && lv == rv }
         case let .regHeader(lt, ls):
@@ -76,11 +80,14 @@ private enum AccountDetailEntry: ItemListNodeEntry {
     }
 
     func item(presentationData: ItemListPresentationData, arguments: Any) -> ListViewItem {
+        let args = arguments as! AccountDetailArguments
         switch self {
         case let .accountHeader(_, text):
             return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: section)
         case let .idRow(_, title, value):
             return ItemListDisclosureItem(presentationData: presentationData, title: title, label: value, sectionId: section, style: .blocks, disclosureStyle: .none, action: nil)
+        case let .copyIdAction(_, text):
+            return ItemListActionItem(presentationData: presentationData, title: text, kind: .generic, alignment: .natural, sectionId: section, style: .blocks, action: { args.copyId() })
         case let .dcRow(_, title, value):
             return ItemListDisclosureItem(presentationData: presentationData, title: title, label: value, sectionId: section, style: .blocks, disclosureStyle: .none, action: nil)
         case let .regHeader(_, text):
@@ -112,10 +119,12 @@ private func aorusDataCenterName(_ dc: Int) -> String {
 // ids grow roughly monotonically over time; this interpolates between known
 // (id, date) anchor points. The result is approximate by design.
 private func aorusEstimateRegistration(userId: Int64) -> Date? {
-    // (user id, unix seconds) anchor points. The bulk are real measured
-    // (account id → creation timestamp) samples from the public
-    // lastochkin-group/telegram-account-age-estimator dataset; the last two
-    // are conservative extrapolations covering 2025–2026. Sorted by id.
+    // 44 real measured (account id → creation timestamp) samples from the
+    // public lastochkin-group/telegram-account-age-estimator dataset. Sorted by
+    // id with the timestamps clamped to be non-decreasing. For ids past the
+    // newest sample we extrapolate with the slope of the last two anchors
+    // instead of clamping to a fixed date (the clamp made every new account
+    // read as "1 month old").
     let anchors: [(Int64, Double)] = [
         (2768409, 1383264000),
         (7679610, 1388448000),
@@ -130,20 +139,20 @@ private func aorusEstimateRegistration(userId: Int64) -> Date? {
         (101260938, 1425600000),
         (101323197, 1426204000),
         (103151531, 1433376000),
-        (103258382, 1432771000),
+        (103258382, 1433376000),
         (109393468, 1439078000),
-        (111220210, 1429574000),
+        (111220210, 1439078000),
         (112594714, 1439683000),
-        (116812045, 1437696000),
-        (122600695, 1437782000),
+        (116812045, 1439683000),
+        (122600695, 1439683000),
         (124872445, 1439856000),
         (125828524, 1444003000),
-        (130029930, 1441324000),
+        (130029930, 1444003000),
         (133909606, 1444176000),
         (143445125, 1448928000),
         (148670295, 1452211000),
         (152079341, 1453420000),
-        (157242073, 1446768000),
+        (157242073, 1453420000),
         (171295414, 1457481000),
         (181783990, 1460246000),
         (222021233, 1465344000),
@@ -161,17 +170,26 @@ private func aorusEstimateRegistration(userId: Int64) -> Date? {
         (805158066, 1563208000),
         (1974255900, 1634000000),
         (5520018289, 1721847912),
-        (6800000000, 1751328000),
-        (8100000000, 1774828800),
     ]
-    guard userId > 0, let first = anchors.first, let last = anchors.last else { return nil }
+    guard userId > 0, anchors.count >= 2,
+          let first = anchors.first, let last = anchors.last else { return nil }
     if userId <= first.0 { return Date(timeIntervalSince1970: first.1) }
-    if userId >= last.0 { return Date(timeIntervalSince1970: last.1) }
+    if userId >= last.0 {
+        // Extrapolate forward using the slope of the last two samples; never
+        // return a date in the future.
+        let prev = anchors[anchors.count - 2]
+        let idSpan = Double(last.0 - prev.0)
+        let timeSpan = last.1 - prev.1
+        guard idSpan > 0, timeSpan > 0 else { return Date(timeIntervalSince1970: last.1) }
+        let secondsPerId = timeSpan / idSpan
+        let projected = last.1 + Double(userId - last.0) * secondsPerId
+        return Date(timeIntervalSince1970: min(projected, Date().timeIntervalSince1970))
+    }
     for i in 1 ..< anchors.count {
         let (id0, t0) = anchors[i - 1]
         let (id1, t1) = anchors[i]
         if userId >= id0 && userId <= id1 {
-            let frac = Double(userId - id0) / Double(id1 - id0)
+            let frac = id1 > id0 ? Double(userId - id0) / Double(id1 - id0) : 0
             return Date(timeIntervalSince1970: t0 + frac * (t1 - t0))
         }
     }
@@ -201,6 +219,7 @@ private func accountDetailEntries(theme: PresentationTheme, userId: Int64, dcId:
 
     entries.append(.accountHeader(theme, "АККАУНТ"))
     entries.append(.idRow(theme, "ID аккаунта", "\(userId)"))
+    entries.append(.copyIdAction(theme, "Скопировать ID"))
     entries.append(.dcRow(theme, "Дата-центр", dcId > 0 ? aorusDataCenterName(dcId) : "Неизвестно"))
 
     entries.append(.regHeader(theme, "РЕГИСТРАЦИЯ"))
@@ -223,9 +242,29 @@ private func accountDetailEntries(theme: PresentationTheme, userId: Int64, dcId:
 
 // MARK: - Public factory
 
-private final class AccountDetailArguments {}
+private final class AccountDetailArguments {
+    let copyId: () -> Void
+    init(copyId: @escaping () -> Void) {
+        self.copyId = copyId
+    }
+}
 
 public func accountDetailsController(context: AccountContext, userId: Int64, dcId: Int, title: String) -> ViewController {
+    weak var weakController: ItemListController?
+
+    let arguments = AccountDetailArguments(copyId: {
+        UIPasteboard.general.string = "\(userId)"
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        guard let controller = weakController else { return }
+        let alert = textAlertController(
+            context: context,
+            title: nil,
+            text: "ID скопирован в буфер обмена",
+            actions: [TextAlertAction(type: .defaultAction, title: "OK", action: {})]
+        )
+        controller.present(alert, in: .window(.root))
+    })
+
     let signal: Signal<(ItemListControllerState, (ItemListNodeState, Any)), NoError> = context.sharedContext.presentationData
         |> deliverOnMainQueue
         |> map { presentationData -> (ItemListControllerState, (ItemListNodeState, Any)) in
@@ -242,8 +281,10 @@ public func accountDetailsController(context: AccountContext, userId: Int64, dcI
                 entries: entries,
                 style: .blocks
             )
-            return (controllerState, (listState, AccountDetailArguments()))
+            return (controllerState, (listState, arguments))
         }
 
-    return ItemListController(context: context, state: signal)
+    let controller = ItemListController(context: context, state: signal)
+    weakController = controller
+    return controller
 }
