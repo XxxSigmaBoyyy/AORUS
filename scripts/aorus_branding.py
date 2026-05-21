@@ -1703,6 +1703,16 @@ def patch_chat_context_menu_translate_transcribe(tg: Path) -> None:
             1,
         )
 
+    # File-level disposable holder — the native translate RPC must outlive the
+    # context-menu action closure, otherwise releasing its disposable cancels
+    # the request before the response arrives.
+    if "aorusTranslateDisposableSet" not in t:
+        t = t.replace(
+            "import AccountContext\n",
+            "import AccountContext\nprivate let aorusTranslateDisposableSet = DisposableSet()\n",
+            1,
+        )
+
     # New anchor: the Reply-action gate, which runs for both text and voice messages.
     anchor = "        if !isPinnedMessages, !isReplyThreadHead, data.canReply {"
     if anchor not in t:
@@ -1754,37 +1764,26 @@ def patch_chat_context_menu_translate_transcribe(tg: Path) -> None:
         "                        f(.default)\n"
         "                        guard let context = context else { return }\n"
         "                        let aorusOriginal = aorusBody\n"
-        "                        let aorusCyr = aorusOriginal.unicodeScalars.filter { $0.value >= 0x0400 && $0.value <= 0x04FF }.count\n"
-        "                        let aorusSrc = Double(aorusCyr) / max(1.0, Double(aorusOriginal.count)) > 0.3 ? \"ru\" : \"en\"\n"
-        "                        let aorusTarget = aorusSrc == \"ru\" ? \"en\" : \"ru\"\n"
-        "                        guard var aorusComps = URLComponents(string: \"https://api.mymemory.translated.net/get\") else { return }\n"
-        "                        aorusComps.queryItems = [\n"
-        "                            URLQueryItem(name: \"q\", value: aorusOriginal),\n"
-        "                            URLQueryItem(name: \"langpair\", value: \"\\(aorusSrc)|\\(aorusTarget)\"),\n"
-        "                            URLQueryItem(name: \"de\", value: \"aorusgram@telegra.ph\")\n"
-        "                        ]\n"
-        "                        guard let aorusURL = aorusComps.url else { return }\n"
-        "                        URLSession.shared.dataTask(with: aorusURL) { data, _, _ in\n"
-        "                            guard let data = data,\n"
-        "                                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],\n"
-        "                                  let rd = json[\"responseData\"] as? [String: Any],\n"
-        "                                  let raw = rd[\"translatedText\"] as? String, !raw.isEmpty else { return }\n"
-        "                            let translated = raw\n"
-        "                                .replacingOccurrences(of: \"&#39;\",  with: \"'\")\n"
-        "                                .replacingOccurrences(of: \"&quot;\", with: \"\\\"\")\n"
-        "                                .replacingOccurrences(of: \"&amp;\",  with: \"&\")\n"
+        "                        let aorusTarget = Locale.current.languageCode ?? \"en\"\n"
+        "                        // Native Telegram translation engine (messages.translateText):\n"
+        "                        // free, no API key, no per-IP limit. The disposable is held in\n"
+        "                        // a file-level set so the RPC is not cancelled when this closure\n"
+        "                        // returns.\n"
+        "                        aorusTranslateDisposableSet.add((context.engine.messages.translate(text: aorusOriginal, toLang: aorusTarget)\n"
+        "                        |> deliverOnMainQueue).start(next: { aorusResult in\n"
+        "                            guard let aorusPair = aorusResult else { return }\n"
+        "                            let aorusTranslated = aorusPair.0\n"
+        "                            guard !aorusTranslated.isEmpty, aorusTranslated != aorusOriginal else { return }\n"
         "                            let _ = context.account.postbox.transaction { transaction -> Void in\n"
         "                                transaction.updateMessage(aorusMid, update: { current in\n"
         "                                    let storeForwardInfo = current.forwardInfo.flatMap(StoreMessageForwardInfo.init)\n"
         "                                    let attrs = current.attributes.filter { !($0 is TranslationMessageAttribute) }\n"
-        "                                    return .update(StoreMessage(id: current.id, customStableId: nil, globallyUniqueId: current.globallyUniqueId, groupingKey: current.groupingKey, threadId: current.threadId, timestamp: current.timestamp, flags: StoreMessageFlags(current.flags), tags: current.tags, globalTags: current.globalTags, localTags: current.localTags, forwardInfo: storeForwardInfo, authorId: current.author?.id, text: translated, attributes: attrs, media: current.media))\n"
+        "                                    return .update(StoreMessage(id: current.id, customStableId: nil, globallyUniqueId: current.globallyUniqueId, groupingKey: current.groupingKey, threadId: current.threadId, timestamp: current.timestamp, flags: StoreMessageFlags(current.flags), tags: current.tags, globalTags: current.globalTags, localTags: current.localTags, forwardInfo: storeForwardInfo, authorId: current.author?.id, text: aorusTranslated, attributes: attrs, media: current.media))\n"
         "                                })\n"
         "                            }.start()\n"
-        "                            DispatchQueue.main.async {\n"
-        "                                UserDefaults.standard.set(aorusOriginal, forKey: aorusKeyText)\n"
-        "                                UserDefaults.standard.set(\"translation\", forKey: aorusKeyType)\n"
-        "                            }\n"
-        "                        }.resume()\n"
+        "                            UserDefaults.standard.set(aorusOriginal, forKey: aorusKeyText)\n"
+        "                            UserDefaults.standard.set(\"translation\", forKey: aorusKeyType)\n"
+        "                        }))\n"
         "                    })))\n"
         "                }\n"
         "            }\n"
