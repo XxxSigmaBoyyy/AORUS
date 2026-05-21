@@ -2315,12 +2315,13 @@ def patch_app_delegate_siri_continue_activity(tg: Path) -> None:
 
 
 def patch_peer_info_account_details(tg: Path) -> None:
-    """Add a "Подробнее" row to a user's profile.
+    """Add a "Подробнее" row to user, channel and group profiles.
 
     Patches PeerInfoProfileItems.swift (the `infoItems` builder) to append a
-    PeerInfoScreenDisclosureItem in the user section. Tapping it pushes
-    accountDetailsController (AorusGramUI) which shows the account ID, the
-    data-center, and an approximate registration date derived from the id.
+    PeerInfoScreenDisclosureItem in the user, channel and legacy-group blocks.
+    Tapping it pushes accountDetailsController (AorusGramUI) which shows the id,
+    the data-center, and a creation date: estimated from the numeric id for
+    users, and the exact Telegram-provided creationDate for channels / groups.
     """
     path = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoProfileItems.swift"
     if not path.is_file():
@@ -2331,7 +2332,7 @@ def patch_peer_info_account_details(tg: Path) -> None:
         print("PeerInfoAccountDetails: already injected")
         return
 
-    # 1. import AorusGramUI (so accountDetailsController is visible)
+    # import AorusGramUI (so accountDetailsController / AorusDetailKind are visible)
     if "import AorusGramUI" not in t:
         needle = "import Foundation\n"
         if needle not in t:
@@ -2339,37 +2340,58 @@ def patch_peer_info_account_details(tg: Path) -> None:
             return
         t = t.replace(needle, needle + "import AorusGramUI\n", 1)
 
-    # 2. inject the disclosure item right after the user-block item-id constants
-    anchor = "        let ItemVerification = 9004\n"
-    if anchor not in t:
-        print("PeerInfoAccountDetails: ItemVerification anchor not found — skipped")
+    def disclosure(peer_var: str, kind_expr: str, creation_expr: str, item_id: int) -> str:
+        return (
+            "\n"
+            "        // AorusGram: account details (\"Подробнее\") row\n"
+            "        do {\n"
+            "            let aorusEntityId = " + peer_var + ".id.id._internalGetInt64Value()\n"
+            "            var aorusDcId: Int = 0\n"
+            "            for aorusRep in " + peer_var + ".photo {\n"
+            "                if let aorusRes = aorusRep.resource as? CloudPeerPhotoSizeMediaResource {\n"
+            "                    aorusDcId = aorusRes.datacenterId\n"
+            "                    break\n"
+            "                }\n"
+            "            }\n"
+            "            let aorusTitle = EnginePeer(" + peer_var + ").compactDisplayTitle\n"
+            "            let aorusKind: AorusDetailKind = " + kind_expr + "\n"
+            "            let aorusCreation: Int32 = " + creation_expr + "\n"
+            "            items[currentPeerInfoSection]!.append(PeerInfoScreenDisclosureItem(id: " + str(item_id) + ", text: \"Подробнее\", action: {\n"
+            "                guard let aorusParent = interaction.getController(),\n"
+            "                      let aorusNav = aorusParent.navigationController as? NavigationController else {\n"
+            "                    return\n"
+            "                }\n"
+            "                aorusNav.pushViewController(accountDetailsController(context: context, entityId: aorusEntityId, dcId: aorusDcId, title: aorusTitle, kind: aorusKind, creationDate: aorusCreation))\n"
+            "            }))\n"
+            "        }\n"
+        )
+
+    applied = []
+
+    # User block — inject after the item-id constants.
+    user_anchor = "        let ItemVerification = 9004\n"
+    if user_anchor in t:
+        t = t.replace(user_anchor, user_anchor + disclosure("user", ".user", "0", 770077), 1)
+        applied.append("user")
+
+    # Channel / supergroup block — inject after the item-id constants.
+    chan_anchor = "        let ItemPeerPersonalChannel = 11\n"
+    if chan_anchor in t:
+        chan_kind = "{ if case .broadcast = channel.info { return .channel } else { return .group } }()"
+        t = t.replace(chan_anchor, chan_anchor + disclosure("channel", chan_kind, "channel.creationDate", 770078), 1)
+        applied.append("channel")
+
+    # Legacy group block — inject right after the block opens.
+    grp_anchor = "    } else if case let .legacyGroup(group) = data.peer {\n"
+    if grp_anchor in t:
+        t = t.replace(grp_anchor, grp_anchor + disclosure("group", ".group", "group.creationDate", 770079), 1)
+        applied.append("group")
+
+    if not applied:
+        print("PeerInfoAccountDetails: no anchors found — skipped")
         return
-    injection = (
-        "        let ItemVerification = 9004\n"
-        "\n"
-        "        // AorusGram: account details (\"Подробнее\") row\n"
-        "        do {\n"
-        "            let aorusUserId = user.id.id._internalGetInt64Value()\n"
-        "            var aorusDcId: Int = 0\n"
-        "            for aorusRep in user.photo {\n"
-        "                if let aorusRes = aorusRep.resource as? CloudPeerPhotoSizeMediaResource {\n"
-        "                    aorusDcId = aorusRes.datacenterId\n"
-        "                    break\n"
-        "                }\n"
-        "            }\n"
-        "            let aorusTitle = EnginePeer(user).compactDisplayTitle\n"
-        "            items[currentPeerInfoSection]!.append(PeerInfoScreenDisclosureItem(id: 770077, text: \"Подробнее\", action: {\n"
-        "                guard let aorusParent = interaction.getController(),\n"
-        "                      let aorusNav = aorusParent.navigationController as? NavigationController else {\n"
-        "                    return\n"
-        "                }\n"
-        "                aorusNav.pushViewController(accountDetailsController(context: context, userId: aorusUserId, dcId: aorusDcId, title: aorusTitle))\n"
-        "            }))\n"
-        "        }\n"
-    )
-    t = t.replace(anchor, injection, 1)
     path.write_text(t, encoding="utf-8")
-    print("PeerInfoAccountDetails: injected Подробнее row into PeerInfoProfileItems.swift")
+    print("PeerInfoAccountDetails: injected Подробнее row for " + ", ".join(applied))
 
 
 def patch_info_plist_bgtask(tg: Path) -> None:

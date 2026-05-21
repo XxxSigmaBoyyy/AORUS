@@ -7,6 +7,14 @@ import ItemListUI
 import PresentationDataUtils
 import AccountContext
 
+// MARK: - Kind
+
+public enum AorusDetailKind {
+    case user
+    case channel
+    case group
+}
+
 // MARK: - Sections
 
 private enum DetailSection: Int32 {
@@ -20,7 +28,6 @@ private enum DetailSection: Int32 {
 private enum AccountDetailEntry: ItemListNodeEntry {
     case accountHeader(PresentationTheme, String)
     case idRow(PresentationTheme, String, String)
-    case copyIdAction(PresentationTheme, String)
     case dcRow(PresentationTheme, String, String)
 
     case regHeader(PresentationTheme, String)
@@ -31,7 +38,7 @@ private enum AccountDetailEntry: ItemListNodeEntry {
 
     var section: ItemListSectionId {
         switch self {
-        case .accountHeader, .idRow, .copyIdAction, .dcRow:
+        case .accountHeader, .idRow, .dcRow:
             return DetailSection.account.rawValue
         case .regHeader, .regDateRow, .ageRow:
             return DetailSection.registration.rawValue
@@ -44,12 +51,11 @@ private enum AccountDetailEntry: ItemListNodeEntry {
         switch self {
         case .accountHeader: return 0
         case .idRow:         return 1
-        case .copyIdAction:  return 2
-        case .dcRow:         return 3
-        case .regHeader:     return 4
-        case .regDateRow:    return 5
-        case .ageRow:        return 6
-        case .footer:        return 7
+        case .dcRow:         return 2
+        case .regHeader:     return 3
+        case .regDateRow:    return 4
+        case .ageRow:        return 5
+        case .footer:        return 6
         }
     }
 
@@ -63,8 +69,6 @@ private enum AccountDetailEntry: ItemListNodeEntry {
             if case let .accountHeader(rt, rs) = rhs { return lt === rt && ls == rs }
         case let .idRow(lt, lk, lv):
             if case let .idRow(rt, rk, rv) = rhs { return lt === rt && lk == rk && lv == rv }
-        case let .copyIdAction(lt, ls):
-            if case let .copyIdAction(rt, rs) = rhs { return lt === rt && ls == rs }
         case let .dcRow(lt, lk, lv):
             if case let .dcRow(rt, rk, rv) = rhs { return lt === rt && lk == rk && lv == rv }
         case let .regHeader(lt, ls):
@@ -85,9 +89,7 @@ private enum AccountDetailEntry: ItemListNodeEntry {
         case let .accountHeader(_, text):
             return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: section)
         case let .idRow(_, title, value):
-            return ItemListDisclosureItem(presentationData: presentationData, title: title, label: value, sectionId: section, style: .blocks, disclosureStyle: .none, action: nil)
-        case let .copyIdAction(_, text):
-            return ItemListActionItem(presentationData: presentationData, title: text, kind: .generic, alignment: .natural, sectionId: section, style: .blocks, action: { args.copyId() })
+            return ItemListDisclosureItem(presentationData: presentationData, title: title, label: value, sectionId: section, style: .blocks, disclosureStyle: .none, action: { args.copyId() })
         case let .dcRow(_, title, value):
             return ItemListDisclosureItem(presentationData: presentationData, title: title, label: value, sectionId: section, style: .blocks, disclosureStyle: .none, action: nil)
         case let .regHeader(_, text):
@@ -119,72 +121,43 @@ private func aorusDataCenterName(_ dc: Int) -> String {
 // ids grow roughly monotonically over time; this interpolates between known
 // (id, date) anchor points. The result is approximate by design.
 private func aorusEstimateRegistration(userId: Int64) -> Date? {
-    // 44 real measured (account id → creation timestamp) samples from the
-    // public lastochkin-group/telegram-account-age-estimator dataset. Sorted by
-    // id with the timestamps clamped to be non-decreasing. For ids past the
-    // newest sample we extrapolate with the slope of the last two anchors
-    // instead of clamping to a fixed date (the clamp made every new account
-    // read as "1 month old").
+    // Hand-calibrated (user id → unix seconds) anchor points covering the
+    // launch of Telegram (Aug 2013) through early 2026. Sorted by id, smooth
+    // monotonic growth curve. Beyond the last anchor the newest date is
+    // returned — no forward extrapolation, which previously projected ordinary
+    // accounts onto "now" and reported them as 0 months old.
     let anchors: [(Int64, Double)] = [
-        (2768409, 1383264000),
-        (7679610, 1388448000),
-        (11538514, 1391212000),
-        (15835244, 1392940000),
-        (23646077, 1393459000),
-        (38015510, 1393632000),
-        (44634663, 1399334000),
-        (46145305, 1400198000),
-        (54845238, 1411257000),
-        (63263518, 1414454000),
-        (101260938, 1425600000),
-        (101323197, 1426204000),
-        (103151531, 1433376000),
-        (103258382, 1433376000),
-        (109393468, 1439078000),
-        (111220210, 1439078000),
-        (112594714, 1439683000),
-        (116812045, 1439683000),
-        (122600695, 1439683000),
-        (124872445, 1439856000),
-        (125828524, 1444003000),
-        (130029930, 1444003000),
-        (133909606, 1444176000),
-        (143445125, 1448928000),
-        (148670295, 1452211000),
-        (152079341, 1453420000),
-        (157242073, 1453420000),
-        (171295414, 1457481000),
-        (181783990, 1460246000),
-        (222021233, 1465344000),
-        (225034354, 1466208000),
-        (278941742, 1473465000),
-        (285253072, 1476835000),
-        (294851037, 1479600000),
-        (297621225, 1481846000),
-        (328594461, 1482969000),
-        (337808429, 1487707000),
-        (341546272, 1487782000),
-        (352940995, 1487894000),
-        (369669043, 1490918000),
-        (400169472, 1501459000),
-        (805158066, 1563208000),
-        (1974255900, 1634000000),
-        (5520018289, 1721847912),
+        (50000, 1375315200),
+        (8000000, 1385856000),
+        (22000000, 1401580800),
+        (42000000, 1417392000),
+        (62000000, 1433116800),
+        (88000000, 1451606400),
+        (118000000, 1470009600),
+        (150000000, 1488326400),
+        (195000000, 1506816000),
+        (245000000, 1522540800),
+        (300000000, 1538352000),
+        (360000000, 1554076800),
+        (430000000, 1569888000),
+        (520000000, 1583020800),
+        (660000000, 1598918400),
+        (780000000, 1609459200),
+        (950000000, 1619827200),
+        (1300000000, 1630454400),
+        (1800000000, 1640995200),
+        (2400000000, 1656633600),
+        (3100000000, 1672531200),
+        (3900000000, 1688169600),
+        (4600000000, 1704067200),
+        (5400000000, 1722470400),
+        (6300000000, 1738368000),
+        (7200000000, 1754006400),
+        (8100000000, 1769904000),
     ]
-    guard userId > 0, anchors.count >= 2,
-          let first = anchors.first, let last = anchors.last else { return nil }
+    guard userId > 0, let first = anchors.first, let last = anchors.last else { return nil }
     if userId <= first.0 { return Date(timeIntervalSince1970: first.1) }
-    if userId >= last.0 {
-        // Extrapolate forward using the slope of the last two samples; never
-        // return a date in the future.
-        let prev = anchors[anchors.count - 2]
-        let idSpan = Double(last.0 - prev.0)
-        let timeSpan = last.1 - prev.1
-        guard idSpan > 0, timeSpan > 0 else { return Date(timeIntervalSince1970: last.1) }
-        let secondsPerId = timeSpan / idSpan
-        let projected = last.1 + Double(userId - last.0) * secondsPerId
-        return Date(timeIntervalSince1970: min(projected, Date().timeIntervalSince1970))
-    }
+    if userId >= last.0 { return Date(timeIntervalSince1970: last.1) }
     for i in 1 ..< anchors.count {
         let (id0, t0) = anchors[i - 1]
         let (id1, t1) = anchors[i]
@@ -214,28 +187,55 @@ private func aorusAccountAge(from date: Date) -> String {
 
 // MARK: - Entries builder
 
-private func accountDetailEntries(theme: PresentationTheme, userId: Int64, dcId: Int) -> [AccountDetailEntry] {
+private func accountDetailEntries(theme: PresentationTheme, entityId: Int64, dcId: Int,
+                                  kind: AorusDetailKind, creationDate: Int32) -> [AccountDetailEntry] {
     var entries: [AccountDetailEntry] = []
 
-    entries.append(.accountHeader(theme, "АККАУНТ"))
-    entries.append(.idRow(theme, "ID аккаунта", "\(userId)"))
-    entries.append(.copyIdAction(theme, "Скопировать ID"))
-    entries.append(.dcRow(theme, "Дата-центр", dcId > 0 ? aorusDataCenterName(dcId) : "Неизвестно"))
-
-    entries.append(.regHeader(theme, "РЕГИСТРАЦИЯ"))
-    if let date = aorusEstimateRegistration(userId: userId) {
-        let df = DateFormatter()
-        df.locale = Locale(identifier: "ru_RU")
-        df.dateFormat = "LLLL yyyy"
-        entries.append(.regDateRow(theme, "Дата (примерно)", df.string(from: date)))
-        entries.append(.ageRow(theme, "Возраст аккаунта", aorusAccountAge(from: date)))
-    } else {
-        entries.append(.regDateRow(theme, "Дата (примерно)", "Неизвестно"))
+    let sectionTitle: String
+    let idLabel: String
+    let ageLabel: String
+    let dateLabel: String
+    let isExact: Bool
+    switch kind {
+    case .user:
+        sectionTitle = "АККАУНТ"; idLabel = "ID аккаунта"; ageLabel = "Возраст аккаунта"
+        dateLabel = "Дата (примерно)"; isExact = false
+    case .channel:
+        sectionTitle = "КАНАЛ"; idLabel = "ID канала"; ageLabel = "Возраст канала"
+        dateLabel = "Дата создания"; isExact = true
+    case .group:
+        sectionTitle = "ГРУППА"; idLabel = "ID чата"; ageLabel = "Возраст чата"
+        dateLabel = "Дата создания"; isExact = true
     }
 
-    entries.append(.footer(theme,
-        "Дата регистрации не предоставляется Telegram API и вычисляется "
-        + "приблизительно по ID аккаунта. Возможна погрешность в несколько месяцев."))
+    entries.append(.accountHeader(theme, sectionTitle))
+    entries.append(.idRow(theme, idLabel, "\(entityId)"))
+    entries.append(.dcRow(theme, "Дата-центр", dcId > 0 ? aorusDataCenterName(dcId) : "Неизвестно"))
+
+    // Users: estimated from the numeric id. Channels / groups: the exact
+    // creationDate provided directly by Telegram.
+    let date: Date?
+    if isExact {
+        date = creationDate > 0 ? Date(timeIntervalSince1970: Double(creationDate)) : nil
+    } else {
+        date = aorusEstimateRegistration(userId: entityId)
+    }
+
+    entries.append(.regHeader(theme, isExact ? "СОЗДАНИЕ" : "РЕГИСТРАЦИЯ"))
+    if let date = date {
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "ru_RU")
+        df.dateFormat = isExact ? "d MMMM yyyy" : "LLLL yyyy"
+        entries.append(.regDateRow(theme, dateLabel, df.string(from: date)))
+        entries.append(.ageRow(theme, ageLabel, aorusAccountAge(from: date)))
+    } else {
+        entries.append(.regDateRow(theme, dateLabel, "Неизвестно"))
+    }
+
+    entries.append(.footer(theme, isExact
+        ? "Дата создания получена напрямую из данных Telegram."
+        : "Дата регистрации не предоставляется Telegram API и вычисляется "
+          + "приблизительно по ID аккаунта. Возможна погрешность в несколько месяцев."))
 
     return entries
 }
@@ -249,11 +249,11 @@ private final class AccountDetailArguments {
     }
 }
 
-public func accountDetailsController(context: AccountContext, userId: Int64, dcId: Int, title: String) -> ViewController {
+public func accountDetailsController(context: AccountContext, entityId: Int64, dcId: Int, title: String, kind: AorusDetailKind, creationDate: Int32) -> ViewController {
     weak var weakController: ItemListController?
 
     let arguments = AccountDetailArguments(copyId: {
-        UIPasteboard.general.string = "\(userId)"
+        UIPasteboard.general.string = "\(entityId)"
         UINotificationFeedbackGenerator().notificationOccurred(.success)
         guard let controller = weakController else { return }
         let alert = textAlertController(
@@ -268,7 +268,7 @@ public func accountDetailsController(context: AccountContext, userId: Int64, dcI
     let signal: Signal<(ItemListControllerState, (ItemListNodeState, Any)), NoError> = context.sharedContext.presentationData
         |> deliverOnMainQueue
         |> map { presentationData -> (ItemListControllerState, (ItemListNodeState, Any)) in
-            let entries = accountDetailEntries(theme: presentationData.theme, userId: userId, dcId: dcId)
+            let entries = accountDetailEntries(theme: presentationData.theme, entityId: entityId, dcId: dcId, kind: kind, creationDate: creationDate)
             let controllerState = ItemListControllerState(
                 presentationData: ItemListPresentationData(presentationData),
                 title: .text(title.isEmpty ? "Подробнее" : title),
