@@ -38,6 +38,7 @@ public final class AorusGramManager {
             let ud = UserDefaults.standard
             ud.set(ghostMode,           forKey: "aorusgram_ghost_mode")
             ud.set(saveDeletedMessages, forKey: "aorusgram_feature_deleted_messages")
+            ud.set(downloadAccel,       forKey: "aorusgram_feature_download_accel")
         }
         guard let d = UserDefaults.standard.dictionary(forKey: key) else { return }
         ghostMode           = d["ghostMode"]           as? Bool ?? false

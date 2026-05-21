@@ -317,7 +317,7 @@ func settingsItems(data: PeerInfoScreenData?, context: AccountContext, presentat
         }
     }
     
-    items[.support]!.append(PeerInfoScreenDisclosureItem(id: 99, text: "🔥 AorusGram", icon: PresentationResourcesSettings.security, action: {
+    items[.support]!.append(PeerInfoScreenDisclosureItem(id: 99, text: "Настройки AorusGram", icon: PresentationResourcesSettings.security, action: {
         interaction.openSettings(.aorusGram)
     }))
     items[.support]!.append(PeerInfoScreenDisclosureItem(id: 0, text: presentationData.strings.Settings_Support, icon: PresentationResourcesSettings.support, action: {

@@ -1129,17 +1129,40 @@ def patch_settings_entry_point(tg: Path) -> None:
 
 
 def patch_download_accelerator(tg: Path) -> None:
-    """Legacy hook for “download accelerator”.
+    """Raise MTProto multipart download concurrency when the accelerator is on.
 
-    Injecting UserDefaults scaffolding into TelegramCore multipart sources matched
-    fragile anchors and repeatedly broke Swift parsing (expected declaration) on
-    CI. The accelerator UI still writes UserDefaults keys; we no longer mutate
-    TelegramCore network sources here — keeps the client buildable and stable.
+    Telegram fetches large files with `parallelParts = 8` concurrent part
+    requests. When the "Ускоритель загрузок" toggle is enabled (flat key
+    aorusgram_feature_download_accel, written by AorusGramManager) we raise
+    that to 16 — the exact value Telegram itself already uses for small-file
+    fetches, so it is a safe, server-friendly bump that doubles concurrency on
+    big media (videos, documents, photos).
+
+    This is a single fully-anchored one-line replacement — no fragile
+    scaffolding, unlike the earlier attempt that broke Swift parsing on CI.
     """
-    print(
-        "DownloadAccelerator: skip TelegramCore file injection (anchor drift breaks builds); "
-        "UserDefaults keys from AorusGram UI remain for future / local experiments"
+    path = tg / "submodules/TelegramCore/Sources/Network/MultipartFetch.swift"
+    if not path.is_file():
+        print("DownloadAccelerator: MultipartFetch.swift not found — skipped")
+        return
+    t = path.read_text(encoding="utf-8")
+    if "aorusgram_feature_download_accel" in t:
+        print("DownloadAccelerator: already patched")
+        return
+    anchor = (
+        "                self.defaultPartSize = 512 * 1024\n"
+        "                self.parallelParts = 8\n"
     )
+    if anchor not in t:
+        print("DownloadAccelerator: parallelParts anchor not found — skipped")
+        return
+    replacement = (
+        "                self.defaultPartSize = 512 * 1024\n"
+        "                self.parallelParts = UserDefaults.standard.bool(forKey: \"aorusgram_feature_download_accel\") ? 16 : 8\n"
+    )
+    t = t.replace(anchor, replacement, 1)
+    path.write_text(t, encoding="utf-8")
+    print("DownloadAccelerator: parallelParts 8 -> 16 when accelerator enabled")
 
 
 def patch_ghost_mode_hooks(tg: Path) -> None:

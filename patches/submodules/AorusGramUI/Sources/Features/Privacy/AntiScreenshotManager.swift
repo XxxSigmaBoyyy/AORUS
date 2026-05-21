@@ -2,26 +2,24 @@ import UIKit
 
 // Anti-screenshot / anti-screen-recording.
 //
-// The trick: iOS treats anything inside a `UITextField`'s private secure-canvas
-// layer (created when `isSecureTextEntry = true`) as protected. Such content
-// renders normally to the user's display, but is BLANK in:
-//   - screen recordings
-//   - screenshots
-//   - AirPlay/screen mirroring
-//   - the app switcher snapshot
+// iOS treats anything inside a `UITextField`'s private secure-canvas layer
+// (created when `isSecureTextEntry = true`) as protected: it renders normally
+// to the user's display but is BLANK in screenshots, screen recordings,
+// AirPlay mirroring and the app-switcher snapshot.
 //
-// We exploit this by:
-//   1. Placing a separate AORUSGRAM-branded UIWindow BEHIND the main app
-//      window (`windowLevel = .normal - 100`). The user can't see it because
-//      the main window is on top.
-//   2. Re-parenting the main window's rootViewController.view layer INTO the
-//      secure canvas of a hidden text field. The user keeps seeing Telegram
-//      normally. But to a screen recording the protected layer is blank,
-//      so the recording captures the AORUSGRAM window UNDERNEATH instead.
+// Design — CONTINUOUS protection:
+//   The previous version installed the protection only while a recording was
+//   active or while the app was resigning active. That left ordinary
+//   screenshots unprotected (there is no "screenshot is about to happen"
+//   event) and the install/uninstall churn on every app switch corrupted the
+//   layer tree, producing a black screen on return.
 //
-// When the capture event ends we reverse the re-parenting and hide the
-// branding window. The result is: user always sees real Telegram; any
-// recording / screenshot / app-switcher snapshot only ever sees AORUSGRAM.
+//   This version installs the protection ONCE, as soon as the window is ready,
+//   and keeps it installed for the whole lifetime of the feature. Screenshots,
+//   recordings and the app-switcher snapshot are therefore all covered, and
+//   because the layer tree is never torn down on background/foreground there
+//   is no black-screen regression. On every foreground we only VERIFY the
+//   protection is still attached and rebuild it if iOS tore it down.
 final class AntiScreenshotManager {
     static let shared = AntiScreenshotManager()
     private init() {}
@@ -31,6 +29,9 @@ final class AntiScreenshotManager {
     private var protectedField: UITextField?
     private weak var protectedRootView: UIView?
     private weak var originalSuperlayer: CALayer?
+    private var retryCount = 0
+
+    // MARK: - Lifecycle
 
     func enable() {
         guard !isEnabled else { return }
@@ -38,101 +39,102 @@ final class AntiScreenshotManager {
         let nc = NotificationCenter.default
         nc.addObserver(self, selector: #selector(didTakeScreenshot),
                        name: UIApplication.userDidTakeScreenshotNotification, object: nil)
-        nc.addObserver(self, selector: #selector(screenCaptureDidChange),
-                       name: UIScreen.capturedDidChangeNotification, object: nil)
-        nc.addObserver(self, selector: #selector(willResignActive),
-                       name: UIApplication.willResignActiveNotification, object: nil)
-        nc.addObserver(self, selector: #selector(didBecomeActive),
+        nc.addObserver(self, selector: #selector(appDidBecomeActive),
                        name: UIApplication.didBecomeActiveNotification, object: nil)
-        if UIScreen.main.isCaptured {
-            applyProtection()
-        }
+        retryCount = 0
+        scheduleVerify(delay: 0.0)
     }
 
     func disable() {
         guard isEnabled else { return }
         isEnabled = false
         NotificationCenter.default.removeObserver(self)
-        removeProtection()
+        DispatchQueue.main.async { [weak self] in self?.uninstall() }
     }
 
+    // MARK: - Events
+
     @objc private func didTakeScreenshot() {
-        guard AorusGramConfig.isEnabled(.antiScreenshot) else { return }
+        guard isEnabled else { return }
         UINotificationFeedbackGenerator().notificationOccurred(.warning)
     }
 
-    @objc private func screenCaptureDidChange() {
-        guard AorusGramConfig.isEnabled(.antiScreenshot) else { return }
-        if UIScreen.main.isCaptured {
-            applyProtection()
-        } else {
-            removeProtection()
+    // Continuous protection is never torn down on background/foreground — that
+    // teardown is exactly what produced the black screen. Here we only confirm
+    // the protection survived (iOS can rebuild layer trees) and reinstall it if
+    // it was knocked out or the root view controller was replaced.
+    @objc private func appDidBecomeActive() {
+        guard isEnabled else { return }
+        retryCount = 0
+        scheduleVerify(delay: 0.0)
+    }
+
+    // MARK: - Install / verify
+
+    private func scheduleVerify(delay: TimeInterval) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            self?.verifyAndInstall()
         }
     }
 
-    // App switcher snapshot — iOS takes one when going inactive. Protection
-    // must be installed BEFORE the snapshot happens, so we install on
-    // willResignActive and uninstall on didBecomeActive (if not capturing).
-    @objc private func willResignActive() {
-        guard AorusGramConfig.isEnabled(.antiScreenshot) else { return }
-        applyProtection()
-    }
-
-    @objc private func didBecomeActive() {
-        if !UIScreen.main.isCaptured {
-            removeProtection()
-        }
-    }
-
-    // MARK: - Protection install / uninstall
-
-    private func applyProtection() {
-        DispatchQueue.main.async { [weak self] in
-            self?.installProtection()
-        }
-    }
-
-    private func removeProtection() {
-        DispatchQueue.main.async { [weak self] in
-            self?.uninstallProtection()
-        }
-    }
-
-    private func installProtection() {
-        guard protectedField == nil else { return }
+    private func verifyAndInstall() {
+        guard isEnabled else { return }
         guard let keyWindow = findKeyWindow(),
               let rootView = keyWindow.rootViewController?.view,
-              let scene = keyWindow.windowScene,
-              let parentLayer = rootView.layer.superlayer else { return }
+              let scene = keyWindow.windowScene else {
+            // Window not ready yet — retry a bounded number of times.
+            if retryCount < 30 {
+                retryCount += 1
+                scheduleVerify(delay: 0.5)
+            }
+            return
+        }
 
-        // 1. Background AORUSGRAM window — visible only to screen capture.
+        // Already protecting the current root view and still attached — the
+        // secure field auto-resizes itself, so there is nothing to rebuild.
+        if let field = protectedField,
+           field.superview === keyWindow,
+           protectedRootView === rootView,
+           rootView.layer.superlayer != nil {
+            brandingWindow?.isHidden = false
+            return
+        }
+
+        // First run, or the protection was torn down, or the root view
+        // controller changed — rebuild from a clean state.
+        uninstall()
+        install(keyWindow: keyWindow, rootView: rootView, scene: scene)
+    }
+
+    private func install(keyWindow: UIWindow, rootView: UIView, scene: UIWindowScene) {
+        guard let parentLayer = rootView.layer.superlayer else { return }
+
+        // 1. Branding window behind the main window — visible only to capture.
         let brand = UIWindow(windowScene: scene)
         brand.frame = keyWindow.bounds
         brand.windowLevel = UIWindow.Level.normal - 100
         brand.isUserInteractionEnabled = false
-        brand.backgroundColor = .white
+        brand.backgroundColor = .black
         let vc = UIViewController()
         vc.view = makeBrandingView(frame: brand.bounds)
         brand.rootViewController = vc
         brand.isHidden = false
         brandingWindow = brand
 
-        // 2. Secure text field — its private canvas layer is excluded from
-        //    screen capture by iOS. The field must be full-screen (NOT zero)
-        //    so its secure sublayer has proper bounds and doesn't clip content.
-        //    We make it completely transparent so the user never sees it.
+        // 2. Full-screen transparent secure text field. Its private canvas
+        //    layer is excluded from every capture path by iOS.
         let field = UITextField()
         field.isSecureTextEntry = true
         field.frame = keyWindow.bounds
+        field.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         field.backgroundColor = .clear
         field.borderStyle = .none
         field.textColor = .clear
         field.tintColor = .clear
         field.isUserInteractionEnabled = false
         keyWindow.addSubview(field)
+        keyWindow.bringSubviewToFront(field)
 
-        // Find the secure canvas layer (last sublayer of the field's layer).
-        // Bail out cleanly if iOS internals change and we can't find it.
         guard let secureLayer = field.layer.sublayers?.last else {
             field.removeFromSuperview()
             brand.isHidden = true
@@ -140,34 +142,31 @@ final class AntiScreenshotManager {
             return
         }
 
+        // 3. Re-parent the root view's layer into the secure canvas. The user
+        //    keeps seeing the app normally (Core Animation renders the layer),
+        //    but every capture pipeline blanks the canvas and records the
+        //    branding window underneath instead.
         originalSuperlayer = parentLayer
         protectedRootView = rootView
-
-        // 3. Re-parent rootView.layer INTO the secure canvas. To the user
-        //    this is invisible (CA renders the layer fine), but the screen
-        //    capture pipeline blanks it out.
         secureLayer.addSublayer(rootView.layer)
 
         protectedField = field
     }
 
-    private func uninstallProtection() {
-        guard let field = protectedField else {
-            brandingWindow?.isHidden = true
-            brandingWindow = nil
-            return
+    private func uninstall() {
+        if let rootView = protectedRootView {
+            // Return the root layer to a visible parent. Prefer the captured
+            // original superlayer; fall back to the key window's own layer so a
+            // teardown can never leave the screen black.
+            let target = originalSuperlayer ?? findKeyWindow()?.layer
+            if let target = target, rootView.layer.superlayer !== target {
+                target.insertSublayer(rootView.layer, at: 0)
+            }
         }
-
-        // Restore rootView.layer back to its original parent layer.
-        if let parent = originalSuperlayer, let view = protectedRootView {
-            parent.addSublayer(view.layer)
-        }
-        field.removeFromSuperview()
-
+        protectedField?.removeFromSuperview()
         protectedField = nil
         protectedRootView = nil
         originalSuperlayer = nil
-
         brandingWindow?.isHidden = true
         brandingWindow = nil
     }
@@ -175,8 +174,7 @@ final class AntiScreenshotManager {
     // MARK: - Helpers
 
     private func findKeyWindow() -> UIWindow? {
-        let scenes = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene })
-        // Prefer foreground active scene
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
         let active = scenes.first(where: { $0.activationState == .foregroundActive }) ?? scenes.first
         guard let scene = active else { return nil }
         return scene.windows.first(where: { $0.isKeyWindow }) ?? scene.windows.first
@@ -184,38 +182,39 @@ final class AntiScreenshotManager {
 
     private func makeBrandingView(frame: CGRect) -> UIView {
         let container = UIView(frame: frame)
-        container.backgroundColor = .white
+        container.backgroundColor = .black
+
+        let icon = UIImageView(image: UIImage(systemName: "lock.shield.fill"))
+        icon.tintColor = UIColor(red: 1.0, green: 0.42, blue: 0.0, alpha: 1.0)
+        icon.contentMode = .scaleAspectFit
+        icon.translatesAutoresizingMaskIntoConstraints = false
 
         let brand = UILabel()
         brand.text = "AORUSGRAM"
-        brand.font = UIFont.systemFont(ofSize: 44, weight: .black)
+        brand.font = UIFont.systemFont(ofSize: 40, weight: .black)
         brand.textAlignment = .center
-        brand.textColor = UIColor(red: 1.0, green: 0.42, blue: 0.0, alpha: 1.0)
+        brand.textColor = .white
         brand.translatesAutoresizingMaskIntoConstraints = false
 
         let handle = UILabel()
-        handle.text = "@aorusgram"
-        handle.font = UIFont.monospacedSystemFont(ofSize: 18, weight: .medium)
+        handle.text = "Защищённый контент"
+        handle.font = UIFont.systemFont(ofSize: 15, weight: .medium)
         handle.textAlignment = .center
-        handle.textColor = UIColor(white: 0.4, alpha: 1.0)
+        handle.textColor = UIColor(white: 0.55, alpha: 1.0)
         handle.translatesAutoresizingMaskIntoConstraints = false
 
-        let lock = UILabel()
-        lock.text = "🔒"
-        lock.font = UIFont.systemFont(ofSize: 56)
-        lock.textAlignment = .center
-        lock.translatesAutoresizingMaskIntoConstraints = false
-
-        container.addSubview(lock)
+        container.addSubview(icon)
         container.addSubview(brand)
         container.addSubview(handle)
 
         NSLayoutConstraint.activate([
-            lock.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-            lock.centerYAnchor.constraint(equalTo: container.centerYAnchor, constant: -80),
+            icon.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            icon.centerYAnchor.constraint(equalTo: container.centerYAnchor, constant: -70),
+            icon.widthAnchor.constraint(equalToConstant: 72),
+            icon.heightAnchor.constraint(equalToConstant: 72),
 
             brand.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-            brand.topAnchor.constraint(equalTo: lock.bottomAnchor, constant: 20),
+            brand.topAnchor.constraint(equalTo: icon.bottomAnchor, constant: 24),
 
             handle.centerXAnchor.constraint(equalTo: container.centerXAnchor),
             handle.topAnchor.constraint(equalTo: brand.bottomAnchor, constant: 10),
