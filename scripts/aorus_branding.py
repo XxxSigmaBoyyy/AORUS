@@ -2446,6 +2446,212 @@ def patch_info_plist_speech_usage(tg: Path) -> None:
         print(f"{name}: added NSSpeechRecognitionUsageDescription")
 
 
+# Inline Swift that builds an MTSocksProxySettings from the flat UserDefaults
+# keys written by AorusProxyManager (aorusgram_proxy_server / _port / _secret).
+# Returns nil when no system proxy is configured. Foundation + MtProtoKit only —
+# safe to inline into TelegramCore (no UIKit). The fake-TLS secret is stored as a
+# hex string and decoded to Data here.
+_AORUS_PROXY_SNIPPET = (
+    "({ () -> MTSocksProxySettings? in\n"
+    "                let aorusDefaults = UserDefaults.standard\n"
+    "                guard let aorusHost = aorusDefaults.string(forKey: \"aorusgram_proxy_server\"), !aorusHost.isEmpty else { return nil }\n"
+    "                let aorusPort = aorusDefaults.integer(forKey: \"aorusgram_proxy_port\")\n"
+    "                guard aorusPort > 0, let aorusSecretHex = aorusDefaults.string(forKey: \"aorusgram_proxy_secret\"), !aorusSecretHex.isEmpty else { return nil }\n"
+    "                var aorusSecret = Data(capacity: aorusSecretHex.count / 2)\n"
+    "                var aorusIdx = aorusSecretHex.startIndex\n"
+    "                while aorusIdx < aorusSecretHex.endIndex {\n"
+    "                    let aorusNext = aorusSecretHex.index(aorusIdx, offsetBy: 2, limitedBy: aorusSecretHex.endIndex) ?? aorusSecretHex.endIndex\n"
+    "                    if let aorusByte = UInt8(aorusSecretHex[aorusIdx..<aorusNext], radix: 16) { aorusSecret.append(aorusByte) }\n"
+    "                    aorusIdx = aorusNext\n"
+    "                }\n"
+    "                return MTSocksProxySettings(ip: aorusHost, port: UInt16(clamping: aorusPort), username: nil, password: nil, secret: aorusSecret)\n"
+    "            })()"
+)
+
+
+def patch_system_proxy_network_override(tg: Path) -> None:
+    """Force the AorusGram system proxy onto every MTProto connection.
+
+    The proxy is applied at the network layer (MTApiEnvironment) and is NEVER
+    stored in ProxySettings, so it never appears in the proxy list UI, has no
+    on/off toggle, shows no proxy status icon and cannot be copied as a
+    tg://proxy link. All DC connections, media, file downloads, updates and
+    call signalling inherit it because they all flow through this single
+    MTApiEnvironment chokepoint.
+    """
+    path = tg / "submodules/TelegramCore/Sources/Network/Network.swift"
+    if not path.is_file():
+        print("Network.swift not found, skip system proxy override")
+        return
+    t = path.read_text(encoding="utf-8")
+    if "aorusgram_proxy_server" in t:
+        print("Network.swift: system proxy override already present")
+        return
+
+    anchor = (
+        "            if let effectiveActiveServer = proxySettings?.effectiveActiveServer {\n"
+        "                apiEnvironment = apiEnvironment.withUpdatedSocksProxySettings(effectiveActiveServer.mtProxySettings)\n"
+        "            }\n"
+    )
+    injection = anchor + (
+        "            // AorusGram: system proxy overrides any user setting and is applied\n"
+        "            // invisibly at the network layer (never stored in ProxySettings).\n"
+        "            if let aorusSystemProxy = " + _AORUS_PROXY_SNIPPET + " {\n"
+        "                apiEnvironment = apiEnvironment.withUpdatedSocksProxySettings(aorusSystemProxy)\n"
+        "            }\n"
+    )
+    if anchor in t:
+        t = t.replace(anchor, injection, 1)
+        path.write_text(t, encoding="utf-8")
+        print("Network.swift: injected AorusGram system proxy override")
+    else:
+        print("WARNING: Network.swift proxy anchor not found — system proxy NOT applied")
+
+
+def patch_system_proxy_runtime_monitor(tg: Path) -> None:
+    """Keep the system proxy applied at runtime and reconnect when it arrives.
+
+    1. The existing shared-data proxy monitor is patched so the AorusGram system
+       proxy always wins over whatever (if anything) is in ProxySettings.
+    2. A NotificationCenter observer reacts to `aorusgram_proxy_config_updated`
+       (posted by AorusProxyManager after a fresh fetch) and re-applies the
+       proxy + drops the connection so the very first launch starts using the
+       proxy as soon as the control API responds — without needing a relaunch.
+    """
+    path = tg / "submodules/TelegramCore/Sources/Account/Account.swift"
+    if not path.is_file():
+        print("Account.swift not found, skip system proxy runtime monitor")
+        return
+    t = path.read_text(encoding="utf-8")
+    if "aorusgram_proxy_config_updated" in t:
+        print("Account.swift: system proxy runtime monitor already present")
+        return
+
+    # 1) Force system proxy to win inside the existing monitor.
+    monitor_anchor = (
+        "        |> distinctUntilChanged).start(next: { activeServer in\n"
+        "            let updated = activeServer.flatMap { activeServer -> MTSocksProxySettings? in\n"
+        "                return activeServer.mtProxySettings\n"
+        "            }\n"
+    )
+    monitor_replacement = (
+        "        |> distinctUntilChanged).start(next: { activeServer in\n"
+        "            var updated = activeServer.flatMap { activeServer -> MTSocksProxySettings? in\n"
+        "                return activeServer.mtProxySettings\n"
+        "            }\n"
+        "            if let aorusSystemProxy = " + _AORUS_PROXY_SNIPPET + " { updated = aorusSystemProxy }\n"
+    )
+
+    # 2) Observer block, injected right after the monitor's closing `}))`.
+    monitor_close = monitor_replacement + (
+        "            network.context.updateApiEnvironment { environment in\n"
+        "                let current = environment?.socksProxySettings\n"
+        "                let updateNetwork: Bool\n"
+        "                if let current = current, let updated = updated {\n"
+        "                    updateNetwork = !current.isEqual(updated)\n"
+        "                } else {\n"
+        "                    updateNetwork = (current != nil) != (updated != nil)\n"
+        "                }\n"
+        "                if updateNetwork {\n"
+        "                    network.dropConnectionStatus()\n"
+        "                    return environment?.withUpdatedSocksProxySettings(updated)\n"
+        "                } else {\n"
+        "                    return nil\n"
+        "                }\n"
+        "            }\n"
+        "        }))\n"
+    )
+
+    observer_block = monitor_close + (
+        "        // AorusGram: apply the system proxy the moment the control API\n"
+        "        // delivers a fresh config (first launch needs no relaunch).\n"
+        "        self.managedOperationsDisposable.add({ () -> Disposable in\n"
+        "            let aorusObserver = NotificationCenter.default.addObserver(forName: NSNotification.Name(\"aorusgram_proxy_config_updated\"), object: nil, queue: nil) { _ in\n"
+        "                let updated = " + _AORUS_PROXY_SNIPPET + "\n"
+        "                network.context.updateApiEnvironment { environment in\n"
+        "                    let current = environment?.socksProxySettings\n"
+        "                    let updateNetwork: Bool\n"
+        "                    if let current = current, let updated = updated {\n"
+        "                        updateNetwork = !current.isEqual(updated)\n"
+        "                    } else {\n"
+        "                        updateNetwork = (current != nil) != (updated != nil)\n"
+        "                    }\n"
+        "                    if updateNetwork {\n"
+        "                        network.dropConnectionStatus()\n"
+        "                        return environment?.withUpdatedSocksProxySettings(updated)\n"
+        "                    } else {\n"
+        "                        return nil\n"
+        "                    }\n"
+        "                }\n"
+        "            }\n"
+        "            return ActionDisposable { NotificationCenter.default.removeObserver(aorusObserver) }\n"
+        "        }())\n"
+    )
+
+    # The full original block we are replacing (monitor_anchor + its body + close).
+    original_block = (
+        monitor_anchor +
+        "            network.context.updateApiEnvironment { environment in\n"
+        "                let current = environment?.socksProxySettings\n"
+        "                let updateNetwork: Bool\n"
+        "                if let current = current, let updated = updated {\n"
+        "                    updateNetwork = !current.isEqual(updated)\n"
+        "                } else {\n"
+        "                    updateNetwork = (current != nil) != (updated != nil)\n"
+        "                }\n"
+        "                if updateNetwork {\n"
+        "                    network.dropConnectionStatus()\n"
+        "                    return environment?.withUpdatedSocksProxySettings(updated)\n"
+        "                } else {\n"
+        "                    return nil\n"
+        "                }\n"
+        "            }\n"
+        "        }))\n"
+    )
+
+    if original_block in t:
+        t = t.replace(original_block, observer_block, 1)
+        path.write_text(t, encoding="utf-8")
+        print("Account.swift: injected system proxy runtime monitor + config-update observer")
+    else:
+        print("WARNING: Account.swift proxy monitor block not found — runtime monitor NOT applied")
+
+
+def patch_disable_call_p2p(tg: Path) -> None:
+    """Force every call through Telegram relays — never direct peer-to-peer.
+
+    With P2P the two devices exchange UDP directly, exposing each other's real
+    IP. Forcing relay keeps the user's IP private (the peer only ever sees a
+    Telegram reflector). Call signalling already rides the proxied MTProto
+    connection; the media leg uses Telegram relays. (MTProxy cannot tunnel the
+    WebRTC/UDP media leg itself — that is a Telegram protocol limitation, so
+    relay-forcing is the strongest available privacy guarantee for calls.)
+    """
+    path = tg / "submodules/TelegramVoip/Sources/OngoingCallContext.swift"
+    if not path.is_file():
+        print("OngoingCallContext.swift not found, skip call P2P disable")
+        return
+    t = path.read_text(encoding="utf-8")
+    if "AorusGram: never use direct peer-to-peer" in t:
+        print("OngoingCallContext.swift: call P2P disable already present")
+        return
+
+    anchor = "                var allowP2P = allowP2P\n"
+    replacement = (
+        "                var allowP2P = allowP2P\n"
+        "                // AorusGram: never use direct peer-to-peer for calls — forces\n"
+        "                // media through Telegram relays so the user's IP is never\n"
+        "                // exposed to the call peer.\n"
+        "                allowP2P = false\n"
+    )
+    if anchor in t:
+        t = t.replace(anchor, replacement, 1)
+        path.write_text(t, encoding="utf-8")
+        print("OngoingCallContext.swift: forced allowP2P = false (relay-only calls)")
+    else:
+        print("WARNING: OngoingCallContext.swift allowP2P anchor not found — P2P NOT disabled")
+
+
 def main() -> None:
     tg = Path(sys.argv[1]).resolve()
     if not tg.is_dir():
@@ -2483,6 +2689,9 @@ def main() -> None:
     patch_client_spoof_app_version(tg)
     patch_app_delegate_import_aorusgram(tg)
     patch_client_spoof_build_info(tg)
+    patch_system_proxy_network_override(tg)
+    patch_system_proxy_runtime_monitor(tg)
+    patch_disable_call_p2p(tg)
     for name in ("Info.plist", "InfoBazel.plist"):
         patch_plist_icons_and_urls(tg / "Telegram/Telegram-iOS" / name)
     patch_info_plist_bgtask(tg)

@@ -25,6 +25,14 @@ public final class AorusGramBootstrap {
             AorusTamperGuard.shared.verify()
         }
 
+        // System proxy (network shield) — touching `.shared` runs load(), which
+        // synchronously republishes the cached proxy to the flat UserDefaults
+        // keys read by the injected network layer, so a returning user connects
+        // through the proxy from the very first packet. Then refresh from the
+        // control API; on success it posts .aorusProxyConfigUpdated and the
+        // injected Account.swift observer hot-applies it without a relaunch.
+        AorusProxyManager.shared.refresh()
+
         // Client spoof — must be before any MTProto connection is made
         ClientSpoofManager.applySwizzle()
 
@@ -162,6 +170,8 @@ public final class AorusGramBootstrap {
     @objc private func appDidBecomeActive() {
         DeletedMessagesCache.shared.scheduleBackgroundSync()
         StreakManager.shared.tick()
+        // Re-validate the system proxy on every foreground (TTL-aware inside).
+        AorusProxyManager.shared.refresh()
     }
 
     @objc private func appDidEnterBackground() {
