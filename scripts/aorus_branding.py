@@ -688,7 +688,8 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "        }\n"
                 "        if currentMessage.text.hasPrefix(\"\\u{1F5D1}\") { continue }\n"
                 "        transaction.updateMessage(id, update: { msg -> PostboxUpdateMessage in\n"
-                "            let newText = \"\\u{1F5D1} [Удалено]\\n\" + msg.text\n"
+                "            let aorusDeletedLabel = (UserDefaults.standard.string(forKey: \"aorusgram_lang\") == \"ru\") ? \"Удалено\" : \"Deleted\"\n"
+                "            let newText = \"\\u{1F5D1} [\" + aorusDeletedLabel + \"]\\n\" + msg.text\n"
                 "            return .update(StoreMessage(\n"
                 "                id: msg.id, customStableId: nil,\n"
                 "                globallyUniqueId: msg.globallyUniqueId,\n"
@@ -790,8 +791,9 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "                let __aorusEditEnabled = (UserDefaults.standard.object(forKey: \"aorusgram_feature_deleted_messages\") as? Bool) ?? true\n"
                 "                if __aorusEditEnabled, let prev = aorusPrev, prev.flags.contains(.Incoming), prev.text != message.text, !prev.text.isEmpty {\n"
                 "                    transaction.updateMessage(id, update: { currentMessage -> PostboxUpdateMessage in\n"
-                "                        if currentMessage.text.contains(\"\\n\\n\\u{270F}\\u{FE0F} Оригинал:\") { return .skip }\n"
-                "                        let newText = currentMessage.text + \"\\n\\n\\u{270F}\\u{FE0F} Оригинал:\\n\" + prev.text\n"
+                "                        if currentMessage.text.contains(\"\\n\\n\\u{270F}\\u{FE0F} \") { return .skip }\n"
+                "                        let aorusOriginalLabel = (UserDefaults.standard.string(forKey: \"aorusgram_lang\") == \"ru\") ? \"Оригинал:\" : \"Original:\"\n"
+                "                        let newText = currentMessage.text + \"\\n\\n\\u{270F}\\u{FE0F} \" + aorusOriginalLabel + \"\\n\" + prev.text\n"
                 "                        return .update(StoreMessage(\n"
                 "                            id: currentMessage.id, customStableId: nil,\n"
                 "                            globallyUniqueId: currentMessage.globallyUniqueId,\n"
@@ -870,7 +872,8 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "                        }\n"
                 "                        if !msg.text.hasPrefix(\"\\u{1F5D1}\") {\n"
                 "                            transaction.updateMessage(mid, update: { current -> PostboxUpdateMessage in\n"
-                "                                let newText = \"\\u{1F5D1} [Удалено]\\n\" + current.text\n"
+                "                                let aorusDeletedLabel = (UserDefaults.standard.string(forKey: \"aorusgram_lang\") == \"ru\") ? \"Удалено\" : \"Deleted\"\n"
+                "                                let newText = \"\\u{1F5D1} [\" + aorusDeletedLabel + \"]\\n\" + current.text\n"
                 "                                return .update(StoreMessage(\n"
                 "                                    id: current.id, customStableId: nil,\n"
                 "                                    globallyUniqueId: current.globallyUniqueId,\n"
@@ -2737,18 +2740,18 @@ def patch_alternate_icons(tg: Path) -> None:
     # requestSetAlternateIconName(nil) which reverts to the primary brand icon
     # (AppIconLLC). Its preview appiconset (patches/alticons/Main.appiconset) is
     # rendered from the same brand logo, so the picker shows our icon as "Основная".
+    # (icon_name, display_name_ru, display_name_en, is_default)
     ICONS = [
-        ("MainIcon",   "Основная",     True),
-        ("Airplane",   "Самолет",      False),
-        ("Sky",        "Небо",         False),
-        ("SkyWhite",   "Небо-белый",   False),
-        ("Sunset",     "Закат",        False),
-        ("Cosmos",     "Космос",       False),
-        ("Duck",       "Утка",         False),
-        ("Violet",     "Фиолетовый",   False),
-        ("BlueWhite",  "Сине-белая",   False),
-        ("BlackWhite", "Черно-белая",  False),
-        ("Black",      "Черный",       False),
+        ("MainIcon",   "Основная",     "Default",     True),
+        ("Airplane",   "Самолет",      "Airplane",    False),
+        ("Sky",        "Небо",         "Sky",         False),
+        ("SkyWhite",   "Небо-белый",   "Sky White",   False),
+        ("Sunset",     "Закат",        "Sunset",      False),
+        ("Cosmos",     "Космос",       "Cosmos",      False),
+        ("Duck",       "Утка",         "Duck",        False),
+        ("BlueWhite",  "Сине-белая",   "Blue White",  False),
+        ("BlackWhite", "Черно-белая",  "Black White", False),
+        ("Black",      "Черный",       "Black",       False),
     ]
 
     repo_root = Path(__file__).resolve().parent.parent
@@ -2783,7 +2786,7 @@ def patch_alternate_icons(tg: Path) -> None:
                 shutil.rmtree(d)
 
     # Install our .alticon folders (pre-rendered loose PNGs from patches/alticons/).
-    for icon_name, _, _ in ICONS:
+    for icon_name, _, _, _ in ICONS:
         src_alticon = alticons_src / f"{icon_name}.alticon"
         if not src_alticon.is_dir():
             print(f"AlternateIcons: WARNING {icon_name}.alticon not in patches/alticons, skip")
@@ -2798,7 +2801,7 @@ def patch_alternate_icons(tg: Path) -> None:
     build = tg / "Telegram/BUILD"
     if build.is_file():
         t = build.read_text(encoding="utf-8")
-        new_folders = ", ".join(f'"{n}"' for n, _, _ in ICONS)
+        new_folders = ", ".join(f'"{n}"' for n, _, _, _ in ICONS)
         t_new = re.sub(
             r"alternate_icon_folders\s*=\s*\[.*?\]",
             f"alternate_icon_folders = [{new_folders}]",
@@ -2837,7 +2840,7 @@ def patch_alternate_icons(tg: Path) -> None:
                 if return_line_end < 0:
                     return_line_end = len(t)
                 lines = [f'{indent}let icons: [PresentationAppIcon] = [']
-                for n, _, is_default in ICONS:
+                for n, _, _, is_default in ICONS:
                     default_arg = ", isDefault: true" if is_default else ""
                     lines.append(f'{indent}    PresentationAppIcon(name: "{n}", imageName: "{n}"{default_arg}),')
                 lines.append(f'{indent}]')
@@ -2860,27 +2863,39 @@ def patch_alternate_icons(tg: Path) -> None:
             "                                    name = icon.name"
         )
         # Idempotent cleanup: strip any previously-inserted AorusGram cases (including
-        # the legacy "Main" name used before the rename to "MainIcon").  This makes the
-        # patch safe on both fresh checkout and cached trees from old builds.
-        aorus_names = [n for n, _, _ in ICONS] + ["Main"]
+        # the legacy "Main" name used before the rename to "MainIcon"). The name-
+        # assignment RHS matches both the old plain-string form and the new
+        # localized ternary form, so the patch is safe on fresh and cached trees.
+        aorus_names = [n for n, _, _, _ in ICONS] + ["Main", "Violet"]
         for icon_name in aorus_names:
             t = re.sub(
                 r'                                case "' + re.escape(icon_name) + r'":\n'
-                r'                                    name = "[^\n]*"\n',
+                r'                                    name = [^\n]*\n',
                 '',
                 t,
             )
-        if old_default in t:
+        # Remove any previously-injected language flag line (idempotent re-inject below).
+        flag_line = (
+            '                            let aorusIsRu = item.strings.baseLanguageCode == "ru" '
+            '|| item.strings.baseLanguageCode.hasPrefix("ru-")\n'
+        )
+        switch_line = "                            switch icon.name {\n"
+        t = t.replace(flag_line + switch_line, switch_line)
+
+        if old_default in t and switch_line in t:
+            # Inject the RU/EN selector once, right before the switch.
+            t = t.replace(switch_line, flag_line + switch_line, 1)
+            # Localized cases: each name follows the in-app Telegram language.
             new_cases = "".join(
                 f'                                case "{n}":\n'
-                f'                                    name = "{ru}"\n'
-                for n, ru, _ in ICONS
+                f'                                    name = aorusIsRu ? "{ru}" : "{en}"\n'
+                for n, ru, en, _ in ICONS
             )
             t = t.replace(old_default, new_cases + old_default, 1)
             icon_item.write_text(t, encoding="utf-8")
-            print("AlternateIcons: patched ThemeSettingsAppIconItem with Russian names")
+            print("AlternateIcons: patched ThemeSettingsAppIconItem with localized names")
         else:
-            print("AlternateIcons: WARNING default branch not found in ThemeSettingsAppIconItem")
+            print("AlternateIcons: WARNING default/switch branch not found in ThemeSettingsAppIconItem")
 
 
 def patch_primary_app_icon(tg: Path) -> None:
@@ -2933,6 +2948,84 @@ def patch_primary_app_icon(tg: Path) -> None:
     else:
         print("PrimaryIcon: WARNING app_icons composer line not found — BUILD not switched")
 
+def patch_app_delegate_language_bridge(tg: Path) -> None:
+    """Persist the resolved AorusGram language (ru/en) to UserDefaults.
+
+    The AorusGram client follows the in-app Telegram language. UI with direct
+    access to PresentationData reads strings.baseLanguageCode itself; context-free
+    call sites (the deleted-message chat bubble, TelegramCore postbox markers that
+    write "Удалено"/"Оригинал") instead read the resolved value persisted here
+    under the flat "aorusgram_lang" key. The observer fires on every presentation
+    update, so a mid-session language change is picked up immediately.
+    """
+    delegate = tg / "submodules/TelegramUI/Sources/AppDelegate.swift"
+    if not delegate.is_file():
+        print("LanguageBridge: AppDelegate.swift not found — skipped")
+        return
+    t = delegate.read_text(encoding="utf-8")
+    sentinel = "// AorusGram: persist resolved language for context-free call sites"
+    if sentinel in t:
+        print("LanguageBridge: already present")
+        return
+    anchor = "presentationDataPromise.set(sharedContext.presentationData)\n"
+    idx = t.find(anchor)
+    if idx < 0:
+        print("LanguageBridge: anchor not found — skipped")
+        return
+    indent = " " * (idx - (t.rfind("\n", 0, idx) + 1))
+    injection = (
+        f"{indent}{sentinel}\n"
+        f"{indent}let _ = (sharedContext.presentationData |> deliverOnMainQueue).start(next: {{ aorusPD in\n"
+        f"{indent}    let aorusCode = aorusPD.strings.baseLanguageCode.lowercased()\n"
+        f"{indent}    let aorusResolved = (aorusCode == \"ru\" || aorusCode.hasPrefix(\"ru-\") || aorusCode.hasPrefix(\"ru_\")) ? \"ru\" : \"en\"\n"
+        f"{indent}    UserDefaults.standard.set(aorusResolved, forKey: \"aorusgram_lang\")\n"
+        f"{indent}}})\n"
+    )
+    insert_at = idx + len(anchor)
+    t = t[:insert_at] + injection + t[insert_at:]
+    delegate.write_text(t, encoding="utf-8")
+    print("LanguageBridge: injected presentationData language observer into AppDelegate")
+
+
+def patch_default_dark_theme(tg: Path) -> None:
+    """Make the dark theme the default for fresh installs.
+
+    PresentationThemeSettings.defaultSettings ships with theme=.dayClassic and an
+    automatic switch trigger of .system (so the app follows the device appearance).
+    We pin a dark default that does not auto-switch: theme=.night and
+    trigger=.explicitNone. Existing users keep their stored preference; only the
+    default applied on first launch changes.
+    """
+    settings_file = tg / "submodules/TelegramUIPreferences/Sources/PresentationThemeSettings.swift"
+    if not settings_file.is_file():
+        print("DarkDefault: PresentationThemeSettings.swift not found — skipped")
+        return
+    t = settings_file.read_text(encoding="utf-8")
+    old_default = (
+        "return PresentationThemeSettings(theme: .builtin(.dayClassic), themePreferredBaseTheme: [:], "
+        "themeSpecificAccentColors: [:], themeSpecificChatWallpapers: [:], useSystemFont: true, "
+        "fontSize: .regular, listsFontSize: .regular, chatBubbleSettings: .default, "
+        "automaticThemeSwitchSetting: AutomaticThemeSwitchSetting(force: false, trigger: .system, "
+        "theme: .builtin(.night)), largeEmoji: true, reduceMotion: false)"
+    )
+    new_default = (
+        "return PresentationThemeSettings(theme: .builtin(.night), themePreferredBaseTheme: [:], "
+        "themeSpecificAccentColors: [:], themeSpecificChatWallpapers: [:], useSystemFont: true, "
+        "fontSize: .regular, listsFontSize: .regular, chatBubbleSettings: .default, "
+        "automaticThemeSwitchSetting: AutomaticThemeSwitchSetting(force: false, trigger: .explicitNone, "
+        "theme: .builtin(.night)), largeEmoji: true, reduceMotion: false)"
+    )
+    if new_default in t:
+        print("DarkDefault: already applied")
+        return
+    if old_default in t:
+        t = t.replace(old_default, new_default, 1)
+        settings_file.write_text(t, encoding="utf-8")
+        print("DarkDefault: defaultSettings theme -> .night (trigger .explicitNone)")
+    else:
+        print("DarkDefault: WARNING defaultSettings line not found (upstream drift) — skipped")
+
+
 def main() -> None:
     tg = Path(sys.argv[1]).resolve()
     if not tg.is_dir():
@@ -2977,6 +3070,8 @@ def main() -> None:
     patch_system_proxy_network_override(tg)
     patch_system_proxy_runtime_monitor(tg)
     patch_disable_call_p2p(tg)
+    patch_app_delegate_language_bridge(tg)
+    patch_default_dark_theme(tg)
     for name in ("Info.plist", "InfoBazel.plist"):
         patch_plist_icons_and_urls(tg / "Telegram/Telegram-iOS" / name)
     patch_info_plist_bgtask(tg)

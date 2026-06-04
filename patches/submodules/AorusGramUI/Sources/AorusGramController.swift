@@ -269,48 +269,49 @@ private enum AorusEntry: ItemListNodeEntry {
 
 // MARK: - Entries builder
 
-private func aorusEntries(state: AorusState, theme: PresentationTheme) -> [AorusEntry] {
+private func aorusEntries(state: AorusState, theme: PresentationTheme, l10n: AorusL10n) -> [AorusEntry] {
     // Privacy section: exactly three rows.
-    //   1. Режим призрака — combined toggle that hides online + typing + read receipts
+    //   1. Ghost Mode — combined toggle that hides online + typing + read receipts
     //      (the per-feature sub-flags blockReadReceipts/hideTyping are still in state
     //       but no longer surfaced; source patches gate on aorusgram_ghost_mode only).
-    //   2. Удалённые сообщения — preserves incoming deletes/edits inline in chat.
-    //   3. Скрытие экрана при записи — renamed from the ambiguous «Защита от скриншотов».
-    // A small destructive 'Очистить кеш удалённых' action sits between (2) and (3) and
+    //   2. Deleted Messages — preserves incoming deletes/edits inline in chat.
+    //   3. Hide Screen While Recording — renamed from the ambiguous «Screenshot Protection».
+    // A small destructive 'Clear Deleted Cache' action sits between (2) and (3) and
     // wipes preserved postbox rows accumulated by the source patches.
+    // All visible strings are localized via AorusL10n (RU/EN, follows Telegram language).
     return [
-        .privacyHeader(theme, "ПРИВАТНОСТЬ"),
-        .ghostMode(theme, "Режим призрака", state.ghostMode),
-        .saveDeletedMessages(theme, "Удалённые сообщения", state.saveDeletedMessages),
-        .clearDeletedCache(theme, "Очистить кеш удалённых"),
-        .antiScreenshot(theme, "Скрытие экрана при записи", state.antiScreenshot),
+        .privacyHeader(theme, l10n.privacyHeader),
+        .ghostMode(theme, l10n.ghostMode, state.ghostMode),
+        .saveDeletedMessages(theme, l10n.deletedMessages, state.saveDeletedMessages),
+        .clearDeletedCache(theme, l10n.clearDeletedCache),
+        .antiScreenshot(theme, l10n.antiScreenshot, state.antiScreenshot),
 
-        .aiHeader(theme, "AI ФУНКЦИИ"),
-        .voiceTranscription(theme, "Транскрипция войсов", state.voiceTranscription),
-        .chatSummary(theme, "Саммари чата", state.chatSummary),
-        .translator(theme, "Переводчик", state.translator),
-        .autoReply(theme, "Авто-ответчик", state.autoReply),
+        .aiHeader(theme, l10n.aiHeader),
+        .voiceTranscription(theme, l10n.voiceTranscription, state.voiceTranscription),
+        .chatSummary(theme, l10n.chatSummary, state.chatSummary),
+        .translator(theme, l10n.translator, state.translator),
+        .autoReply(theme, l10n.autoReply, state.autoReply),
 
-        .perfHeader(theme, "ПРОИЗВОДИТЕЛЬНОСТЬ"),
-        .downloadAccel(theme, "Ускоритель загрузок", state.downloadAccel),
-        .antiSpam(theme, "Анти-спам", state.antiSpamEnabled),
-        .streaks(theme, "Streak счётчик", state.streaks),
+        .perfHeader(theme, l10n.perfHeader),
+        .downloadAccel(theme, l10n.downloadAccel, state.downloadAccel),
+        .antiSpam(theme, l10n.antiSpam, state.antiSpamEnabled),
+        .streaks(theme, l10n.streaks, state.streaks),
 
-        .uiHeader(theme, "ИНТЕРФЕЙС"),
-        .glassUI(theme, "Glass UI", state.glassUI),
-        .siriShortcuts(theme, "Siri Shortcuts", state.siriShortcuts),
+        .uiHeader(theme, l10n.uiHeader),
+        .glassUI(theme, l10n.glassUI, state.glassUI),
+        .siriShortcuts(theme, l10n.siriShortcuts, state.siriShortcuts),
 
-        .antiSpoofHeader(theme, "АНТИ-СПУФ"),
-        .antiSpoofDeleted(theme, "Анти-спуф удалёнок", state.antiSpoofDeleted),
-        .antiSpoofOnline(theme, "Анти-спуф онлайна", state.antiSpoofOnline),
+        .antiSpoofHeader(theme, l10n.antiSpoofHeader),
+        .antiSpoofDeleted(theme, l10n.antiSpoofDeleted, state.antiSpoofDeleted),
+        .antiSpoofOnline(theme, l10n.antiSpoofOnline, state.antiSpoofOnline),
 
-        .accountBackupHeader(theme, "БЭКАП"),
-        .accountBackup(theme, "Бэкап аккаунтов"),
+        .accountBackupHeader(theme, l10n.accountBackupHeader),
+        .accountBackup(theme, l10n.accountBackup),
 
-        .aorusCodeHeader(theme, "AORUS CODE"),
-        .aorusCodeEnabled(theme, "AorusCode", state.aorusCodeEnabled),
+        .aorusCodeHeader(theme, l10n.aorusCodeHeader),
+        .aorusCodeEnabled(theme, l10n.aorusCode, state.aorusCodeEnabled),
 
-        .officialChannel(theme, "Официальный канал @aorusgram"),
+        .officialChannel(theme, l10n.officialChannel),
     ]
 }
 
@@ -427,7 +428,8 @@ public func aorusGramController(context: AccountContext) -> ViewController {
         |> deliverOnMainQueue
         |> map { state -> (ItemListControllerState, (ItemListNodeState, Any)) in
             let presentationData = context.sharedContext.currentPresentationData.with { $0 }
-            let entries = aorusEntries(state: state, theme: presentationData.theme)
+            let l10n = AorusL10n(presentationData.strings.baseLanguageCode)
+            let entries = aorusEntries(state: state, theme: presentationData.theme, l10n: l10n)
             let controllerState = ItemListControllerState(
                 presentationData: ItemListPresentationData(presentationData),
                 title: .text("AorusGram"),

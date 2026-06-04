@@ -102,16 +102,17 @@ public final class DeletedMessageBubbleView: UIView {
         nameLabel.isHidden = msg.senderName.isEmpty
 
         if msg.text.isEmpty {
-            textLabel.text = "Медиафайл"
+            textLabel.text = (AorusLang.current == .ru) ? "Медиафайл" : "Media"
             textLabel.font = .italicSystemFont(ofSize: 14)
         } else {
             textLabel.text = msg.text
             textLabel.font = .systemFont(ofSize: 14)
         }
 
+        let aorusL10n = AorusL10n.current
         let formatter = RelativeDateTimeFormatter()
-        formatter.locale = Locale(identifier: "ru_RU")
-        timeLabel.text = "Удалено " + formatter.localizedString(for: msg.deletedAt, relativeTo: Date())
+        formatter.locale = Locale(identifier: aorusL10n.lang == .ru ? "ru_RU" : "en_US")
+        timeLabel.text = aorusL10n.deletedPrefix + formatter.localizedString(for: msg.deletedAt, relativeTo: Date())
 
         // Если своё исходящее — выравниваем вправо
         if msg.isOutgoing {
