@@ -37,8 +37,8 @@ def main() -> None:
     for k in pl:
         if isinstance(k, str) and k.startswith("CFBundleIcons"):
             name = pl[k].get("CFBundlePrimaryIcon", {}).get("CFBundleIconName")
-            if name != "BlueIcon":
-                err.append(f"{k} primary CFBundleIconName expected BlueIcon, got {name!r}")
+            if name != "AppIconLLC":
+                err.append(f"{k} primary CFBundleIconName expected AppIconLLC, got {name!r}")
     schemes = pl.get("CFBundleURLTypes", [{}])[0].get("CFBundleURLSchemes", [])
     if schemes != ["aorusgram"]:
         err.append(f"First CFBundleURLSchemes expected ['aorusgram'], got {schemes}")
@@ -52,8 +52,6 @@ def main() -> None:
     t = ad.read_text(encoding="utf-8")
     if "AorusgramGroupFallback" not in t:
         err.append("AppDelegate: missing App Group sandbox fallback (AltStore / no shared container)")
-    if 'setAlternateIconName("Blue"' not in t:
-        err.append('AppDelegate: missing setAlternateIconName("Blue") for branded home-screen icon')
     if "self.nativeWindow = window\n        self.window?.makeKeyAndVisible()" not in t:
         err.append("AppDelegate: missing early makeKeyAndVisible after window wiring")
     # Accept either the legacy guard pattern or the improved hasAppGroup pattern

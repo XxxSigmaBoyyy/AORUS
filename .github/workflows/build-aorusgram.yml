@@ -30,7 +30,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: telegram-ios
-          key: tg-ios-src-v21-aorus-proxy
+          key: tg-ios-src-v22-alticons
 
       - name: Clone Telegram iOS
         if: steps.tg-cache.outputs.cache-hit != 'true'
@@ -360,21 +360,7 @@ jobs:
           p.write_text(t, encoding="utf-8")
           print("AppDelegate: forced import AorusGram (post-branding)")
           PY
-          MASTER=aorusgram/patches/assets/AorusGramAppIcon.png
-          bash aorusgram/scripts/fill_blue_icon_appiconset.sh "$MASTER" \
-            telegram-ios/Telegram/Telegram-iOS/AppIcons.xcassets/BlueIcon.appiconset
-          # Alternate icon "Blue" uses BlueIcon.alticon PNGs (not AppIcon.appiconset).
-          ALT="telegram-ios/Telegram/Telegram-iOS/BlueIcon.alticon"
-          if [ -d "$ALT" ]; then
-            for png in "$ALT"/*.png; do
-              [ -f "$png" ] || continue
-              W=$(sips -g pixelWidth "$png" 2>/dev/null | awk '/pixelWidth:/ {print $2}')
-              H=$(sips -g pixelHeight "$png" 2>/dev/null | awk '/pixelHeight:/ {print $2}')
-              if [ -n "$W" ] && [ -n "$H" ]; then
-                sips -z "$H" "$W" "$MASTER" --out "$png" >/dev/null && echo "  alticon $(basename "$png") -> ${W}x${H}"
-              fi
-            done
-          fi
+          # Alternate icons are handled by patch_alternate_icons() in aorus_branding.py.
           # Belt-and-suspenders (xcconfig APP_NAME + explicit plist literals)
           PLIST="telegram-ios/Telegram/Telegram-iOS/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Aorusgram" "$PLIST" 2>/dev/null || true
