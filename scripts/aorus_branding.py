@@ -2859,7 +2859,18 @@ def patch_alternate_icons(tg: Path) -> None:
             "                                default:\n"
             "                                    name = icon.name"
         )
-        if old_default in t and 'case "MainIcon"' not in t:
+        # Idempotent cleanup: strip any previously-inserted AorusGram cases (including
+        # the legacy "Main" name used before the rename to "MainIcon").  This makes the
+        # patch safe on both fresh checkout and cached trees from old builds.
+        aorus_names = [n for n, _, _ in ICONS] + ["Main"]
+        for icon_name in aorus_names:
+            t = re.sub(
+                r'                                case "' + re.escape(icon_name) + r'":\n'
+                r'                                    name = "[^\n]*"\n',
+                '',
+                t,
+            )
+        if old_default in t:
             new_cases = "".join(
                 f'                                case "{n}":\n'
                 f'                                    name = "{ru}"\n'
@@ -2868,8 +2879,6 @@ def patch_alternate_icons(tg: Path) -> None:
             t = t.replace(old_default, new_cases + old_default, 1)
             icon_item.write_text(t, encoding="utf-8")
             print("AlternateIcons: patched ThemeSettingsAppIconItem with Russian names")
-        elif 'case "MainIcon"' in t:
-            print("AlternateIcons: ThemeSettingsAppIconItem already patched")
         else:
             print("AlternateIcons: WARNING default branch not found in ThemeSettingsAppIconItem")
 
