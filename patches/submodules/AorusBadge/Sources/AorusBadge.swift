@@ -66,14 +66,14 @@ public enum AorusBadge {
     // neat, understated label rather than grabbing attention.
     private static func devImage(height: CGFloat, accent: UIColor) -> UIImage? {
         let h = max(12.0, height)
-        let tagH = floor(h * 0.72)
-        let fontSize = floor(tagH * 0.6)
+        let tagH = floor(h * 0.9)
+        let fontSize = floor(tagH * 0.62)
         let font = UIFont.systemFont(ofSize: fontSize, weight: .medium)
         let text = "DEV" as NSString
         let textAttrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: accent, .kern: 0.3]
         let textSize = text.size(withAttributes: textAttrs)
-        let hInset = floor(tagH * 0.34)
-        let lineWidth = max(1.0, h * 0.05)
+        let hInset = floor(tagH * 0.3)
+        let lineWidth = max(1.0, h * 0.06)
         let tagW = ceil(textSize.width + hInset * 2.0)
         let size = CGSize(width: tagW, height: h)
 
