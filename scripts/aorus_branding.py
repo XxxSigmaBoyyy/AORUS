@@ -3291,23 +3291,34 @@ def patch_aorus_badges(tg: Path) -> None:
         print("Badges: PeerInfoHeaderNode.swift not found — skipped")
 
     # --- 2d. Member lists / search / contacts (ItemListPeerItem, ContactsPeerItem) ---
-    # Badge must appear AFTER the name (to the right). The layout puts `verifiedIcon`
-    # BEFORE the title (left side, shifts title right), while `credibilityIcon` /
-    # `credibilityStatusIcon` goes AFTER the title (right side). We use the latter so
-    # the badge appears after the name — and after any premium/verified icon.
+    # Badge must appear AFTER the name AND after any Telegram Premium badge.
+    #
+    # ContactsPeerItem (people search): premium lives in `credibilityStatusIcon`,
+    # which renders right after the name. There is a SEPARATE `emojiStatusIcon`
+    # slot that renders immediately after `credibilityStatusIcon`, so we put the
+    # AorusGram badge there (only when empty, to preserve a real emoji status) —
+    # giving the order: name → premium → DEV/cat.
+    #
+    # ItemListPeerItem (member lists) has only one after-name slot (`credibilityIcon`),
+    # so the badge goes there. These internal accounts aren't premium, so nothing is
+    # visually replaced in practice.
+    #
+    # Each tuple: (source, BUILD, anchor, peer_expr, target_var, guard_prefix)
     peer_items = [
         ("submodules/ItemListPeerItem/Sources/ItemListPeerItem.swift",
          "submodules/ItemListPeerItem/BUILD",
          "                if item.peer.isVerified {",
          "item.peer",
-         "credibilityIcon"),
+         "credibilityIcon",
+         ""),
         ("submodules/ContactsPeerItem/Sources/ContactsPeerItem.swift",
          "submodules/ContactsPeerItem/BUILD",
          "                    if peer.isVerified {",
          "peer",
-         "credibilityStatusIcon"),
+         "emojiStatusIcon",
+         "emojiStatusIcon == nil, "),
     ]
-    for rel, build_rel, anchor, peer_expr, cred_var in peer_items:
+    for rel, build_rel, anchor, peer_expr, cred_var, guard in peer_items:
         f = tg / rel
         if not f.is_file():
             print(f"Badges: {rel} not found — skipped")
@@ -3316,17 +3327,17 @@ def patch_aorus_badges(tg: Path) -> None:
         if "import AorusBadge" not in t:
             t = t.replace("import Foundation\n", "import Foundation\nimport AorusBadge\n", 1)
         indent = anchor[: len(anchor) - len(anchor.lstrip())]
-        marker = f"if let aorusBadgeImage = AorusBadge.image(forPeerRawId: {peer_expr}.id.id._internalGetInt64Value()"
+        marker = f"let aorusBadgeImage = AorusBadge.image(forPeerRawId: {peer_expr}.id.id._internalGetInt64Value()"
         if marker not in t and ("\n" + anchor) in t:
             inject = (
-                f"\n{indent}if let aorusBadgeImage = AorusBadge.image(forPeerRawId: {peer_expr}.id.id._internalGetInt64Value(), height: 16.0, accent: item.presentationData.theme.list.itemAccentColor) {{\n"
+                f"\n{indent}if {guard}let aorusBadgeImage = AorusBadge.image(forPeerRawId: {peer_expr}.id.id._internalGetInt64Value(), height: 16.0, accent: item.presentationData.theme.list.itemAccentColor) {{\n"
                 f"{indent}    {cred_var} = .image(image: aorusBadgeImage, tintColor: nil)\n"
                 f"{indent}}}\n"
                 f"{anchor}"
             )
             t = t.replace("\n" + anchor, inject, 1)
         f.write_text(t, encoding="utf-8")
-        print(f"Badges: patched {rel.split('/')[-1]} (member list / search badge, after name)")
+        print(f"Badges: patched {rel.split('/')[-1]} (member list / search badge, after name+premium)")
         bf = tg / build_rel
         if bf.is_file():
             bt = bf.read_text(encoding="utf-8")
