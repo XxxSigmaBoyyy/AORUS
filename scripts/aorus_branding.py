@@ -3063,32 +3063,60 @@ def patch_aorus_badges(tg: Path) -> None:
     else:
         print("Badges: PeerUtils.swift not found — skipped")
 
-    # --- 2. DEV / meme badge image in chat-list & search rows ---
+    # --- 2. DEV / meme badge image + tap→toast in chat-list & search rows ---
     chat_list_item = tg / "submodules/ChatListUI/Sources/Node/ChatListItem.swift"
     if chat_list_item.is_file():
         t = chat_list_item.read_text(encoding="utf-8")
         if "import AorusBadge" not in t:
             t = t.replace("import Foundation\n", "import Foundation\nimport AorusBadge\n", 1)
-        # Inject before each `if peer.isVerified {` (two indentation variants).
-        for indent in ("                            ", "                    "):
-            anchor = f"{indent}if peer.isVerified {{"
-            inject = (
-                f"{indent}if currentVerifiedIconContent == nil, let aorusBadgeImage = AorusBadge.image(forPeerRawId: peer.id.id._internalGetInt64Value(), height: 16.0, accent: item.presentationData.theme.list.itemAccentColor) {{\n"
-                f"{indent}    currentVerifiedIconContent = .image(image: aorusBadgeImage, tintColor: nil)\n"
-                f"{indent}}}\n"
-                f"{anchor}"
+        # Capture vars for the tap toast (declared next to the icon-content vars).
+        decl_anchor = "            var currentStatusIconContent: EmojiStatusComponent.Content?\n"
+        if "var aorusBadgeToastText" not in t and decl_anchor in t:
+            t = t.replace(
+                decl_anchor,
+                decl_anchor
+                + "            var aorusBadgeToastImage: UIImage?\n"
+                + "            var aorusBadgeToastText: String?\n",
+                1,
             )
-            if "AorusBadge.image(forPeerRawId:" in t and anchor not in t:
-                # already injected for this variant (anchor consumed) — skip
-                pass
-            # Idempotency: only inject if our line isn't already directly above this anchor
-            marker = f"{indent}    currentVerifiedIconContent = .image(image: aorusBadgeImage, tintColor: nil)\n{indent}}}\n{anchor}"
-            if marker in t:
+        # Inject before each `if peer.isVerified {` (two indentation variants).
+        # Anchors/markers are newline-prefixed so a shorter indent never matches as
+        # a leading-space substring of a deeper-indented injected line.
+        for indent in ("                            ", "                    "):
+            anchor = f"\n{indent}if peer.isVerified {{"
+            inject_marker = f"\n{indent}if currentVerifiedIconContent == nil, let aorusBadgeImage = AorusBadge.image(forPeerRawId:"
+            inject = (
+                f"\n{indent}if currentVerifiedIconContent == nil, let aorusBadgeImage = AorusBadge.image(forPeerRawId: peer.id.id._internalGetInt64Value(), height: 16.0, accent: item.presentationData.theme.list.itemAccentColor) {{\n"
+                f"{indent}    currentVerifiedIconContent = .image(image: aorusBadgeImage, tintColor: nil)\n"
+                f"{indent}    aorusBadgeToastImage = aorusBadgeImage\n"
+                f"{indent}    aorusBadgeToastText = AorusBadge.toastText(forPeerRawId: peer.id.id._internalGetInt64Value(), peerName: peer.displayTitle(strings: item.presentationData.strings, displayOrder: item.presentationData.nameDisplayOrder))\n"
+                f"{indent}}}\n"
+                f"{indent}if peer.isVerified {{"
+            )
+            if inject_marker in t:
                 continue
             if anchor in t:
                 t = t.replace(anchor, inject, 1)
+        # Wire tap action on the verified-icon component (unique block via the
+        # following `strongSelf.verifiedIconComponent =` assignment).
+        action_anchor = (
+            "                            content: currentVerifiedIconContent,\n"
+            "                            isVisibleForAnimations: strongSelf.visibilityStatus && item.context.sharedContext.energyUsageSettings.loopEmoji,\n"
+            "                            action: nil\n"
+            "                        )\n"
+            "                        strongSelf.verifiedIconComponent = verifiedIconComponent"
+        )
+        action_new = (
+            "                            content: currentVerifiedIconContent,\n"
+            "                            isVisibleForAnimations: strongSelf.visibilityStatus && item.context.sharedContext.energyUsageSettings.loopEmoji,\n"
+            "                            action: aorusBadgeToastText != nil ? { AorusBadgeToast.present(icon: aorusBadgeToastImage, text: aorusBadgeToastText ?? \"\", accent: item.presentationData.theme.list.itemAccentColor) } : nil\n"
+            "                        )\n"
+            "                        strongSelf.verifiedIconComponent = verifiedIconComponent"
+        )
+        if action_anchor in t:
+            t = t.replace(action_anchor, action_new, 1)
         chat_list_item.write_text(t, encoding="utf-8")
-        print("Badges: patched ChatListItem (DEV/meme image in verified slot)")
+        print("Badges: patched ChatListItem (DEV/meme image + tap→toast in verified slot)")
     else:
         print("Badges: ChatListItem.swift not found — skipped")
 
