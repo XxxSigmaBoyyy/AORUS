@@ -3181,6 +3181,7 @@ def patch_aorus_badges(tg: Path) -> None:
                 prop_anchor,
                 prop_anchor
                 + "    var aorusBadgeView: AorusTappableBadgeView?\n"
+                + "    var aorusBadgeExpandedView: AorusTappableBadgeView?\n"
                 + "    var aorusBadgeRawId: Int64?\n"
                 + "    var aorusBadgePeerName: String = \"\"\n",
                 1,
@@ -3210,8 +3211,18 @@ def patch_aorus_badges(tg: Path) -> None:
         layout_anchor = "        var titleFrame: CGRect\n        var subtitleFrame: CGRect\n"
         if "// AorusGram profile badge" not in t and layout_anchor in t:
             layout_inject = (
-                "        // AorusGram profile badge (display + tap→toast)\n"
+                "        // AorusGram profile badge (display + tap→toast), shown in BOTH the\n"
+                "        // collapsed and expanded (tapped-avatar) title states so it never\n"
+                "        // disappears when the avatar is enlarged.\n"
                 "        if let aorusRawId = self.aorusBadgeRawId, let aorusImg = AorusBadge.image(forPeerRawId: aorusRawId, height: 25.0, accent: presentationData.theme.list.itemAccentColor) {\n"
+                "            let aorusName = self.aorusBadgePeerName\n"
+                "            let aorusAccent = presentationData.theme.list.itemAccentColor\n"
+                "            let aorusAspect = aorusImg.size.width / max(1.0, aorusImg.size.height)\n"
+                "            let aorusW = floor(25.0 * aorusAspect)\n"
+                "            let aorusOnTap: () -> Void = {\n"
+                "                AorusBadgeToast.present(icon: aorusImg, text: AorusBadge.toastText(forPeerRawId: aorusRawId, peerName: aorusName) ?? \"\", accent: aorusAccent)\n"
+                "            }\n"
+                "            // Collapsed (regular) title state\n"
                 "            let aorusBadge: AorusTappableBadgeView\n"
                 "            if let cur = self.aorusBadgeView {\n"
                 "                aorusBadge = cur\n"
@@ -3221,31 +3232,51 @@ def patch_aorus_badges(tg: Path) -> None:
                 "                self.titleNode.stateNode(forKey: TitleNodeStateRegular)?.view.addSubview(aorusBadge)\n"
                 "            }\n"
                 "            aorusBadge.image = aorusImg\n"
-                "            let aorusName = self.aorusBadgePeerName\n"
-                "            let aorusAccent = presentationData.theme.list.itemAccentColor\n"
-                "            aorusBadge.onTap = {\n"
-                "                AorusBadgeToast.present(icon: aorusImg, text: AorusBadge.toastText(forPeerRawId: aorusRawId, peerName: aorusName) ?? \"\", accent: aorusAccent)\n"
-                "            }\n"
-                "            let aorusAspect = aorusImg.size.width / max(1.0, aorusImg.size.height)\n"
-                "            let aorusW = floor(25.0 * aorusAspect)\n"
+                "            aorusBadge.onTap = aorusOnTap\n"
                 "            transition.updateFrame(view: aorusBadge, frame: CGRect(x: nextIconX + 4.0, y: floor((titleSize.height - 25.0) / 2.0), width: aorusW, height: 25.0))\n"
                 "            nextIconX += 4.0 + aorusW\n"
-                "        } else if let aorusBadge = self.aorusBadgeView {\n"
-                "            self.aorusBadgeView = nil\n"
-                "            aorusBadge.removeFromSuperview()\n"
+                "            // Expanded (tapped-avatar) title state\n"
+                "            let aorusBadgeExpanded: AorusTappableBadgeView\n"
+                "            if let cur = self.aorusBadgeExpandedView {\n"
+                "                aorusBadgeExpanded = cur\n"
+                "            } else {\n"
+                "                aorusBadgeExpanded = AorusTappableBadgeView(image: nil)\n"
+                "                self.aorusBadgeExpandedView = aorusBadgeExpanded\n"
+                "                self.titleNode.stateNode(forKey: TitleNodeStateExpanded)?.view.addSubview(aorusBadgeExpanded)\n"
+                "            }\n"
+                "            aorusBadgeExpanded.image = aorusImg\n"
+                "            aorusBadgeExpanded.onTap = aorusOnTap\n"
+                "            transition.updateFrame(view: aorusBadgeExpanded, frame: CGRect(x: nextExpandedIconX + 4.0, y: floor((titleExpandedSize.height - 25.0) / 2.0), width: aorusW, height: 25.0))\n"
+                "            nextExpandedIconX += 4.0 + aorusW\n"
+                "        } else {\n"
+                "            if let aorusBadge = self.aorusBadgeView {\n"
+                "                self.aorusBadgeView = nil\n"
+                "                aorusBadge.removeFromSuperview()\n"
+                "            }\n"
+                "            if let aorusBadgeExpanded = self.aorusBadgeExpandedView {\n"
+                "                self.aorusBadgeExpandedView = nil\n"
+                "                aorusBadgeExpanded.removeFromSuperview()\n"
+                "            }\n"
                 "        }\n"
                 "        \n"
                 + layout_anchor
             )
             t = t.replace(layout_anchor, layout_inject, 1)
         # hitTest routing: the header's hitTest only forwards taps to specific icon
-        # views, so our badge needs its own case to become tappable.
+        # views, so our badge needs its own case to become tappable. Route to whichever
+        # title state is currently shown (expanded when the avatar is enlarged).
         hit_anchor = "        if let subtitleBackgroundButton = self.subtitleBackgroundButton, subtitleBackgroundButton.view.convert"
         if "// AorusGram badge hit routing" not in t and hit_anchor in t:
             t = t.replace(
                 hit_anchor,
                 "// AorusGram badge hit routing\n"
-                "        if let aorusBadge = self.aorusBadgeView {\n"
+                "        if self.isAvatarExpanded, let aorusBadge = self.aorusBadgeExpandedView {\n"
+                "            let aorusHitFrame = aorusBadge.convert(aorusBadge.bounds, to: self.view)\n"
+                "            if aorusHitFrame.contains(point) {\n"
+                "                return aorusBadge\n"
+                "            }\n"
+                "        }\n"
+                "        if !self.isAvatarExpanded, let aorusBadge = self.aorusBadgeView {\n"
                 "            let aorusHitFrame = aorusBadge.convert(aorusBadge.bounds, to: self.view)\n"
                 "            if aorusHitFrame.contains(point) {\n"
                 "                return aorusBadge\n"
