@@ -3211,7 +3211,7 @@ def patch_aorus_badges(tg: Path) -> None:
         if "// AorusGram profile badge" not in t and layout_anchor in t:
             layout_inject = (
                 "        // AorusGram profile badge (display + tap→toast)\n"
-                "        if let aorusRawId = self.aorusBadgeRawId, let aorusImg = AorusBadge.image(forPeerRawId: aorusRawId, height: 30.0, accent: presentationData.theme.list.itemAccentColor) {\n"
+                "        if let aorusRawId = self.aorusBadgeRawId, let aorusImg = AorusBadge.image(forPeerRawId: aorusRawId, height: 20.0, accent: presentationData.theme.list.itemAccentColor) {\n"
                 "            let aorusBadge: AorusTappableBadgeView\n"
                 "            if let cur = self.aorusBadgeView {\n"
                 "                aorusBadge = cur\n"
@@ -3227,8 +3227,8 @@ def patch_aorus_badges(tg: Path) -> None:
                 "                AorusBadgeToast.present(icon: aorusImg, text: AorusBadge.toastText(forPeerRawId: aorusRawId, peerName: aorusName) ?? \"\", accent: aorusAccent)\n"
                 "            }\n"
                 "            let aorusAspect = aorusImg.size.width / max(1.0, aorusImg.size.height)\n"
-                "            let aorusW = floor(30.0 * aorusAspect)\n"
-                "            transition.updateFrame(view: aorusBadge, frame: CGRect(x: nextIconX + 4.0, y: floor((titleSize.height - 30.0) / 2.0), width: aorusW, height: 30.0))\n"
+                "            let aorusW = floor(20.0 * aorusAspect)\n"
+                "            transition.updateFrame(view: aorusBadge, frame: CGRect(x: nextIconX + 4.0, y: floor((titleSize.height - 20.0) / 2.0), width: aorusW, height: 20.0))\n"
                 "            nextIconX += 4.0 + aorusW\n"
                 "        } else if let aorusBadge = self.aorusBadgeView {\n"
                 "            self.aorusBadgeView = nil\n"
@@ -3260,19 +3260,23 @@ def patch_aorus_badges(tg: Path) -> None:
         print("Badges: PeerInfoHeaderNode.swift not found — skipped")
 
     # --- 2d. Member lists / search / contacts (ItemListPeerItem, ContactsPeerItem) ---
-    # These share the same EmojiStatusComponent `verifiedIcon` slot used by the
-    # chat list, so the DEV/meme badge is injected the same way (display only).
+    # Badge must appear AFTER the name (to the right). The layout puts `verifiedIcon`
+    # BEFORE the title (left side, shifts title right), while `credibilityIcon` /
+    # `credibilityStatusIcon` goes AFTER the title (right side). We use the latter so
+    # the badge appears after the name — and after any premium/verified icon.
     peer_items = [
         ("submodules/ItemListPeerItem/Sources/ItemListPeerItem.swift",
          "submodules/ItemListPeerItem/BUILD",
          "                if item.peer.isVerified {",
-         "item.peer"),
+         "item.peer",
+         "credibilityIcon"),
         ("submodules/ContactsPeerItem/Sources/ContactsPeerItem.swift",
          "submodules/ContactsPeerItem/BUILD",
          "                    if peer.isVerified {",
-         "peer"),
+         "peer",
+         "credibilityStatusIcon"),
     ]
-    for rel, build_rel, anchor, peer_expr in peer_items:
+    for rel, build_rel, anchor, peer_expr, cred_var in peer_items:
         f = tg / rel
         if not f.is_file():
             print(f"Badges: {rel} not found — skipped")
@@ -3281,17 +3285,17 @@ def patch_aorus_badges(tg: Path) -> None:
         if "import AorusBadge" not in t:
             t = t.replace("import Foundation\n", "import Foundation\nimport AorusBadge\n", 1)
         indent = anchor[: len(anchor) - len(anchor.lstrip())]
-        marker = f"if verifiedIcon == nil, let aorusBadgeImage = AorusBadge.image(forPeerRawId: {peer_expr}.id.id._internalGetInt64Value()"
+        marker = f"if let aorusBadgeImage = AorusBadge.image(forPeerRawId: {peer_expr}.id.id._internalGetInt64Value()"
         if marker not in t and ("\n" + anchor) in t:
             inject = (
-                f"\n{indent}if verifiedIcon == nil, let aorusBadgeImage = AorusBadge.image(forPeerRawId: {peer_expr}.id.id._internalGetInt64Value(), height: 16.0, accent: item.presentationData.theme.list.itemAccentColor) {{\n"
-                f"{indent}    verifiedIcon = .image(image: aorusBadgeImage, tintColor: nil)\n"
+                f"\n{indent}if let aorusBadgeImage = AorusBadge.image(forPeerRawId: {peer_expr}.id.id._internalGetInt64Value(), height: 16.0, accent: item.presentationData.theme.list.itemAccentColor) {{\n"
+                f"{indent}    {cred_var} = .image(image: aorusBadgeImage, tintColor: nil)\n"
                 f"{indent}}}\n"
                 f"{anchor}"
             )
             t = t.replace("\n" + anchor, inject, 1)
         f.write_text(t, encoding="utf-8")
-        print(f"Badges: patched {rel.split('/')[-1]} (member list / search badge)")
+        print(f"Badges: patched {rel.split('/')[-1]} (member list / search badge, after name)")
         bf = tg / build_rel
         if bf.is_file():
             bt = bf.read_text(encoding="utf-8")
@@ -3301,6 +3305,46 @@ def patch_aorus_badges(tg: Path) -> None:
                     bt = bt.replace(needle, needle + '        "//submodules/AorusBadge:AorusBadge",\n', 1)
                     bf.write_text(bt, encoding="utf-8")
                     print(f"Badges: added AorusBadge dep to {build_rel.split('/')[-2]} BUILD")
+
+    # --- 2e. Chat message sender names (ChatMessageBubbleItemNode) ---
+    # The sender name row in message bubbles uses `currentCredibilityIcon` placed
+    # after the name. We inject right after the isPremium branch so our badge
+    # always overrides (premium is rare for these internal users).
+    msg_bubble = tg / "submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/Sources/ChatMessageBubbleItemNode.swift"
+    if msg_bubble.is_file():
+        t = msg_bubble.read_text(encoding="utf-8")
+        if "import AorusBadge" not in t:
+            t = t.replace("import Foundation\n", "import Foundation\nimport AorusBadge\n", 1)
+        bubble_anchor = (
+            "                } else if effectiveAuthor.isPremium {\n"
+            "                    currentCredibilityIcon = (.premium(color: color.withMultipliedAlpha(0.4)), nil)\n"
+            "                }\n"
+        )
+        bubble_marker = "if let aorusBadgeImage = AorusBadge.image(forPeerRawId: effectiveAuthor.id.id._internalGetInt64Value()"
+        if bubble_marker not in t and bubble_anchor in t:
+            t = t.replace(
+                bubble_anchor,
+                bubble_anchor
+                + "                if let aorusBadgeImage = AorusBadge.image(forPeerRawId: effectiveAuthor.id.id._internalGetInt64Value(), height: 16.0, accent: item.presentationData.theme.theme.list.itemAccentColor) {\n"
+                + "                    currentCredibilityIcon = (.image(image: aorusBadgeImage, tintColor: nil), nil)\n"
+                + "                }\n",
+                1,
+            )
+        msg_bubble.write_text(t, encoding="utf-8")
+        print("Badges: patched ChatMessageBubbleItemNode (sender name badge)")
+        mb_build = tg / "submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/BUILD"
+        if mb_build.is_file():
+            bt = mb_build.read_text(encoding="utf-8")
+            if "//submodules/AorusBadge" not in bt:
+                needle = '        "//submodules/TelegramPresentationData",\n'
+                if needle in bt:
+                    bt = bt.replace(needle, needle + '        "//submodules/AorusBadge:AorusBadge",\n', 1)
+                    mb_build.write_text(bt, encoding="utf-8")
+                    print("Badges: added AorusBadge dep to ChatMessageBubbleItemNode BUILD")
+                else:
+                    print("Badges: WARNING ChatMessageBubbleItemNode BUILD needle not found")
+    else:
+        print("Badges: ChatMessageBubbleItemNode.swift not found — skipped")
 
     # --- 3. Add AorusBadge dep to ChatListUI BUILD ---
     cl_build = tg / "submodules/ChatListUI/BUILD"
