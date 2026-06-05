@@ -2992,9 +2992,10 @@ def patch_default_dark_theme(tg: Path) -> None:
 
     PresentationThemeSettings.defaultSettings ships with theme=.dayClassic and an
     automatic switch trigger of .system (so the app follows the device appearance).
-    We pin a dark default that does not auto-switch: theme=.night and
-    trigger=.explicitNone. Existing users keep their stored preference; only the
-    default applied on first launch changes.
+    We pin a dark default that does not auto-switch: theme=.nightAccent (the
+    classic dark Telegram theme with blue accents) and trigger=.explicitNone.
+    Existing users keep their stored preference; only the default applied on
+    first launch changes.
     """
     settings_file = tg / "submodules/TelegramUIPreferences/Sources/PresentationThemeSettings.swift"
     if not settings_file.is_file():
@@ -3009,11 +3010,11 @@ def patch_default_dark_theme(tg: Path) -> None:
         "theme: .builtin(.night)), largeEmoji: true, reduceMotion: false)"
     )
     new_default = (
-        "return PresentationThemeSettings(theme: .builtin(.night), themePreferredBaseTheme: [:], "
+        "return PresentationThemeSettings(theme: .builtin(.nightAccent), themePreferredBaseTheme: [:], "
         "themeSpecificAccentColors: [:], themeSpecificChatWallpapers: [:], useSystemFont: true, "
         "fontSize: .regular, listsFontSize: .regular, chatBubbleSettings: .default, "
         "automaticThemeSwitchSetting: AutomaticThemeSwitchSetting(force: false, trigger: .explicitNone, "
-        "theme: .builtin(.night)), largeEmoji: true, reduceMotion: false)"
+        "theme: .builtin(.nightAccent)), largeEmoji: true, reduceMotion: false)"
     )
     if new_default in t:
         print("DarkDefault: already applied")
@@ -3021,9 +3022,91 @@ def patch_default_dark_theme(tg: Path) -> None:
     if old_default in t:
         t = t.replace(old_default, new_default, 1)
         settings_file.write_text(t, encoding="utf-8")
-        print("DarkDefault: defaultSettings theme -> .night (trigger .explicitNone)")
+        print("DarkDefault: defaultSettings theme -> .nightAccent (trigger .explicitNone)")
     else:
         print("DarkDefault: WARNING defaultSettings line not found (upstream drift) — skipped")
+
+
+def patch_aorus_badges(tg: Path) -> None:
+    """Local AorusGram badge system.
+
+    1. Native verified: TelegramCore `isVerified` returns true for the AorusGram
+       channel/chat ids, so the genuine Telegram checkmark is shown in every
+       surface (chat list, header, profile, search) with no custom rendering.
+    2. Custom user badges (DEV tag, meme cat) are injected into the chat-list /
+       search rows via the existing EmojiStatusComponent `.image` slot, which is
+       laid out AFTER the premium/credibility icon — so it never replaces a
+       system badge and respects the premium-first ordering.
+    """
+    # --- 1. Native verified flag for AorusGram channels/chats ---
+    peer_utils = tg / "submodules/TelegramCore/Sources/Utils/PeerUtils.swift"
+    if peer_utils.is_file():
+        t = peer_utils.read_text(encoding="utf-8")
+        anchor = "    var isVerified: Bool {\n        switch self {"
+        if "AorusGram local verification" in t:
+            print("Badges: PeerUtils isVerified already patched")
+        elif anchor in t:
+            injected = (
+                "    var isVerified: Bool {\n"
+                "        // AorusGram local verification — show the native Telegram checkmark\n"
+                "        // for our official channel/chat without any server flag.\n"
+                "        if [3956524111, 3710166840].contains(self.id.id._internalGetInt64Value()) {\n"
+                "            return true\n"
+                "        }\n"
+                "        switch self {"
+            )
+            t = t.replace(anchor, injected, 1)
+            peer_utils.write_text(t, encoding="utf-8")
+            print("Badges: patched PeerUtils isVerified (native verified for AorusGram peers)")
+        else:
+            print("Badges: WARNING isVerified anchor not found in PeerUtils")
+    else:
+        print("Badges: PeerUtils.swift not found — skipped")
+
+    # --- 2. DEV / meme badge image in chat-list & search rows ---
+    chat_list_item = tg / "submodules/ChatListUI/Sources/Node/ChatListItem.swift"
+    if chat_list_item.is_file():
+        t = chat_list_item.read_text(encoding="utf-8")
+        if "import AorusBadge" not in t:
+            t = t.replace("import Foundation\n", "import Foundation\nimport AorusBadge\n", 1)
+        # Inject before each `if peer.isVerified {` (two indentation variants).
+        for indent in ("                            ", "                    "):
+            anchor = f"{indent}if peer.isVerified {{"
+            inject = (
+                f"{indent}if currentVerifiedIconContent == nil, let aorusBadgeImage = AorusBadge.image(forPeerRawId: peer.id.id._internalGetInt64Value(), height: 16.0, accent: item.presentationData.theme.list.itemAccentColor) {{\n"
+                f"{indent}    currentVerifiedIconContent = .image(image: aorusBadgeImage, tintColor: nil)\n"
+                f"{indent}}}\n"
+                f"{anchor}"
+            )
+            if "AorusBadge.image(forPeerRawId:" in t and anchor not in t:
+                # already injected for this variant (anchor consumed) — skip
+                pass
+            # Idempotency: only inject if our line isn't already directly above this anchor
+            marker = f"{indent}    currentVerifiedIconContent = .image(image: aorusBadgeImage, tintColor: nil)\n{indent}}}\n{anchor}"
+            if marker in t:
+                continue
+            if anchor in t:
+                t = t.replace(anchor, inject, 1)
+        chat_list_item.write_text(t, encoding="utf-8")
+        print("Badges: patched ChatListItem (DEV/meme image in verified slot)")
+    else:
+        print("Badges: ChatListItem.swift not found — skipped")
+
+    # --- 3. Add AorusBadge dep to ChatListUI BUILD ---
+    cl_build = tg / "submodules/ChatListUI/BUILD"
+    if cl_build.is_file():
+        t = cl_build.read_text(encoding="utf-8")
+        dep = '        "//submodules/AorusBadge:AorusBadge",\n'
+        if "//submodules/AorusBadge:AorusBadge" in t:
+            print("Badges: ChatListUI BUILD dep already present")
+        else:
+            needle = '        "//submodules/TelegramPresentationData:TelegramPresentationData",\n'
+            if needle in t:
+                t = t.replace(needle, needle + dep, 1)
+                cl_build.write_text(t, encoding="utf-8")
+                print("Badges: added AorusBadge dep to ChatListUI BUILD")
+            else:
+                print("Badges: WARNING ChatListUI BUILD needle not found")
 
 
 def main() -> None:
@@ -3072,6 +3155,7 @@ def main() -> None:
     patch_disable_call_p2p(tg)
     patch_app_delegate_language_bridge(tg)
     patch_default_dark_theme(tg)
+    patch_aorus_badges(tg)
     for name in ("Info.plist", "InfoBazel.plist"):
         patch_plist_icons_and_urls(tg / "Telegram/Telegram-iOS" / name)
     patch_info_plist_bgtask(tg)

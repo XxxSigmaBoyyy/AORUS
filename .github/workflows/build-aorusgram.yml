@@ -30,7 +30,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: telegram-ios
-          key: tg-ios-src-v23-i18n
+          key: tg-ios-src-v24-badges
 
       - name: Clone Telegram iOS
         if: steps.tg-cache.outputs.cache-hit != 'true'
@@ -318,6 +318,11 @@ jobs:
           rm -rf $TG/submodules/AorusGramUI
           mkdir -p $TG/submodules/AorusGramUI
           cp -r $PATCHES/submodules/AorusGramUI/. $TG/submodules/AorusGramUI/
+
+          # 1b. Copy AorusBadge module (local verification/DEV/meme badge system)
+          rm -rf $TG/submodules/AorusBadge
+          mkdir -p $TG/submodules/AorusBadge
+          cp -r $PATCHES/submodules/AorusBadge/. $TG/submodules/AorusBadge/
 
           # 2. Copy PeerInfoScreen BUILD (adds AorusGramUI dep)
           cp $PATCHES/submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/BUILD $PEER/
