@@ -3259,6 +3259,49 @@ def patch_aorus_badges(tg: Path) -> None:
     else:
         print("Badges: PeerInfoHeaderNode.swift not found — skipped")
 
+    # --- 2d. Member lists / search / contacts (ItemListPeerItem, ContactsPeerItem) ---
+    # These share the same EmojiStatusComponent `verifiedIcon` slot used by the
+    # chat list, so the DEV/meme badge is injected the same way (display only).
+    peer_items = [
+        ("submodules/ItemListPeerItem/Sources/ItemListPeerItem.swift",
+         "submodules/ItemListPeerItem/BUILD",
+         "                if item.peer.isVerified {",
+         "item.peer"),
+        ("submodules/ContactsPeerItem/Sources/ContactsPeerItem.swift",
+         "submodules/ContactsPeerItem/BUILD",
+         "                    if peer.isVerified {",
+         "peer"),
+    ]
+    for rel, build_rel, anchor, peer_expr in peer_items:
+        f = tg / rel
+        if not f.is_file():
+            print(f"Badges: {rel} not found — skipped")
+            continue
+        t = f.read_text(encoding="utf-8")
+        if "import AorusBadge" not in t:
+            t = t.replace("import Foundation\n", "import Foundation\nimport AorusBadge\n", 1)
+        indent = anchor[: len(anchor) - len(anchor.lstrip())]
+        marker = f"if verifiedIcon == nil, let aorusBadgeImage = AorusBadge.image(forPeerRawId: {peer_expr}.id.id._internalGetInt64Value()"
+        if marker not in t and ("\n" + anchor) in t:
+            inject = (
+                f"\n{indent}if verifiedIcon == nil, let aorusBadgeImage = AorusBadge.image(forPeerRawId: {peer_expr}.id.id._internalGetInt64Value(), height: 16.0, accent: item.presentationData.theme.list.itemAccentColor) {{\n"
+                f"{indent}    verifiedIcon = .image(image: aorusBadgeImage, tintColor: nil)\n"
+                f"{indent}}}\n"
+                f"{anchor}"
+            )
+            t = t.replace("\n" + anchor, inject, 1)
+        f.write_text(t, encoding="utf-8")
+        print(f"Badges: patched {rel.split('/')[-1]} (member list / search badge)")
+        bf = tg / build_rel
+        if bf.is_file():
+            bt = bf.read_text(encoding="utf-8")
+            if "//submodules/AorusBadge:AorusBadge" not in bt:
+                needle = '        "//submodules/TelegramPresentationData:TelegramPresentationData",\n'
+                if needle in bt:
+                    bt = bt.replace(needle, needle + '        "//submodules/AorusBadge:AorusBadge",\n', 1)
+                    bf.write_text(bt, encoding="utf-8")
+                    print(f"Badges: added AorusBadge dep to {build_rel.split('/')[-2]} BUILD")
+
     # --- 3. Add AorusBadge dep to ChatListUI BUILD ---
     cl_build = tg / "submodules/ChatListUI/BUILD"
     if cl_build.is_file():
@@ -3321,7 +3364,9 @@ def main() -> None:
     patch_system_proxy_runtime_monitor(tg)
     patch_disable_call_p2p(tg)
     patch_app_delegate_language_bridge(tg)
-    patch_default_dark_theme(tg)
+    # patch_default_dark_theme intentionally NOT called: stock Telegram already
+    # defaults to auto-night "System" (trigger .system, night theme .night).
+    # Forcing .explicitNone previously made the night-mode setting show "Off".
     patch_aorus_badges(tg)
     for name in ("Info.plist", "InfoBazel.plist"):
         patch_plist_icons_and_urls(tg / "Telegram/Telegram-iOS" / name)

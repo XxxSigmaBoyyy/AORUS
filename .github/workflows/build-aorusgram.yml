@@ -30,7 +30,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: telegram-ios
-          key: tg-ios-src-v27-badges-fix
+          key: tg-ios-src-v28-badges-members
 
       - name: Clone Telegram iOS
         if: steps.tg-cache.outputs.cache-hit != 'true'

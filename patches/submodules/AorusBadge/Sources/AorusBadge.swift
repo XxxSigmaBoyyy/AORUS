@@ -61,18 +61,21 @@ public enum AorusBadge {
     }
 
     // Hollow "DEV" tag: rounded-rect border (no fill) + "DEV" text, both in the
-    // light-blue accent. Matches .nightAccent.
+    // light-blue accent. The tag occupies ~70% of the slot height (transparent
+    // padding above/below) and uses a medium (non-bold) weight so it reads as a
+    // neat, understated label rather than grabbing attention.
     private static func devImage(height: CGFloat, accent: UIColor) -> UIImage? {
         let h = max(12.0, height)
-        let fontSize = floor(h * 0.62)
-        let font = UIFont.systemFont(ofSize: fontSize, weight: .bold)
+        let tagH = floor(h * 0.72)
+        let fontSize = floor(tagH * 0.6)
+        let font = UIFont.systemFont(ofSize: fontSize, weight: .medium)
         let text = "DEV" as NSString
-        let textAttrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: accent]
+        let textAttrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: accent, .kern: 0.3]
         let textSize = text.size(withAttributes: textAttrs)
-        let hInset = floor(h * 0.26)
-        let lineWidth = max(1.0, floor(h * 0.09))
-        let width = ceil(textSize.width + hInset * 2.0)
-        let size = CGSize(width: width, height: h)
+        let hInset = floor(tagH * 0.34)
+        let lineWidth = max(1.0, h * 0.05)
+        let tagW = ceil(textSize.width + hInset * 2.0)
+        let size = CGSize(width: tagW, height: h)
 
         let renderer = UIGraphicsImageRenderer(size: size, format: {
             let f = UIGraphicsImageRendererFormat.preferred()
@@ -81,13 +84,13 @@ public enum AorusBadge {
         }())
         return renderer.image { ctx in
             let cg = ctx.cgContext
-            let rect = CGRect(origin: .zero, size: size).insetBy(dx: lineWidth / 2.0, dy: lineWidth / 2.0)
-            let path = UIBezierPath(roundedRect: rect, cornerRadius: h * 0.28)
+            let tagY = floor((h - tagH) / 2.0)
+            let rect = CGRect(x: lineWidth / 2.0, y: tagY + lineWidth / 2.0, width: tagW - lineWidth, height: tagH - lineWidth)
+            let path = UIBezierPath(roundedRect: rect, cornerRadius: tagH * 0.3)
             cg.setStrokeColor(accent.cgColor)
             cg.setLineWidth(lineWidth)
             path.stroke()
-            let textOrigin = CGPoint(x: (size.width - textSize.width) / 2.0,
-                                     y: (size.height - textSize.height) / 2.0)
+            let textOrigin = CGPoint(x: (tagW - textSize.width) / 2.0, y: tagY + (tagH - textSize.height) / 2.0)
             text.draw(at: textOrigin, withAttributes: textAttrs)
         }
     }
