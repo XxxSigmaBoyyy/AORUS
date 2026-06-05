@@ -18,12 +18,18 @@ public enum AorusBadgeToast {
         container.translatesAutoresizingMaskIntoConstraints = false
         container.isUserInteractionEnabled = false
 
+        // Soft shadow on the container (outside the clipped blur).
+        container.layer.shadowColor = UIColor.black.cgColor
+        container.layer.shadowOpacity = 0.35
+        container.layer.shadowRadius = 16.0
+        container.layer.shadowOffset = CGSize(width: 0.0, height: 6.0)
+
         let blur = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterialDark))
         blur.translatesAutoresizingMaskIntoConstraints = false
-        blur.layer.cornerRadius = 18.0
+        blur.layer.cornerRadius = 23.0
         blur.clipsToBounds = true
         blur.layer.borderWidth = 1.0
-        blur.layer.borderColor = accent.withAlphaComponent(0.35).cgColor
+        blur.layer.borderColor = accent.withAlphaComponent(0.45).cgColor
         container.addSubview(blur)
 
         let iconView = UIImageView(image: icon)
@@ -53,12 +59,12 @@ public enum AorusBadgeToast {
             blur.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             blur.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             blur.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            blur.heightAnchor.constraint(equalToConstant: 44.0),
+            blur.heightAnchor.constraint(equalToConstant: 46.0),
 
             iconView.leadingAnchor.constraint(equalTo: blur.contentView.leadingAnchor, constant: 12.0),
             iconView.centerYAnchor.constraint(equalTo: blur.contentView.centerYAnchor),
-            iconView.widthAnchor.constraint(equalToConstant: 24.0),
-            iconView.heightAnchor.constraint(equalToConstant: 24.0),
+            iconView.widthAnchor.constraint(equalToConstant: 30.0),
+            iconView.heightAnchor.constraint(equalToConstant: 30.0),
 
             label.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10.0),
             label.trailingAnchor.constraint(equalTo: blur.contentView.trailingAnchor, constant: -16.0),

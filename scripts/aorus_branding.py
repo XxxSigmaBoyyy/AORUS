@@ -2992,10 +2992,9 @@ def patch_default_dark_theme(tg: Path) -> None:
 
     PresentationThemeSettings.defaultSettings ships with theme=.dayClassic and an
     automatic switch trigger of .system (so the app follows the device appearance).
-    We pin a dark default that does not auto-switch: theme=.nightAccent (the
-    classic dark Telegram theme with blue accents) and trigger=.explicitNone.
-    Existing users keep their stored preference; only the default applied on
-    first launch changes.
+    We pin a dark default that does not auto-switch: theme=.night and
+    trigger=.explicitNone. Existing users keep their stored preference; only the
+    default applied on first launch changes.
     """
     settings_file = tg / "submodules/TelegramUIPreferences/Sources/PresentationThemeSettings.swift"
     if not settings_file.is_file():
@@ -3010,11 +3009,11 @@ def patch_default_dark_theme(tg: Path) -> None:
         "theme: .builtin(.night)), largeEmoji: true, reduceMotion: false)"
     )
     new_default = (
-        "return PresentationThemeSettings(theme: .builtin(.nightAccent), themePreferredBaseTheme: [:], "
+        "return PresentationThemeSettings(theme: .builtin(.night), themePreferredBaseTheme: [:], "
         "themeSpecificAccentColors: [:], themeSpecificChatWallpapers: [:], useSystemFont: true, "
         "fontSize: .regular, listsFontSize: .regular, chatBubbleSettings: .default, "
         "automaticThemeSwitchSetting: AutomaticThemeSwitchSetting(force: false, trigger: .explicitNone, "
-        "theme: .builtin(.nightAccent)), largeEmoji: true, reduceMotion: false)"
+        "theme: .builtin(.night)), largeEmoji: true, reduceMotion: false)"
     )
     if new_default in t:
         print("DarkDefault: already applied")
@@ -3022,7 +3021,7 @@ def patch_default_dark_theme(tg: Path) -> None:
     if old_default in t:
         t = t.replace(old_default, new_default, 1)
         settings_file.write_text(t, encoding="utf-8")
-        print("DarkDefault: defaultSettings theme -> .nightAccent (trigger .explicitNone)")
+        print("DarkDefault: defaultSettings theme -> .night (trigger .explicitNone)")
     else:
         print("DarkDefault: WARNING defaultSettings line not found (upstream drift) — skipped")
 
@@ -3212,7 +3211,7 @@ def patch_aorus_badges(tg: Path) -> None:
         if "// AorusGram profile badge" not in t and layout_anchor in t:
             layout_inject = (
                 "        // AorusGram profile badge (display + tap→toast)\n"
-                "        if let aorusRawId = self.aorusBadgeRawId, let aorusImg = AorusBadge.image(forPeerRawId: aorusRawId, height: 24.0, accent: presentationData.theme.list.itemAccentColor) {\n"
+                "        if let aorusRawId = self.aorusBadgeRawId, let aorusImg = AorusBadge.image(forPeerRawId: aorusRawId, height: 30.0, accent: presentationData.theme.list.itemAccentColor) {\n"
                 "            let aorusBadge: AorusTappableBadgeView\n"
                 "            if let cur = self.aorusBadgeView {\n"
                 "                aorusBadge = cur\n"
@@ -3228,8 +3227,8 @@ def patch_aorus_badges(tg: Path) -> None:
                 "                AorusBadgeToast.present(icon: aorusImg, text: AorusBadge.toastText(forPeerRawId: aorusRawId, peerName: aorusName) ?? \"\", accent: aorusAccent)\n"
                 "            }\n"
                 "            let aorusAspect = aorusImg.size.width / max(1.0, aorusImg.size.height)\n"
-                "            let aorusW = floor(24.0 * aorusAspect)\n"
-                "            transition.updateFrame(view: aorusBadge, frame: CGRect(x: nextIconX + 4.0, y: floor((titleSize.height - 24.0) / 2.0), width: aorusW, height: 24.0))\n"
+                "            let aorusW = floor(30.0 * aorusAspect)\n"
+                "            transition.updateFrame(view: aorusBadge, frame: CGRect(x: nextIconX + 4.0, y: floor((titleSize.height - 30.0) / 2.0), width: aorusW, height: 30.0))\n"
                 "            nextIconX += 4.0 + aorusW\n"
                 "        } else if let aorusBadge = self.aorusBadgeView {\n"
                 "            self.aorusBadgeView = nil\n"
@@ -3239,8 +3238,24 @@ def patch_aorus_badges(tg: Path) -> None:
                 + layout_anchor
             )
             t = t.replace(layout_anchor, layout_inject, 1)
+        # hitTest routing: the header's hitTest only forwards taps to specific icon
+        # views, so our badge needs its own case to become tappable.
+        hit_anchor = "        if let subtitleBackgroundButton = self.subtitleBackgroundButton, subtitleBackgroundButton.view.convert"
+        if "// AorusGram badge hit routing" not in t and hit_anchor in t:
+            t = t.replace(
+                hit_anchor,
+                "// AorusGram badge hit routing\n"
+                "        if let aorusBadge = self.aorusBadgeView {\n"
+                "            let aorusHitFrame = aorusBadge.convert(aorusBadge.bounds, to: self.view)\n"
+                "            if aorusHitFrame.contains(point) {\n"
+                "                return aorusBadge\n"
+                "            }\n"
+                "        }\n"
+                "        " + hit_anchor,
+                1,
+            )
         peer_header.write_text(t, encoding="utf-8")
-        print("Badges: patched PeerInfoHeaderNode (profile DEV/meme badge + tap→toast)")
+        print("Badges: patched PeerInfoHeaderNode (profile DEV/meme badge + tap→toast + hitTest)")
     else:
         print("Badges: PeerInfoHeaderNode.swift not found — skipped")
 
