@@ -3319,6 +3319,33 @@ def patch_aorus_badges(tg: Path) -> None:
                 print("Badges: WARNING ChatListUI BUILD needle not found")
 
 
+def patch_default_auto_night(tg: Path) -> None:
+    """Pin the default auto-night setting to System + "Night" (.night) theme.
+
+    The auto-night settings screen derives the selected mode purely from
+    `automaticThemeSwitchSetting.trigger`: .system → "Системная", .explicitNone →
+    "Выключена". Stock already defaults to .system, but a previous AorusGram build
+    forced .explicitNone (which showed "Выключена"). This regex pins both the
+    defaultSettings value and the decode-fallback to System + Night so the result
+    is correct regardless of any cached/forced state — fully idempotent.
+    """
+    f = tg / "submodules/TelegramUIPreferences/Sources/PresentationThemeSettings.swift"
+    if not f.is_file():
+        print("AutoNight: PresentationThemeSettings.swift not found — skipped")
+        return
+    t = f.read_text(encoding="utf-8")
+    desired = "AutomaticThemeSwitchSetting(force: false, trigger: .system, theme: .builtin(.night))"
+    pattern = r"AutomaticThemeSwitchSetting\(force: [^,]+, trigger: \.[A-Za-z]+, theme: \.builtin\(\.[A-Za-z]+\)\)"
+    new_t, n = re.subn(pattern, desired, t)
+    if n and new_t != t:
+        f.write_text(new_t, encoding="utf-8")
+        print(f"AutoNight: pinned System + .night in {n} place(s)")
+    elif n:
+        print("AutoNight: already System + .night")
+    else:
+        print("AutoNight: WARNING AutomaticThemeSwitchSetting pattern not found")
+
+
 def main() -> None:
     tg = Path(sys.argv[1]).resolve()
     if not tg.is_dir():
@@ -3364,9 +3391,9 @@ def main() -> None:
     patch_system_proxy_runtime_monitor(tg)
     patch_disable_call_p2p(tg)
     patch_app_delegate_language_bridge(tg)
-    # patch_default_dark_theme intentionally NOT called: stock Telegram already
-    # defaults to auto-night "System" (trigger .system, night theme .night).
-    # Forcing .explicitNone previously made the night-mode setting show "Off".
+    # patch_default_dark_theme intentionally NOT called (it forced .explicitNone,
+    # which showed "Off"). Instead pin auto-night to System + Night explicitly:
+    patch_default_auto_night(tg)
     patch_aorus_badges(tg)
     for name in ("Info.plist", "InfoBazel.plist"):
         patch_plist_icons_and_urls(tg / "Telegram/Telegram-iOS" / name)
