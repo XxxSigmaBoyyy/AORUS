@@ -3063,22 +3063,14 @@ def patch_aorus_badges(tg: Path) -> None:
     else:
         print("Badges: PeerUtils.swift not found — skipped")
 
-    # --- 2. DEV / meme badge image + tap→toast in chat-list & search rows ---
+    # --- 2. DEV / meme badge image in chat-list & search rows (display only) ---
+    # Per product decision the tap→toast lives ONLY in the profile; the list and
+    # search just show the badge in the verified slot (after premium).
     chat_list_item = tg / "submodules/ChatListUI/Sources/Node/ChatListItem.swift"
     if chat_list_item.is_file():
         t = chat_list_item.read_text(encoding="utf-8")
         if "import AorusBadge" not in t:
             t = t.replace("import Foundation\n", "import Foundation\nimport AorusBadge\n", 1)
-        # Capture vars for the tap toast (declared next to the icon-content vars).
-        decl_anchor = "            var currentStatusIconContent: EmojiStatusComponent.Content?\n"
-        if "var aorusBadgeToastText" not in t and decl_anchor in t:
-            t = t.replace(
-                decl_anchor,
-                decl_anchor
-                + "            var aorusBadgeToastImage: UIImage?\n"
-                + "            var aorusBadgeToastText: String?\n",
-                1,
-            )
         # Inject before each `if peer.isVerified {` (two indentation variants).
         # Anchors/markers are newline-prefixed so a shorter indent never matches as
         # a leading-space substring of a deeper-indented injected line.
@@ -3088,8 +3080,6 @@ def patch_aorus_badges(tg: Path) -> None:
             inject = (
                 f"\n{indent}if currentVerifiedIconContent == nil, let aorusBadgeImage = AorusBadge.image(forPeerRawId: peer.id.id._internalGetInt64Value(), height: 16.0, accent: item.presentationData.theme.list.itemAccentColor) {{\n"
                 f"{indent}    currentVerifiedIconContent = .image(image: aorusBadgeImage, tintColor: nil)\n"
-                f"{indent}    aorusBadgeToastImage = aorusBadgeImage\n"
-                f"{indent}    aorusBadgeToastText = AorusBadge.toastText(forPeerRawId: peer.id.id._internalGetInt64Value(), peerName: peer.displayTitle(strings: item.presentationData.strings, displayOrder: item.presentationData.nameDisplayOrder))\n"
                 f"{indent}}}\n"
                 f"{indent}if peer.isVerified {{"
             )
@@ -3097,28 +3087,162 @@ def patch_aorus_badges(tg: Path) -> None:
                 continue
             if anchor in t:
                 t = t.replace(anchor, inject, 1)
-        # Wire tap action on the verified-icon component (unique block via the
-        # following `strongSelf.verifiedIconComponent =` assignment).
-        action_anchor = (
-            "                            content: currentVerifiedIconContent,\n"
-            "                            isVisibleForAnimations: strongSelf.visibilityStatus && item.context.sharedContext.energyUsageSettings.loopEmoji,\n"
-            "                            action: nil\n"
-            "                        )\n"
-            "                        strongSelf.verifiedIconComponent = verifiedIconComponent"
-        )
-        action_new = (
-            "                            content: currentVerifiedIconContent,\n"
-            "                            isVisibleForAnimations: strongSelf.visibilityStatus && item.context.sharedContext.energyUsageSettings.loopEmoji,\n"
-            "                            action: aorusBadgeToastText != nil ? { AorusBadgeToast.present(icon: aorusBadgeToastImage, text: aorusBadgeToastText ?? \"\", accent: item.presentationData.theme.list.itemAccentColor) } : nil\n"
-            "                        )\n"
-            "                        strongSelf.verifiedIconComponent = verifiedIconComponent"
-        )
-        if action_anchor in t:
-            t = t.replace(action_anchor, action_new, 1)
         chat_list_item.write_text(t, encoding="utf-8")
-        print("Badges: patched ChatListItem (DEV/meme image + tap→toast in verified slot)")
+        print("Badges: patched ChatListItem (DEV/meme image in verified slot, display only)")
     else:
         print("Badges: ChatListItem.swift not found — skipped")
+
+    # --- 2b. Chat header (ChatTitleComponent): DEV/meme badge, display only ---
+    title_comp = tg / "submodules/TelegramUI/Components/ChatTitleView/Sources/ChatTitleComponent.swift"
+    if title_comp.is_file():
+        t = title_comp.read_text(encoding="utf-8")
+        if "import AorusBadge" not in t:
+            t = t.replace("import Foundation\n", "import Foundation\nimport AorusBadge\n", 1)
+        prop_anchor = "        private var statusIcon: ComponentView<Empty>?\n"
+        if "private var aorusBadgeView: UIImageView?" not in t and prop_anchor in t:
+            t = t.replace(
+                prop_anchor,
+                prop_anchor
+                + "        private var aorusBadgeView: UIImageView?\n"
+                + "        private var aorusBadgeRawId: Int64?\n",
+                1,
+            )
+        reset_anchor = "            var titleStatusIcon: ChatTitleCredibilityIcon = .none\n"
+        if reset_anchor in t and "self.aorusBadgeRawId = nil // AorusGram" not in t:
+            t = t.replace(reset_anchor, reset_anchor + "            self.aorusBadgeRawId = nil // AorusGram\n", 1)
+        cap_anchor = (
+            "                            if peer.isVerified {\n"
+            "                                titleCredibilityIcon = .verified\n"
+            "                            }\n"
+        )
+        if "self.aorusBadgeRawId = peer.id.id._internalGetInt64Value()" not in t and cap_anchor in t:
+            t = t.replace(
+                cap_anchor,
+                cap_anchor
+                + "                            if AorusBadge.kind(forPeerRawId: peer.id.id._internalGetInt64Value()) != nil {\n"
+                + "                                self.aorusBadgeRawId = peer.id.id._internalGetInt64Value()\n"
+                + "                            }\n",
+                1,
+            )
+        layout_anchor = (
+            "                nextRightIconX += statusIconsSpacing + credibilityIconSize.width\n"
+            "            }\n"
+        )
+        if "// AorusGram header badge layout" not in t and layout_anchor in t:
+            layout_inject = layout_anchor + (
+                "            // AorusGram header badge layout\n"
+                "            if let aorusRawId = self.aorusBadgeRawId, let aorusImg = AorusBadge.image(forPeerRawId: aorusRawId, height: 18.0, accent: component.theme.list.itemAccentColor) {\n"
+                "                let aorusBadge: UIImageView\n"
+                "                if let cur = self.aorusBadgeView {\n"
+                "                    aorusBadge = cur\n"
+                "                } else {\n"
+                "                    aorusBadge = UIImageView()\n"
+                "                    aorusBadge.contentMode = .scaleAspectFit\n"
+                "                    aorusBadge.isUserInteractionEnabled = false\n"
+                "                    self.aorusBadgeView = aorusBadge\n"
+                "                    self.contentContainer.addSubview(aorusBadge)\n"
+                "                }\n"
+                "                aorusBadge.image = aorusImg\n"
+                "                let aorusAspect = aorusImg.size.width / max(1.0, aorusImg.size.height)\n"
+                "                let aorusW = floor(18.0 * aorusAspect)\n"
+                "                aorusBadge.frame = CGRect(x: nextRightIconX + statusIconsSpacing, y: titleFrame.minY, width: aorusW, height: 18.0)\n"
+                "                nextRightIconX += statusIconsSpacing + aorusW\n"
+                "            } else if let aorusBadge = self.aorusBadgeView {\n"
+                "                self.aorusBadgeView = nil\n"
+                "                aorusBadge.removeFromSuperview()\n"
+                "            }\n"
+            )
+            t = t.replace(layout_anchor, layout_inject, 1)
+        title_comp.write_text(t, encoding="utf-8")
+        print("Badges: patched ChatTitleComponent (header DEV/meme badge, display only)")
+        # BUILD dep
+        tv_build = tg / "submodules/TelegramUI/Components/ChatTitleView/BUILD"
+        if tv_build.is_file():
+            bt = tv_build.read_text(encoding="utf-8")
+            if "//submodules/AorusBadge:AorusBadge" not in bt:
+                needle = '        "//submodules/TelegramPresentationData:TelegramPresentationData",\n'
+                if needle in bt:
+                    bt = bt.replace(needle, needle + '        "//submodules/AorusBadge:AorusBadge",\n', 1)
+                    tv_build.write_text(bt, encoding="utf-8")
+                    print("Badges: added AorusBadge dep to ChatTitleView BUILD")
+                else:
+                    print("Badges: WARNING ChatTitleView BUILD needle not found")
+    else:
+        print("Badges: ChatTitleComponent.swift not found — skipped")
+
+    # --- 2c. Profile (PeerInfoHeaderNode): DEV/meme badge + tap→toast ---
+    peer_header = tg / "submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoHeaderNode.swift"
+    if peer_header.is_file():
+        t = peer_header.read_text(encoding="utf-8")
+        if "import AorusBadge" not in t:
+            t = t.replace("import Foundation\n", "import Foundation\nimport AorusBadge\n", 1)
+        prop_anchor = "    let titleVerifiedIconView: ComponentHostView<Empty>\n"
+        if "var aorusBadgeView: AorusTappableBadgeView?" not in t and prop_anchor in t:
+            t = t.replace(
+                prop_anchor,
+                prop_anchor
+                + "    var aorusBadgeView: AorusTappableBadgeView?\n"
+                + "    var aorusBadgeRawId: Int64?\n"
+                + "    var aorusBadgePeerName: String = \"\"\n",
+                1,
+            )
+        reset_anchor = (
+            "        var credibilityIcon: CredibilityIcon = .none\n"
+            "        var verifiedIcon: CredibilityIcon = .none\n"
+            "        var statusIcon: CredibilityIcon = .none\n"
+        )
+        if reset_anchor in t and "self.aorusBadgeRawId = nil // AorusGram" not in t:
+            t = t.replace(reset_anchor, reset_anchor + "        self.aorusBadgeRawId = nil // AorusGram\n", 1)
+        cap_anchor = (
+            "            if peer.isVerified {\n"
+            "                credibilityIcon = .verified\n"
+            "            }\n"
+        )
+        if "self.aorusBadgeRawId = peer.id.id._internalGetInt64Value()" not in t and cap_anchor in t:
+            t = t.replace(
+                cap_anchor,
+                cap_anchor
+                + "            if AorusBadge.kind(forPeerRawId: peer.id.id._internalGetInt64Value()) != nil {\n"
+                + "                self.aorusBadgeRawId = peer.id.id._internalGetInt64Value()\n"
+                + "                self.aorusBadgePeerName = peer.displayTitle(strings: presentationData.strings, displayOrder: presentationData.nameDisplayOrder)\n"
+                + "            }\n",
+                1,
+            )
+        layout_anchor = "        var titleFrame: CGRect\n        var subtitleFrame: CGRect\n"
+        if "// AorusGram profile badge" not in t and layout_anchor in t:
+            layout_inject = (
+                "        // AorusGram profile badge (display + tap→toast)\n"
+                "        if let aorusRawId = self.aorusBadgeRawId, let aorusImg = AorusBadge.image(forPeerRawId: aorusRawId, height: 24.0, accent: presentationData.theme.list.itemAccentColor) {\n"
+                "            let aorusBadge: AorusTappableBadgeView\n"
+                "            if let cur = self.aorusBadgeView {\n"
+                "                aorusBadge = cur\n"
+                "            } else {\n"
+                "                aorusBadge = AorusTappableBadgeView(image: nil)\n"
+                "                self.aorusBadgeView = aorusBadge\n"
+                "                self.titleNode.stateNode(forKey: TitleNodeStateRegular)?.view.addSubview(aorusBadge)\n"
+                "            }\n"
+                "            aorusBadge.image = aorusImg\n"
+                "            let aorusName = self.aorusBadgePeerName\n"
+                "            let aorusAccent = presentationData.theme.list.itemAccentColor\n"
+                "            aorusBadge.onTap = {\n"
+                "                AorusBadgeToast.present(icon: aorusImg, text: AorusBadge.toastText(forPeerRawId: aorusRawId, peerName: aorusName) ?? \"\", accent: aorusAccent)\n"
+                "            }\n"
+                "            let aorusAspect = aorusImg.size.width / max(1.0, aorusImg.size.height)\n"
+                "            let aorusW = floor(24.0 * aorusAspect)\n"
+                "            transition.updateFrame(view: aorusBadge, frame: CGRect(x: nextIconX + 4.0, y: floor((titleSize.height - 24.0) / 2.0), width: aorusW, height: 24.0))\n"
+                "            nextIconX += 4.0 + aorusW\n"
+                "        } else if let aorusBadge = self.aorusBadgeView {\n"
+                "            self.aorusBadgeView = nil\n"
+                "            aorusBadge.removeFromSuperview()\n"
+                "        }\n"
+                "        \n"
+                + layout_anchor
+            )
+            t = t.replace(layout_anchor, layout_inject, 1)
+        peer_header.write_text(t, encoding="utf-8")
+        print("Badges: patched PeerInfoHeaderNode (profile DEV/meme badge + tap→toast)")
+    else:
+        print("Badges: PeerInfoHeaderNode.swift not found — skipped")
 
     # --- 3. Add AorusBadge dep to ChatListUI BUILD ---
     cl_build = tg / "submodules/ChatListUI/BUILD"

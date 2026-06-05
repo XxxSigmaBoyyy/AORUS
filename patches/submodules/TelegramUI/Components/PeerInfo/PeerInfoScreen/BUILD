@@ -97,6 +97,7 @@ swift_library(
         "//submodules/TelegramUI/Components/SendInviteLinkScreen",
         "//submodules/SettingsUI",
         "//submodules/AorusGramUI",
+        "//submodules/AorusBadge:AorusBadge",
         "//submodules/ShareController",
         "//submodules/TelegramUI/Components/ShareWithPeersScreen",
         "//submodules/StatisticsUI",
