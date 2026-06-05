@@ -3211,7 +3211,7 @@ def patch_aorus_badges(tg: Path) -> None:
         if "// AorusGram profile badge" not in t and layout_anchor in t:
             layout_inject = (
                 "        // AorusGram profile badge (display + tap→toast)\n"
-                "        if let aorusRawId = self.aorusBadgeRawId, let aorusImg = AorusBadge.image(forPeerRawId: aorusRawId, height: 20.0, accent: presentationData.theme.list.itemAccentColor) {\n"
+                "        if let aorusRawId = self.aorusBadgeRawId, let aorusImg = AorusBadge.image(forPeerRawId: aorusRawId, height: 25.0, accent: presentationData.theme.list.itemAccentColor) {\n"
                 "            let aorusBadge: AorusTappableBadgeView\n"
                 "            if let cur = self.aorusBadgeView {\n"
                 "                aorusBadge = cur\n"
@@ -3227,8 +3227,8 @@ def patch_aorus_badges(tg: Path) -> None:
                 "                AorusBadgeToast.present(icon: aorusImg, text: AorusBadge.toastText(forPeerRawId: aorusRawId, peerName: aorusName) ?? \"\", accent: aorusAccent)\n"
                 "            }\n"
                 "            let aorusAspect = aorusImg.size.width / max(1.0, aorusImg.size.height)\n"
-                "            let aorusW = floor(20.0 * aorusAspect)\n"
-                "            transition.updateFrame(view: aorusBadge, frame: CGRect(x: nextIconX + 4.0, y: floor((titleSize.height - 20.0) / 2.0), width: aorusW, height: 20.0))\n"
+                "            let aorusW = floor(25.0 * aorusAspect)\n"
+                "            transition.updateFrame(view: aorusBadge, frame: CGRect(x: nextIconX + 4.0, y: floor((titleSize.height - 25.0) / 2.0), width: aorusW, height: 25.0))\n"
                 "            nextIconX += 4.0 + aorusW\n"
                 "        } else if let aorusBadge = self.aorusBadgeView {\n"
                 "            self.aorusBadgeView = nil\n"
