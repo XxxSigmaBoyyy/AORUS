@@ -3026,6 +3026,22 @@ def patch_default_dark_theme(tg: Path) -> None:
         print("DarkDefault: WARNING defaultSettings line not found (upstream drift) — skipped")
 
 
+def _add_aorus_build_dep(build_path: Path) -> None:
+    """Add the AorusBadge dependency to a Bazel BUILD file (idempotent)."""
+    if not build_path.is_file():
+        return
+    bt = build_path.read_text(encoding="utf-8")
+    if "//submodules/AorusBadge:AorusBadge" in bt:
+        return
+    needle = '        "//submodules/TelegramPresentationData:TelegramPresentationData",\n'
+    if needle in bt:
+        bt = bt.replace(needle, needle + '        "//submodules/AorusBadge:AorusBadge",\n', 1)
+        build_path.write_text(bt, encoding="utf-8")
+        print(f"Badges: added AorusBadge dep to {build_path.parent.name} BUILD")
+    else:
+        print(f"Badges: WARNING {build_path.parent.name} BUILD needle not found")
+
+
 def patch_aorus_badges(tg: Path) -> None:
     """Local AorusGram badge system.
 
@@ -3291,62 +3307,163 @@ def patch_aorus_badges(tg: Path) -> None:
         print("Badges: PeerInfoHeaderNode.swift not found — skipped")
 
     # --- 2d. Member lists / search / contacts (ItemListPeerItem, ContactsPeerItem) ---
-    # Badge must appear AFTER the name AND after any Telegram Premium badge.
-    #
-    # ContactsPeerItem (people search): premium lives in `credibilityStatusIcon`,
-    # which renders right after the name. There is a SEPARATE `emojiStatusIcon`
-    # slot that renders immediately after `credibilityStatusIcon`, so we put the
-    # AorusGram badge there (only when empty, to preserve a real emoji status) —
-    # giving the order: name → premium → DEV/cat.
-    #
-    # ItemListPeerItem (member lists) has only one after-name slot (`credibilityIcon`),
-    # so the badge goes there. These internal accounts aren't premium, so nothing is
-    # visually replaced in practice.
-    #
-    # Each tuple: (source, BUILD, anchor, peer_expr, target_var, guard_prefix)
-    peer_items = [
-        ("submodules/ItemListPeerItem/Sources/ItemListPeerItem.swift",
-         "submodules/ItemListPeerItem/BUILD",
-         "                if item.peer.isVerified {",
-         "item.peer",
-         "credibilityIcon",
-         ""),
-        ("submodules/ContactsPeerItem/Sources/ContactsPeerItem.swift",
-         "submodules/ContactsPeerItem/BUILD",
-         "                    if peer.isVerified {",
-         "peer",
-         "emojiStatusIcon",
-         "emojiStatusIcon == nil, "),
-    ]
-    for rel, build_rel, anchor, peer_expr, cred_var, guard in peer_items:
-        f = tg / rel
-        if not f.is_file():
-            print(f"Badges: {rel} not found — skipped")
-            continue
-        t = f.read_text(encoding="utf-8")
+    # Proper approach: a DEDICATED, self-owned UIImageView for the AorusGram badge,
+    # completely independent of Telegram's built-in icon slots (premium/verified/
+    # emoji-status). Reusing those slots caused the badge to clash with the premium
+    # badge. Instead the dedicated view is laid out AFTER the name and after every
+    # built-in icon (so the order is always: name → premium/verified → DEV/cat) and
+    # never replaces anything. The badge image is computed once in the measurement
+    # scope (reserving title width) and captured by the apply closure for layout.
+
+    # ContactsPeerItem (people search & member lists)
+    cp = tg / "submodules/ContactsPeerItem/Sources/ContactsPeerItem.swift"
+    if cp.is_file():
+        t = cp.read_text(encoding="utf-8")
         if "import AorusBadge" not in t:
             t = t.replace("import Foundation\n", "import Foundation\nimport AorusBadge\n", 1)
-        indent = anchor[: len(anchor) - len(anchor.lstrip())]
-        marker = f"let aorusBadgeImage = AorusBadge.image(forPeerRawId: {peer_expr}.id.id._internalGetInt64Value()"
-        if marker not in t and ("\n" + anchor) in t:
-            inject = (
-                f"\n{indent}if {guard}let aorusBadgeImage = AorusBadge.image(forPeerRawId: {peer_expr}.id.id._internalGetInt64Value(), height: 16.0, accent: item.presentationData.theme.list.itemAccentColor) {{\n"
-                f"{indent}    {cred_var} = .image(image: aorusBadgeImage, tintColor: nil)\n"
-                f"{indent}}}\n"
-                f"{anchor}"
+        # 1) dedicated view property
+        prop_anchor = "    private var emojiStatusIconComponent: EmojiStatusComponent?\n"
+        if "private var aorusBadgeView: UIImageView?" not in t and prop_anchor in t:
+            t = t.replace(prop_anchor, prop_anchor + "    private var aorusBadgeView: UIImageView?\n", 1)
+        # 2) declare the badge image in the measurement scope
+        decl_anchor = "            var emojiStatusParticleColor: UIColor?\n"
+        if "var aorusBadgeImage: UIImage?" not in t and decl_anchor in t:
+            t = t.replace(decl_anchor, decl_anchor + "            var aorusBadgeImage: UIImage?\n", 1)
+        # 3) compute it where `peer` is in scope (before the isVerified check)
+        assign_anchor = "                    if peer.isVerified {\n"
+        if "aorusBadgeImage = AorusBadge.image(forPeerRawId: peer.id" not in t and assign_anchor in t:
+            t = t.replace(
+                assign_anchor,
+                "                    aorusBadgeImage = AorusBadge.image(forPeerRawId: peer.id.id._internalGetInt64Value(), height: 16.0, accent: item.presentationData.theme.list.itemAccentColor)\n"
+                + assign_anchor,
+                1,
             )
-            t = t.replace("\n" + anchor, inject, 1)
-        f.write_text(t, encoding="utf-8")
-        print(f"Badges: patched {rel.split('/')[-1]} (member list / search badge, after name+premium)")
-        bf = tg / build_rel
-        if bf.is_file():
-            bt = bf.read_text(encoding="utf-8")
-            if "//submodules/AorusBadge:AorusBadge" not in bt:
-                needle = '        "//submodules/TelegramPresentationData:TelegramPresentationData",\n'
-                if needle in bt:
-                    bt = bt.replace(needle, needle + '        "//submodules/AorusBadge:AorusBadge",\n', 1)
-                    bf.write_text(bt, encoding="utf-8")
-                    print(f"Badges: added AorusBadge dep to {build_rel.split('/')[-2]} BUILD")
+        # 4) reserve title width for the badge
+        width_anchor = (
+            "            if let _ = emojiStatusIcon {\n"
+            "                additionalTitleInset += 3.0\n"
+            "                additionalTitleInset += 16.0\n"
+            "            }\n"
+        )
+        if "additionalTitleInset += 4.0 + aorusBadgeImage.size.width" not in t and width_anchor in t:
+            t = t.replace(
+                width_anchor,
+                width_anchor
+                + "            if let aorusBadgeImage {\n"
+                + "                additionalTitleInset += 4.0 + aorusBadgeImage.size.width\n"
+                + "            }\n",
+                1,
+            )
+        # 5) lay out the dedicated view after the emoji-status icon (last built-in icon)
+        apply_anchor = (
+            "                            } else if let emojiStatusIconView = strongSelf.emojiStatusIconView {\n"
+            "                                strongSelf.emojiStatusIconView = nil\n"
+            "                                emojiStatusIconView.removeFromSuperview()\n"
+            "                            }\n"
+        )
+        if "// AorusGram dedicated badge" not in t and apply_anchor in t:
+            t = t.replace(
+                apply_anchor,
+                apply_anchor
+                + "                            // AorusGram dedicated badge (after name + all built-in icons)\n"
+                + "                            if let aorusBadgeImage {\n"
+                + "                                let aorusBadgeView: UIImageView\n"
+                + "                                if let current = strongSelf.aorusBadgeView {\n"
+                + "                                    aorusBadgeView = current\n"
+                + "                                } else {\n"
+                + "                                    aorusBadgeView = UIImageView()\n"
+                + "                                    aorusBadgeView.contentMode = .scaleAspectFit\n"
+                + "                                    strongSelf.offsetContainerNode.view.addSubview(aorusBadgeView)\n"
+                + "                                    strongSelf.aorusBadgeView = aorusBadgeView\n"
+                + "                                }\n"
+                + "                                aorusBadgeView.image = aorusBadgeImage\n"
+                + "                                let aorusBadgeSize = aorusBadgeImage.size\n"
+                + "                                nextIconX += 4.0\n"
+                + "                                transition.updateFrame(view: aorusBadgeView, frame: CGRect(origin: CGPoint(x: nextIconX, y: floorToScreenPixels(titleFrame.midY - aorusBadgeSize.height / 2.0)), size: aorusBadgeSize))\n"
+                + "                                nextIconX += aorusBadgeSize.width\n"
+                + "                            } else if let aorusBadgeView = strongSelf.aorusBadgeView {\n"
+                + "                                strongSelf.aorusBadgeView = nil\n"
+                + "                                aorusBadgeView.removeFromSuperview()\n"
+                + "                            }\n",
+                1,
+            )
+        cp.write_text(t, encoding="utf-8")
+        print("Badges: patched ContactsPeerItem (dedicated badge view, after name+premium)")
+        _add_aorus_build_dep(tg / "submodules/ContactsPeerItem/BUILD")
+    else:
+        print("Badges: ContactsPeerItem.swift not found — skipped")
+
+    # ItemListPeerItem (member lists)
+    ip = tg / "submodules/ItemListPeerItem/Sources/ItemListPeerItem.swift"
+    if ip.is_file():
+        t = ip.read_text(encoding="utf-8")
+        if "import AorusBadge" not in t:
+            t = t.replace("import Foundation\n", "import Foundation\nimport AorusBadge\n", 1)
+        # 1) dedicated view property
+        prop_anchor = "    private var verifiedIconView: ComponentHostView<Empty>?\n"
+        if "private var aorusBadgeView: UIImageView?" not in t and prop_anchor in t:
+            t = t.replace(prop_anchor, prop_anchor + "    private var aorusBadgeView: UIImageView?\n", 1)
+        # 2) declare + compute the badge image right before titleIconsWidth
+        decl_anchor = "            var titleIconsWidth: CGFloat = 0.0\n"
+        if "let aorusBadgeImage: UIImage? = AorusBadge.image(forPeerRawId: item.peer.id" not in t and decl_anchor in t:
+            t = t.replace(
+                decl_anchor,
+                "            let aorusBadgeImage: UIImage? = AorusBadge.image(forPeerRawId: item.peer.id.id._internalGetInt64Value(), height: 16.0, accent: item.presentationData.theme.list.itemAccentColor)\n"
+                + decl_anchor,
+                1,
+            )
+        # 3) reserve title width
+        width_anchor = "            var badgeColor: UIColor?\n"
+        if "titleIconsWidth += 4.0 + aorusBadgeImage.size.width" not in t and width_anchor in t:
+            t = t.replace(
+                width_anchor,
+                "            if let aorusBadgeImage {\n"
+                + "                titleIconsWidth += 4.0 + aorusBadgeImage.size.width\n"
+                + "            }\n"
+                + width_anchor,
+                1,
+            )
+        # 4) lay out the dedicated view after the credibility icon. nextIconX is not a
+        # reliable right-edge here, so anchor off the credibility view's actual frame.
+        apply_anchor = (
+            "                    } else if let credibilityIconView = strongSelf.credibilityIconView {\n"
+            "                        strongSelf.credibilityIconView = nil\n"
+            "                        credibilityIconView.removeFromSuperview()\n"
+            "                    }\n"
+        )
+        if "// AorusGram dedicated badge" not in t and apply_anchor in t:
+            t = t.replace(
+                apply_anchor,
+                apply_anchor
+                + "                    // AorusGram dedicated badge (after name + credibility icon)\n"
+                + "                    if let aorusBadgeImage {\n"
+                + "                        let aorusBadgeView: UIImageView\n"
+                + "                        if let current = strongSelf.aorusBadgeView {\n"
+                + "                            aorusBadgeView = current\n"
+                + "                        } else {\n"
+                + "                            aorusBadgeView = UIImageView()\n"
+                + "                            aorusBadgeView.contentMode = .scaleAspectFit\n"
+                + "                            strongSelf.containerNode.view.addSubview(aorusBadgeView)\n"
+                + "                            strongSelf.aorusBadgeView = aorusBadgeView\n"
+                + "                        }\n"
+                + "                        aorusBadgeView.image = aorusBadgeImage\n"
+                + "                        var aorusStartX = titleFrame.maxX\n"
+                + "                        if let credView = strongSelf.credibilityIconView, credView.superview != nil {\n"
+                + "                            aorusStartX = max(aorusStartX, credView.frame.maxX)\n"
+                + "                        }\n"
+                + "                        let aorusBadgeSize = aorusBadgeImage.size\n"
+                + "                        transition.updateFrame(view: aorusBadgeView, frame: CGRect(origin: CGPoint(x: aorusStartX + 4.0, y: floorToScreenPixels(titleFrame.midY - aorusBadgeSize.height / 2.0)), size: aorusBadgeSize))\n"
+                + "                    } else if let aorusBadgeView = strongSelf.aorusBadgeView {\n"
+                + "                        strongSelf.aorusBadgeView = nil\n"
+                + "                        aorusBadgeView.removeFromSuperview()\n"
+                + "                    }\n",
+                1,
+            )
+        ip.write_text(t, encoding="utf-8")
+        print("Badges: patched ItemListPeerItem (dedicated badge view, after name+credibility)")
+        _add_aorus_build_dep(tg / "submodules/ItemListPeerItem/BUILD")
+    else:
+        print("Badges: ItemListPeerItem.swift not found — skipped")
 
     # --- 2e. Chat message sender names (ChatMessageBubbleItemNode) ---
     # The sender name row in message bubbles uses `currentCredibilityIcon` placed
