@@ -3549,6 +3549,106 @@ def patch_default_auto_night(tg: Path) -> None:
         print("AutoNight: WARNING AutomaticThemeSwitchSetting pattern not found")
 
 
+def patch_local_premium(tg: Path) -> None:
+    """Local Telegram Premium for the user's OWN account(s), client-side only.
+
+    Everything funnels through `Peer.isPremium` (PeerUtils.swift): the account
+    context's `isPremium`, the per-message `associatedData.isPremium`, premium
+    limits, premium-gated UI, etc. all read it. So we make that single accessor
+    return true — but ONLY for the user's own logged-in account ids, registered
+    at `AccountContextImpl.init`. Other peers keep their real server flag, so a
+    premium badge never appears on contacts who aren't actually premium.
+
+    This unlocks client-gated premium features (premium stickers/emoji, message
+    effects, profile customisation, folder tags, no upsell walls, premium limits
+    in the UI). Server-enforced limits remain governed by the server.
+    """
+    # 1) Self-account premium registry (new file, auto-globbed into TelegramCore).
+    registry = tg / "submodules/TelegramCore/Sources/Utils/AorusGramPremium.swift"
+    registry_src = (
+        "import Foundation\n"
+        "\n"
+        "// AorusGram local Telegram Premium.\n"
+        "//\n"
+        "// Premium is unlocked purely on the client for the user's OWN logged-in\n"
+        "// account(s): when an account becomes active its peer id is registered here,\n"
+        "// and `Peer.isPremium` short-circuits to true for those ids. Every other peer\n"
+        "// keeps its real (server) premium flag, so premium badges are never shown on\n"
+        "// contacts who aren't actually premium.\n"
+        "public enum AorusGramPremium {\n"
+        "    private static let lock = NSLock()\n"
+        "    private static var accountPeerRawIds = Set<Int64>()\n"
+        "\n"
+        "    public static func registerCurrentAccount(_ rawId: Int64) {\n"
+        "        lock.lock()\n"
+        "        accountPeerRawIds.insert(rawId)\n"
+        "        lock.unlock()\n"
+        "    }\n"
+        "\n"
+        "    public static func isOwnAccount(_ rawId: Int64) -> Bool {\n"
+        "        lock.lock()\n"
+        "        let result = accountPeerRawIds.contains(rawId)\n"
+        "        lock.unlock()\n"
+        "        return result\n"
+        "    }\n"
+        "}\n"
+    )
+    registry.write_text(registry_src, encoding="utf-8")
+    print("Premium: wrote AorusGramPremium.swift registry")
+
+    # 2) Short-circuit Peer.isPremium for own account(s).
+    peer_utils = tg / "submodules/TelegramCore/Sources/Utils/PeerUtils.swift"
+    if peer_utils.is_file():
+        t = peer_utils.read_text(encoding="utf-8")
+        anchor = (
+            "    var isPremium: Bool {\n"
+            "        switch self {\n"
+            "        case let user as TelegramUser:\n"
+            "            return user.flags.contains(.isPremium)\n"
+        )
+        if "AorusGramPremium.isOwnAccount" in t:
+            print("Premium: PeerUtils isPremium already patched")
+        elif anchor in t:
+            injected = (
+                "    var isPremium: Bool {\n"
+                "        // AorusGram local premium — the user's own account(s) always read as premium.\n"
+                "        if AorusGramPremium.isOwnAccount(self.id.id._internalGetInt64Value()) {\n"
+                "            return true\n"
+                "        }\n"
+                "        switch self {\n"
+                "        case let user as TelegramUser:\n"
+                "            return user.flags.contains(.isPremium)\n"
+            )
+            t = t.replace(anchor, injected, 1)
+            peer_utils.write_text(t, encoding="utf-8")
+            print("Premium: patched PeerUtils isPremium (local premium for own account)")
+        else:
+            print("Premium: WARNING isPremium anchor not found in PeerUtils")
+    else:
+        print("Premium: PeerUtils.swift not found — skipped")
+
+    # 3) Register the account id + set context premium at AccountContextImpl.init.
+    acc_ctx = tg / "submodules/TelegramUI/Sources/AccountContext.swift"
+    if acc_ctx.is_file():
+        t = acc_ctx.read_text(encoding="utf-8")
+        anchor = "        self.isPremium = false\n"
+        if "AorusGramPremium.registerCurrentAccount" in t:
+            print("Premium: AccountContextImpl already patched")
+        elif anchor in t:
+            t = t.replace(
+                anchor,
+                "        AorusGramPremium.registerCurrentAccount(account.peerId.id._internalGetInt64Value()) // AorusGram local premium\n"
+                "        self.isPremium = true\n",
+                1,
+            )
+            acc_ctx.write_text(t, encoding="utf-8")
+            print("Premium: patched AccountContextImpl (register own account + isPremium = true)")
+        else:
+            print("Premium: WARNING self.isPremium = false anchor not found in AccountContext")
+    else:
+        print("Premium: AccountContext.swift not found — skipped")
+
+
 def main() -> None:
     tg = Path(sys.argv[1]).resolve()
     if not tg.is_dir():
@@ -3598,6 +3698,7 @@ def main() -> None:
     # which showed "Off"). Instead pin auto-night to System + Night explicitly:
     patch_default_auto_night(tg)
     patch_aorus_badges(tg)
+    patch_local_premium(tg)
     for name in ("Info.plist", "InfoBazel.plist"):
         patch_plist_icons_and_urls(tg / "Telegram/Telegram-iOS" / name)
     patch_info_plist_bgtask(tg)
