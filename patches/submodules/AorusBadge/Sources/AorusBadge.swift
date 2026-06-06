@@ -57,9 +57,29 @@ public enum AorusBadge {
         guard let kind = kind(forPeerRawId: id) else { return nil }
         switch kind {
         case .meme:
-            return AorusBadgeAssets.cat
+            return catImage(height: height)
         case .dev:
             return devImage(height: height, accent: accent)
+        }
+    }
+
+    // Meme cat scaled to `height` points (preserving aspect). The source asset is a
+    // large square PNG; without this it would render at its native size and dwarf the
+    // surrounding row. Other surfaces (chat list, profile) historically aspect-fit it
+    // into a fixed box, but the dedicated badge views use the image size directly, so
+    // the scaling must happen here to stay consistent everywhere.
+    private static func catImage(height: CGFloat) -> UIImage? {
+        guard let cat = AorusBadgeAssets.cat else { return nil }
+        let h = max(12.0, height)
+        let aspect = cat.size.width / max(1.0, cat.size.height)
+        let size = CGSize(width: floor(h * aspect), height: h)
+        let renderer = UIGraphicsImageRenderer(size: size, format: {
+            let f = UIGraphicsImageRendererFormat.preferred()
+            f.opaque = false
+            return f
+        }())
+        return renderer.image { _ in
+            cat.draw(in: CGRect(origin: .zero, size: size))
         }
     }
 
