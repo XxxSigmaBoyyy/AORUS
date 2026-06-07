@@ -3813,7 +3813,7 @@ def patch_save_view_once(tg: Path) -> None:
     old = "peerIsCopyProtected: true, tempFilePath: tempFilePath"
     new = (
         "peerIsCopyProtected: !UserDefaults.standard.bool(forKey: \"aorusgram_bypass_view_once\"), "
-        "tempFilePath: tempFilePath // AorusGram"
+        "tempFilePath: tempFilePath"
     )
     if "aorusgram_bypass_view_once" in t:
         print("ViewOnce: already patched")
