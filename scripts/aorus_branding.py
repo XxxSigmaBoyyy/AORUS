@@ -3549,6 +3549,70 @@ def patch_default_auto_night(tg: Path) -> None:
         print("AutoNight: WARNING AutomaticThemeSwitchSetting pattern not found")
 
 
+def patch_notch_badge(tg: Path) -> None:
+    """Wire the AorusNotchBadge module into the app.
+
+    The module is copied into submodules/AorusNotchBadge by the workflow. Here we:
+      1) add it as a dependency of the TelegramUI swift_library (so AppDelegate,
+         which lives in TelegramUI, can import it);
+      2) add `import AorusNotchBadge` to AppDelegate;
+      3) call `AorusNotchBadge.shared.setup(in: window)` right after the window is
+         made key & visible, so the decorative pill is installed on the key window.
+    """
+    # 1) TelegramUI BUILD dependency.
+    build = tg / "submodules/TelegramUI/BUILD"
+    if build.is_file():
+        bt = build.read_text(encoding="utf-8")
+        dep = '        "//submodules/AorusNotchBadge:AorusNotchBadge",\n'
+        if "//submodules/AorusNotchBadge:AorusNotchBadge" in bt:
+            print("NotchBadge: TelegramUI BUILD dep already present")
+        else:
+            needle = '        "//submodules/TelegramUIPreferences:TelegramUIPreferences",\n'
+            if needle in bt:
+                bt = bt.replace(needle, needle + dep, 1)
+                build.write_text(bt, encoding="utf-8")
+                print("NotchBadge: added AorusNotchBadge dep to TelegramUI BUILD")
+            else:
+                print("NotchBadge: WARNING TelegramUI BUILD needle not found")
+    else:
+        print("NotchBadge: TelegramUI BUILD not found — skipped")
+
+    # 2) + 3) AppDelegate import + setup call.
+    app = tg / "submodules/TelegramUI/Sources/AppDelegate.swift"
+    if app.is_file():
+        t = app.read_text(encoding="utf-8")
+        if "import AorusNotchBadge" not in t:
+            needle = "import UIKit"
+            pos = t.find(needle)
+            if pos != -1:
+                line_end = t.find("\n", pos)
+                if line_end != -1:
+                    t = t[: line_end + 1] + "import AorusNotchBadge\n" + t[line_end + 1 :]
+                    print("NotchBadge: added import AorusNotchBadge")
+            else:
+                print("NotchBadge: WARNING import UIKit not found in AppDelegate")
+        # Inject setup at a unique, late point where the window is fully wired.
+        # (`makeKeyAndVisible` appears multiple times after launch-fixes, so anchor
+        # off this unique line instead to stay deterministic.)
+        anchor = "        GlobalExperimentalSettings.enableFeed = false\n"
+        if "AorusNotchBadge.shared.setup" not in t and anchor in t:
+            inject = (
+                anchor
+                + "        if let aorusWindow = self.window {\n"
+                + "            AorusNotchBadge.shared.setup(in: aorusWindow)\n"
+                + "        }\n"
+            )
+            t = t.replace(anchor, inject, 1)
+            print("NotchBadge: added setup(in:) after enableFeed")
+        elif "AorusNotchBadge.shared.setup" in t:
+            print("NotchBadge: AppDelegate setup already present")
+        else:
+            print("NotchBadge: WARNING enableFeed anchor not found")
+        app.write_text(t, encoding="utf-8")
+    else:
+        print("NotchBadge: AppDelegate.swift not found — skipped")
+
+
 def patch_local_premium(tg: Path) -> None:
     """Local Telegram Premium for the user's OWN account(s), client-side only.
 
@@ -3699,6 +3763,7 @@ def main() -> None:
     patch_default_auto_night(tg)
     patch_aorus_badges(tg)
     patch_local_premium(tg)
+    patch_notch_badge(tg)
     for name in ("Info.plist", "InfoBazel.plist"):
         patch_plist_icons_and_urls(tg / "Telegram/Telegram-iOS" / name)
     patch_info_plist_bgtask(tg)

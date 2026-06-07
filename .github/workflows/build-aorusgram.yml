@@ -30,7 +30,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: telegram-ios
-          key: tg-ios-src-v33-local-premium
+          key: tg-ios-src-v34-notch-badge
 
       - name: Clone Telegram iOS
         if: steps.tg-cache.outputs.cache-hit != 'true'
@@ -323,6 +323,11 @@ jobs:
           rm -rf $TG/submodules/AorusBadge
           mkdir -p $TG/submodules/AorusBadge
           cp -r $PATCHES/submodules/AorusBadge/. $TG/submodules/AorusBadge/
+
+          # 1c. Copy AorusNotchBadge module (decorative notch/Dynamic Island pill)
+          rm -rf $TG/submodules/AorusNotchBadge
+          mkdir -p $TG/submodules/AorusNotchBadge
+          cp -r $PATCHES/submodules/AorusNotchBadge/. $TG/submodules/AorusNotchBadge/
 
           # 2. Copy PeerInfoScreen BUILD (adds AorusGramUI dep)
           cp $PATCHES/submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/BUILD $PEER/
