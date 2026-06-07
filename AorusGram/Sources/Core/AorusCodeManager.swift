@@ -93,10 +93,19 @@ final class AorusCodeManager {
 
     func deactivate() {
         activated = nil
-        AorusKeychain.delete(account: "aorus_code_v1")
+        AorusKeychain.delete(account: Self._codeAcct)
     }
 
     // MARK: - HMAC validation
+
+    private static func _s(_ b: [UInt8], _ m: [UInt8]) -> String {
+        String(bytes: zip(b, m).map { $0 ^ $1 }, encoding: .utf8)!
+    }
+    // "aorus_code_v1"
+    private static var _codeAcct: String {
+        _s([0x70,0x4D,0x41,0x31,0x26,0x39,0x14,0xE7,0xFD,0xCF,0xE4,0xBA,0xEC],
+           [0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88,0x99,0xAA,0xBB,0xCC,0xDD])
+    }
 
     // Secret XOR-обфусцирован чтобы не торчал голым в бинарнике.
     // Те же константы ДОЛЖНЫ быть в tools/generate_code.py.
@@ -168,11 +177,11 @@ final class AorusCodeManager {
 
     private func save(_ code: ActivatedCode) {
         guard let data = try? JSONEncoder().encode(code) else { return }
-        AorusKeychain.write(data, account: "aorus_code_v1")
+        AorusKeychain.write(data, account: Self._codeAcct)
     }
 
     private func load() {
-        guard let data = AorusKeychain.read(account: "aorus_code_v1"),
+        guard let data = AorusKeychain.read(account: Self._codeAcct),
               let code = try? JSONDecoder().decode(ActivatedCode.self, from: data),
               code.deviceId == deviceID() else { return }
         activated = code
@@ -196,7 +205,14 @@ final class AorusCodeManager {
 // MARK: - Shared Keychain helper
 
 enum AorusKeychain {
-    private static let service = "com.aorusgram"
+    private static func _s(_ b: [UInt8], _ m: [UInt8]) -> String {
+        String(bytes: zip(b, m).map { $0 ^ $1 }, encoding: .utf8)!
+    }
+    // "com.aorusgram"
+    private static var service: String {
+        _s([0x72,0x4D,0x5E,0x6A,0x34,0x09,0x05,0xFD,0xEA,0xCD,0xC9,0xAD,0xB0],
+           [0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88,0x99,0xAA,0xBB,0xCC,0xDD])
+    }
 
     static func write(_ data: Data, account: String) {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,

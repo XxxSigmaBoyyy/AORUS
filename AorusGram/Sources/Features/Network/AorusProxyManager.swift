@@ -221,8 +221,21 @@ public extension Notification.Name {
 // Keeps the proxy config JSON off UserDefaults (readable by file managers on
 // jailbroken devices) and into the Keychain which requires Secure Enclave unlock.
 private enum ProxyKeychain {
-    private static let svc = "com.aorusgram.proxy"
-    private static let acct = "cfg.v1"
+    // Runtime XOR decode: zip(b,m).map{$0^$1} → UTF-8 string.
+    // b values carry no semantic meaning without m.
+    private static func _s(_ b: [UInt8], _ m: [UInt8]) -> String {
+        String(bytes: zip(b, m).map { $0 ^ $1 }, encoding: .utf8)!
+    }
+    // "com.aorusgram.proxy"
+    private static var svc: String {
+        _s([0x72,0x4D,0x5E,0x6A,0x34,0x09,0x05,0xFD,0xEA,0xCD,0xC9,0xAD,0xB0,0xC0,0x8F,0x63,0x4D,0x4B,0x3D],
+           [0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88,0x99,0xAA,0xBB,0xCC,0xDD,0xEE,0xFF,0x11,0x22,0x33,0x44])
+    }
+    // "cfg.v1"
+    private static var acct: String {
+        _s([0x72,0x44,0x54,0x6A,0x23,0x57],
+           [0x11,0x22,0x33,0x44,0x55,0x66])
+    }
 
     static func write(_ data: Data) {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
