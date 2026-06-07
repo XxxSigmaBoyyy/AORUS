@@ -3650,16 +3650,14 @@ def patch_local_premium(tg: Path) -> None:
 
 
 def patch_bypass_copy_protection(tg: Path) -> None:
-    """Remove copy-protection restrictions: always allow saving media.
+    """Gate copy-protection bypass on UserDefaults flag 'aorusgram_bypass_save_paid'.
 
-    Three changes:
-    1. MessageUtils.swift — isCopyProtected() always returns false.
-       This removes the 'content protection' flag from all messages globally.
-    2. ChatImageGalleryItem.swift — remove paidContent == nil guard on the
-       'Save to Camera Roll' context menu item so paid photos can be saved.
-    3. UniversalVideoGalleryItem.swift — same for video and video-as-image save.
+    Toggle ON  → isCopyProtected() returns false + paidContent check skipped → save allowed.
+    Toggle OFF → original Telegram behaviour restored.
     """
-    # 1) isCopyProtected always false
+    SENTINEL = "aorusgram_bypass_save_paid"
+
+    # 1) isCopyProtected — prepend UserDefaults early-return
     msg_utils = tg / "submodules/TelegramCore/Sources/Utils/MessageUtils.swift"
     if msg_utils.is_file():
         t = msg_utils.read_text(encoding="utf-8")
@@ -3678,61 +3676,97 @@ def patch_bypass_copy_protection(tg: Path) -> None:
         )
         new = (
             "    func isCopyProtected() -> Bool {\n"
-            "        return false // AorusGram: copy protection bypassed\n"
+            "        if UserDefaults.standard.bool(forKey: \"aorusgram_bypass_save_paid\") { return false } // AorusGram\n"
+            "        if self.flags.contains(.CopyProtected) {\n"
+            "            return true\n"
+            "        } else if let group = self.peers[self.id.peerId] as? TelegramGroup, group.flags.contains(.copyProtectionEnabled) {\n"
+            "            return true\n"
+            "        } else if let channel = self.peers[self.id.peerId] as? TelegramChannel, channel.flags.contains(.copyProtectionEnabled) {\n"
+            "            return true\n"
+            "        } else {\n"
+            "            return false\n"
+            "        }\n"
             "    }\n"
         )
-        if "AorusGram: copy protection bypassed" in t:
+        if SENTINEL in t:
             print("CopyProtect: MessageUtils already patched")
         elif old in t:
             msg_utils.write_text(t.replace(old, new, 1), encoding="utf-8")
-            print("CopyProtect: patched isCopyProtected() → always false")
+            print("CopyProtect: patched isCopyProtected() — gated on UserDefaults")
         else:
             print("CopyProtect: WARNING — isCopyProtected anchor not found")
     else:
         print("CopyProtect: MessageUtils.swift not found")
 
-    # 2) ChatImageGalleryItem — remove paidContent checks from save guards
+    # 2) ChatImageGalleryItem — paidContent checks gated on UserDefaults
     img_item = tg / "submodules/GalleryUI/Sources/Items/ChatImageGalleryItem.swift"
     if img_item.is_file():
         t = img_item.read_text(encoding="utf-8")
         changed = False
-        # Guard at createSticker entry point
-        old2a = "        guard let message = self.message, !message.isCopyProtected() && message.paidContent == nil else {"
-        new2a = "        guard let message = self.message else { // AorusGram: bypass paidContent"
+        old2a = (
+            "        guard let message = self.message, "
+            "!message.isCopyProtected() && message.paidContent == nil else {"
+        )
+        new2a = (
+            "        guard let message = self.message, "
+            "!message.isCopyProtected() && (message.paidContent == nil || UserDefaults.standard.bool(forKey: \"aorusgram_bypass_save_paid\")) else { // AorusGram"
+        )
         if old2a in t:
             t = t.replace(old2a, new2a, 1); changed = True
-        # Save-to-camera-roll button condition
-        old2b = "                if !message.isCopyProtected() && !self.peerIsCopyProtected && message.paidContent == nil, let media = self.contextAndMedia?.1 {"
-        new2b = "                if let media = self.contextAndMedia?.1 { // AorusGram: bypass save restriction"
+        old2b = (
+            "                if !message.isCopyProtected() && !self.peerIsCopyProtected "
+            "&& message.paidContent == nil, let media = self.contextAndMedia?.1 {"
+        )
+        new2b = (
+            "                if !message.isCopyProtected() && !self.peerIsCopyProtected "
+            "&& (message.paidContent == nil || UserDefaults.standard.bool(forKey: \"aorusgram_bypass_save_paid\")), let media = self.contextAndMedia?.1 { // AorusGram"
+        )
         if old2b in t:
             t = t.replace(old2b, new2b, 1); changed = True
         if changed:
             img_item.write_text(t, encoding="utf-8")
-            print("CopyProtect: patched ChatImageGalleryItem save guards")
-        elif "AorusGram: bypass" in t:
+            print("CopyProtect: patched ChatImageGalleryItem — paidContent gated")
+        elif "AorusGram" in t and SENTINEL in t:
             print("CopyProtect: ChatImageGalleryItem already patched")
         else:
             print("CopyProtect: WARNING — ChatImageGalleryItem anchors not found")
     else:
         print("CopyProtect: ChatImageGalleryItem.swift not found")
 
-    # 3) UniversalVideoGalleryItem — remove paidContent checks from save buttons
+    # 3) UniversalVideoGalleryItem — paidContent checks gated on UserDefaults
     vid_item = tg / "submodules/GalleryUI/Sources/Items/UniversalVideoGalleryItem.swift"
     if vid_item.is_file():
         t = vid_item.read_text(encoding="utf-8")
         changed = False
-        old3a = "                if let (message, maybeFile, _) = strongSelf.contentInfo(), let file = maybeFile, !message.isCopyProtected() && !item.peerIsCopyProtected && message.paidContent == nil {"
-        new3a = "                if let (message, maybeFile, _) = strongSelf.contentInfo(), let file = maybeFile { // AorusGram: bypass save restriction"
+        old3a = (
+            "                if let (message, maybeFile, _) = strongSelf.contentInfo(), "
+            "let file = maybeFile, !message.isCopyProtected() && !item.peerIsCopyProtected "
+            "&& message.paidContent == nil {"
+        )
+        new3a = (
+            "                if let (message, maybeFile, _) = strongSelf.contentInfo(), "
+            "let file = maybeFile, !message.isCopyProtected() && !item.peerIsCopyProtected "
+            "&& (message.paidContent == nil || UserDefaults.standard.bool(forKey: \"aorusgram_bypass_save_paid\")) { // AorusGram"
+        )
         if old3a in t:
             t = t.replace(old3a, new3a, 1); changed = True
-        old3b = "                if let (message, _, _) = strongSelf.contentInfo(), let image = message.media.first(where: { $0 is TelegramMediaImage }) as? TelegramMediaImage, !message.isCopyProtected() && !item.peerIsCopyProtected && message.paidContent == nil {"
-        new3b = "                if let (message, _, _) = strongSelf.contentInfo(), let image = message.media.first(where: { $0 is TelegramMediaImage }) as? TelegramMediaImage { // AorusGram: bypass save restriction"
+        old3b = (
+            "                if let (message, _, _) = strongSelf.contentInfo(), "
+            "let image = message.media.first(where: { $0 is TelegramMediaImage }) as? TelegramMediaImage, "
+            "!message.isCopyProtected() && !item.peerIsCopyProtected && message.paidContent == nil {"
+        )
+        new3b = (
+            "                if let (message, _, _) = strongSelf.contentInfo(), "
+            "let image = message.media.first(where: { $0 is TelegramMediaImage }) as? TelegramMediaImage, "
+            "!message.isCopyProtected() && !item.peerIsCopyProtected "
+            "&& (message.paidContent == nil || UserDefaults.standard.bool(forKey: \"aorusgram_bypass_save_paid\")) { // AorusGram"
+        )
         if old3b in t:
             t = t.replace(old3b, new3b, 1); changed = True
         if changed:
             vid_item.write_text(t, encoding="utf-8")
-            print("CopyProtect: patched UniversalVideoGalleryItem save guards")
-        elif "AorusGram: bypass save restriction" in t:
+            print("CopyProtect: patched UniversalVideoGalleryItem — paidContent gated")
+        elif "AorusGram" in t and SENTINEL in t:
             print("CopyProtect: UniversalVideoGalleryItem already patched")
         else:
             print("CopyProtect: WARNING — UniversalVideoGalleryItem anchors not found")
@@ -3741,15 +3775,10 @@ def patch_bypass_copy_protection(tg: Path) -> None:
 
 
 def patch_bypass_story_download(tg: Path) -> None:
-    """Allow saving protected stories (isForwardingDisabled = true).
+    """Gate story download bypass on UserDefaults flag 'aorusgram_bypass_story_dl'.
 
-    The story context menu shows a 'Save to Gallery' item only when
-    isForwardingDisabled is false. We replace the `else if` guard with a
-    plain `else` so the save item always appears.
-
-    The premium check inside the block (accountUser.isPremium ? requestSave :
-    presentSaveUpgradeScreen) is already covered by local-premium patch, which
-    makes the own account always premium — so requestSave() is always called.
+    Toggle ON  → save button shown even when isForwardingDisabled = true.
+    Toggle OFF → original Telegram behaviour (save hidden for protected stories).
     """
     story_file = tg / "submodules/TelegramUI/Components/Stories/StoryContainerScreen/Sources/StoryItemSetContainerComponent.swift"
     if not story_file.is_file():
@@ -3757,22 +3786,24 @@ def patch_bypass_story_download(tg: Path) -> None:
         return
     t = story_file.read_text(encoding="utf-8")
     old = "                    } else if !component.slice.item.storyItem.isForwardingDisabled {"
-    new = "                    } else { // AorusGram: bypass story download protection"
-    if "AorusGram: bypass story download" in t:
+    new = (
+        "                    } else if !component.slice.item.storyItem.isForwardingDisabled "
+        "|| UserDefaults.standard.bool(forKey: \"aorusgram_bypass_story_dl\") { // AorusGram"
+    )
+    if "aorusgram_bypass_story_dl" in t:
         print("StoryDownload: already patched")
     elif old in t:
         story_file.write_text(t.replace(old, new, 1), encoding="utf-8")
-        print("StoryDownload: patched — save button always shown for stories")
+        print("StoryDownload: patched — save button gated on UserDefaults toggle")
     else:
         print("StoryDownload: WARNING — isForwardingDisabled anchor not found")
 
 
 def patch_save_view_once(tg: Path) -> None:
-    """Allow saving view-once (one-time) media to Camera Roll.
+    """Gate view-once save on UserDefaults flag 'aorusgram_bypass_view_once'.
 
-    SecretMediaPreviewController creates gallery items with peerIsCopyProtected: true,
-    which hides the save button. Flipping to false re-enables saving. The media
-    file is already downloaded to a tempFilePath by the time it's displayed.
+    Toggle ON  → peerIsCopyProtected: false → save button visible in view-once gallery.
+    Toggle OFF → peerIsCopyProtected: true  → original behaviour (no save button).
     """
     ctrl = tg / "submodules/GalleryUI/Sources/SecretMediaPreviewController.swift"
     if not ctrl.is_file():
@@ -3780,12 +3811,15 @@ def patch_save_view_once(tg: Path) -> None:
         return
     t = ctrl.read_text(encoding="utf-8")
     old = "peerIsCopyProtected: true, tempFilePath: tempFilePath"
-    new = "peerIsCopyProtected: false, tempFilePath: tempFilePath // AorusGram: allow saving view-once"
-    if "AorusGram: allow saving view-once" in t:
+    new = (
+        "peerIsCopyProtected: !UserDefaults.standard.bool(forKey: \"aorusgram_bypass_view_once\"), "
+        "tempFilePath: tempFilePath // AorusGram"
+    )
+    if "aorusgram_bypass_view_once" in t:
         print("ViewOnce: already patched")
     elif old in t:
         ctrl.write_text(t.replace(old, new, 1), encoding="utf-8")
-        print("ViewOnce: patched SecretMediaPreviewController — peerIsCopyProtected: false")
+        print("ViewOnce: patched — peerIsCopyProtected gated on UserDefaults toggle")
     else:
         print("ViewOnce: WARNING — peerIsCopyProtected anchor not found")
 
