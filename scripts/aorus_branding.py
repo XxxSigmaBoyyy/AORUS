@@ -3649,6 +3649,48 @@ def patch_local_premium(tg: Path) -> None:
         print("Premium: AccountContext.swift not found — skipped")
 
 
+def patch_app_badge(tg: Path) -> None:
+    """Replace the stock Telegram 'TELEGRAM' pill badge with our AORUSGRAM one.
+
+    Telegram-iOS renders a decorative badge in the notch / Dynamic Island zone
+    via WindowContent.swift using the asset name "Components/AppBadge".  The
+    physical file is:
+        submodules/TelegramUI/Images.xcassets/Components/AppBadge.imageset/AppBadge@3x.png
+
+    We simply swap that PNG for ours (279×66 px @3x = 93×22 pt).  WindowContent
+    already handles portrait-only display, 0.4s appear delay, showAppBadge
+    device check, y=5 centering — we inherit all of that for free.
+    """
+    src_png = Path(__file__).parent.parent / "patches" / "assets" / "AppBadge@3x.png"
+    if not src_png.is_file():
+        print(f"AppBadge: source PNG not found at {src_png} — skipped")
+        return
+
+    imageset = tg / "submodules/TelegramUI/Images.xcassets/Components/AppBadge.imageset"
+    if not imageset.is_dir():
+        print(f"AppBadge: imageset dir not found at {imageset} — skipped")
+        return
+
+    dst_png = imageset / "AppBadge@3x.png"
+    import shutil as _shutil
+    _shutil.copy2(str(src_png), str(dst_png))
+    print(f"AppBadge: replaced {dst_png} ({src_png.stat().st_size} bytes)")
+
+    # Ensure Contents.json references AppBadge@3x.png for the 3x slot.
+    import json as _json
+    contents_path = imageset / "Contents.json"
+    contents = {
+        "images": [
+            {"idiom": "universal", "scale": "1x"},
+            {"idiom": "universal", "scale": "2x"},
+            {"filename": "AppBadge@3x.png", "idiom": "universal", "scale": "3x"},
+        ],
+        "info": {"author": "xcode", "version": 1},
+    }
+    contents_path.write_text(_json.dumps(contents, indent=2), encoding="utf-8")
+    print("AppBadge: Contents.json verified")
+
+
 def main() -> None:
     tg = Path(sys.argv[1]).resolve()
     if not tg.is_dir():
@@ -3699,6 +3741,7 @@ def main() -> None:
     patch_default_auto_night(tg)
     patch_aorus_badges(tg)
     patch_local_premium(tg)
+    patch_app_badge(tg)
     for name in ("Info.plist", "InfoBazel.plist"):
         patch_plist_icons_and_urls(tg / "Telegram/Telegram-iOS" / name)
     patch_info_plist_bgtask(tg)
