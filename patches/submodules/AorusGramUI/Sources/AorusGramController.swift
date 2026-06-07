@@ -16,6 +16,8 @@ private enum AorusSection: Int32 {
     case ai
     case performance
     case ui
+    case deviceSpoof
+    case bypass
     case antiSpoof
     case accountBackup
     case aorusCode
@@ -42,6 +44,10 @@ private struct AorusState: Equatable {
     var antiSpoofDeleted: Bool
     var antiSpoofOnline: Bool
     var aorusCodeEnabled: Bool
+    var spoofedDeviceName: String?
+    var bypassSavePaid: Bool
+    var bypassSaveViewOnce: Bool
+    var bypassStoryDownload: Bool
 }
 
 // MARK: - Arguments
@@ -51,15 +57,18 @@ private final class AorusArguments {
     let openChannel: () -> Void
     let clearCache: () -> Void
     let openAccountBackup: () -> Void
+    let openDeviceSpoof: () -> Void
 
     init(set: @escaping (WritableKeyPath<AorusState, Bool>, Bool) -> Void,
          openChannel: @escaping () -> Void,
          clearCache: @escaping () -> Void,
-         openAccountBackup: @escaping () -> Void) {
+         openAccountBackup: @escaping () -> Void,
+         openDeviceSpoof: @escaping () -> Void) {
         self.set = set
         self.openChannel = openChannel
         self.clearCache = clearCache
         self.openAccountBackup = openAccountBackup
+        self.openDeviceSpoof = openDeviceSpoof
     }
 }
 
@@ -97,6 +106,14 @@ private enum AorusEntry: ItemListNodeEntry {
     case aorusCodeHeader(PresentationTheme, String)
     case aorusCodeEnabled(PresentationTheme, String, Bool)
 
+    case deviceSpoofHeader(PresentationTheme, String)
+    case deviceSpoof(PresentationTheme, String, String)
+
+    case bypassHeader(PresentationTheme, String)
+    case bypassSavePaid(PresentationTheme, String, Bool)
+    case bypassSaveViewOnce(PresentationTheme, String, Bool)
+    case bypassStoryDownload(PresentationTheme, String, Bool)
+
     case officialChannel(PresentationTheme, String)
 
     var section: ItemListSectionId {
@@ -109,6 +126,10 @@ private enum AorusEntry: ItemListNodeEntry {
             return AorusSection.performance.rawValue
         case .uiHeader, .glassUI, .siriShortcuts:
             return AorusSection.ui.rawValue
+        case .deviceSpoofHeader, .deviceSpoof:
+            return AorusSection.deviceSpoof.rawValue
+        case .bypassHeader, .bypassSavePaid, .bypassSaveViewOnce, .bypassStoryDownload:
+            return AorusSection.bypass.rawValue
         case .antiSpoofHeader, .antiSpoofDeleted, .antiSpoofOnline:
             return AorusSection.antiSpoof.rawValue
         case .accountBackupHeader, .accountBackup:
@@ -139,6 +160,12 @@ private enum AorusEntry: ItemListNodeEntry {
         case .uiHeader:             return 30
         case .glassUI:              return 31
         case .siriShortcuts:        return 32
+        case .deviceSpoofHeader:    return 35
+        case .deviceSpoof:          return 36
+        case .bypassHeader:         return 40
+        case .bypassSavePaid:       return 41
+        case .bypassSaveViewOnce:   return 42
+        case .bypassStoryDownload:  return 43
         case .antiSpoofHeader:      return 50
         case .antiSpoofDeleted:     return 51
         case .antiSpoofOnline:      return 52
@@ -204,6 +231,18 @@ private enum AorusEntry: ItemListNodeEntry {
             if case let .aorusCodeHeader(rt, rs) = rhs { return lt === rt && ls == rs }
         case let .aorusCodeEnabled(lt, ls, lv):
             if case let .aorusCodeEnabled(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
+        case let .deviceSpoofHeader(lt, ls):
+            if case let .deviceSpoofHeader(rt, rs) = rhs { return lt === rt && ls == rs }
+        case let .deviceSpoof(lt, ls, lv):
+            if case let .deviceSpoof(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
+        case let .bypassHeader(lt, ls):
+            if case let .bypassHeader(rt, rs) = rhs { return lt === rt && ls == rs }
+        case let .bypassSavePaid(lt, ls, lv):
+            if case let .bypassSavePaid(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
+        case let .bypassSaveViewOnce(lt, ls, lv):
+            if case let .bypassSaveViewOnce(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
+        case let .bypassStoryDownload(lt, ls, lv):
+            if case let .bypassStoryDownload(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
         case let .officialChannel(lt, ls):
             if case let .officialChannel(rt, rs) = rhs { return lt === rt && ls == rs }
         }
@@ -261,6 +300,18 @@ private enum AorusEntry: ItemListNodeEntry {
             return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: section)
         case let .aorusCodeEnabled(_, title, value):
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.aorusCodeEnabled, $0) })
+        case let .deviceSpoofHeader(_, text):
+            return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: section)
+        case let .deviceSpoof(_, title, label):
+            return ItemListDisclosureItem(presentationData: presentationData, title: title, label: label, sectionId: section, style: .blocks, action: args.openDeviceSpoof)
+        case let .bypassHeader(_, text):
+            return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: section)
+        case let .bypassSavePaid(_, title, value):
+            return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.bypassSavePaid, $0) })
+        case let .bypassSaveViewOnce(_, title, value):
+            return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.bypassSaveViewOnce, $0) })
+        case let .bypassStoryDownload(_, title, value):
+            return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.bypassStoryDownload, $0) })
         case let .officialChannel(_, title):
             return ItemListActionItem(presentationData: presentationData, title: title, kind: .generic, alignment: .natural, sectionId: section, style: .blocks, action: args.openChannel)
         }
@@ -301,6 +352,14 @@ private func aorusEntries(state: AorusState, theme: PresentationTheme, l10n: Aor
         .glassUI(theme, l10n.glassUI, state.glassUI),
         .siriShortcuts(theme, l10n.siriShortcuts, state.siriShortcuts),
 
+        .deviceSpoofHeader(theme, l10n.deviceSpoofHeader),
+        .deviceSpoof(theme, l10n.deviceSpoof, state.spoofedDeviceName ?? l10n.deviceSpoofOff),
+
+        .bypassHeader(theme, l10n.bypassHeader),
+        .bypassSavePaid(theme, l10n.bypassSavePaid, state.bypassSavePaid),
+        .bypassSaveViewOnce(theme, l10n.bypassSaveViewOnce, state.bypassSaveViewOnce),
+        .bypassStoryDownload(theme, l10n.bypassStoryDownload, state.bypassStoryDownload),
+
         .antiSpoofHeader(theme, l10n.antiSpoofHeader),
         .antiSpoofDeleted(theme, l10n.antiSpoofDeleted, state.antiSpoofDeleted),
         .antiSpoofOnline(theme, l10n.antiSpoofOnline, state.antiSpoofOnline),
@@ -339,7 +398,11 @@ public func aorusGramController(context: AccountContext) -> ViewController {
         siriShortcuts:      mgr.siriShortcuts,
         antiSpoofDeleted:   spoof.antiSpoofDeleted,
         antiSpoofOnline:    spoof.antiSpoofOnline,
-        aorusCodeEnabled:   stealth.isEnabled
+        aorusCodeEnabled:   stealth.isEnabled,
+        spoofedDeviceName:  UserDefaults.standard.string(forKey: "aorusgram_spoofed_device"),
+        bypassSavePaid:     UserDefaults.standard.bool(forKey: "aorusgram_bypass_save_paid"),
+        bypassSaveViewOnce: UserDefaults.standard.bool(forKey: "aorusgram_bypass_view_once"),
+        bypassStoryDownload: UserDefaults.standard.bool(forKey: "aorusgram_bypass_story_dl")
     )
     let statePromise = ValuePromise(initialState, ignoreRepeated: true)
     let stateValue   = Atomic(value: initialState)
@@ -377,6 +440,9 @@ public func aorusGramController(context: AccountContext) -> ViewController {
             spoof.antiSpoofDeleted  = s.antiSpoofDeleted
             spoof.antiSpoofOnline   = s.antiSpoofOnline
             stealth.isEnabled       = s.aorusCodeEnabled
+            UserDefaults.standard.set(s.bypassSavePaid,      forKey: "aorusgram_bypass_save_paid")
+            UserDefaults.standard.set(s.bypassSaveViewOnce,  forKey: "aorusgram_bypass_view_once")
+            UserDefaults.standard.set(s.bypassStoryDownload, forKey: "aorusgram_bypass_story_dl")
         },
         openChannel: {
             // Resolve @aorusgram and navigate to the channel inside AorusGram.
@@ -413,14 +479,51 @@ public func aorusGramController(context: AccountContext) -> ViewController {
             })
         },
         openAccountBackup: {
-            // Reference `weakController` directly (no capture list): the closure
-            // captures the variable by reference, so it reads the value assigned
-            // *after* this closure is created, not the nil it holds right now.
             guard let controller = weakController,
                   let navigationController = controller.navigationController as? NavigationController else {
                 return
             }
             navigationController.pushViewController(accountBackupController(context: context))
+        },
+        openDeviceSpoof: {
+            guard let controller = weakController else { return }
+            let isRu = AorusLang.current == .ru
+            let title = isRu ? "Выбери устройство" : "Select Device"
+            let devices: [(String, String?)] = [
+                (isRu ? "Выкл. (реальный девайс)" : "Off (real device)", nil),
+                ("iPhone 16 Pro Max",    "iPhone 16 Pro Max"),
+                ("iPhone 16 Pro",        "iPhone 16 Pro"),
+                ("iPhone 16 Plus",       "iPhone 16 Plus"),
+                ("iPhone 16",            "iPhone 16"),
+                ("iPhone 15 Pro Max",    "iPhone 15 Pro Max"),
+                ("iPhone 15 Pro",        "iPhone 15 Pro"),
+                ("iPhone 15 Plus",       "iPhone 15 Plus"),
+                ("iPhone 15",            "iPhone 15"),
+                ("iPhone 14 Pro Max",    "iPhone 14 Pro Max"),
+                ("iPhone 14 Pro",        "iPhone 14 Pro"),
+                ("iPhone 13 Pro Max",    "iPhone 13 Pro Max"),
+                ("iPhone 12 Pro Max",    "iPhone 12 Pro Max"),
+                ("iPhone SE (3rd gen)",  "iPhone SE (3rd gen)"),
+                ("iPad Pro 12.9\"",      "iPad Pro 12.9"),
+            ]
+            let alert = UIAlertController(title: title, message: nil, preferredStyle: .actionSheet)
+            for (label, value) in devices {
+                alert.addAction(UIAlertAction(title: label, style: .default) { _ in
+                    if let value = value {
+                        UserDefaults.standard.set(value, forKey: "aorusgram_spoofed_device")
+                    } else {
+                        UserDefaults.standard.removeObject(forKey: "aorusgram_spoofed_device")
+                    }
+                    updateState { s in var n = s; n.spoofedDeviceName = value; return n }
+                })
+            }
+            alert.addAction(UIAlertAction(title: isRu ? "Отмена" : "Cancel", style: .cancel))
+            if let popover = alert.popoverPresentationController, let view = controller.view {
+                popover.sourceView = view
+                popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
+                popover.permittedArrowDirections = []
+            }
+            controller.present(alert, animated: true)
         }
     )
 

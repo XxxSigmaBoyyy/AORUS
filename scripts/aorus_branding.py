@@ -3649,6 +3649,172 @@ def patch_local_premium(tg: Path) -> None:
         print("Premium: AccountContext.swift not found — skipped")
 
 
+def patch_bypass_copy_protection(tg: Path) -> None:
+    """Remove copy-protection restrictions: always allow saving media.
+
+    Three changes:
+    1. MessageUtils.swift — isCopyProtected() always returns false.
+       This removes the 'content protection' flag from all messages globally.
+    2. ChatImageGalleryItem.swift — remove paidContent == nil guard on the
+       'Save to Camera Roll' context menu item so paid photos can be saved.
+    3. UniversalVideoGalleryItem.swift — same for video and video-as-image save.
+    """
+    # 1) isCopyProtected always false
+    msg_utils = tg / "submodules/TelegramCore/Sources/Utils/MessageUtils.swift"
+    if msg_utils.is_file():
+        t = msg_utils.read_text(encoding="utf-8")
+        old = (
+            "    func isCopyProtected() -> Bool {\n"
+            "        if self.flags.contains(.CopyProtected) {\n"
+            "            return true\n"
+            "        } else if let group = self.peers[self.id.peerId] as? TelegramGroup, group.flags.contains(.copyProtectionEnabled) {\n"
+            "            return true\n"
+            "        } else if let channel = self.peers[self.id.peerId] as? TelegramChannel, channel.flags.contains(.copyProtectionEnabled) {\n"
+            "            return true\n"
+            "        } else {\n"
+            "            return false\n"
+            "        }\n"
+            "    }\n"
+        )
+        new = (
+            "    func isCopyProtected() -> Bool {\n"
+            "        return false // AorusGram: copy protection bypassed\n"
+            "    }\n"
+        )
+        if "AorusGram: copy protection bypassed" in t:
+            print("CopyProtect: MessageUtils already patched")
+        elif old in t:
+            msg_utils.write_text(t.replace(old, new, 1), encoding="utf-8")
+            print("CopyProtect: patched isCopyProtected() → always false")
+        else:
+            print("CopyProtect: WARNING — isCopyProtected anchor not found")
+    else:
+        print("CopyProtect: MessageUtils.swift not found")
+
+    # 2) ChatImageGalleryItem — remove paidContent checks from save guards
+    img_item = tg / "submodules/GalleryUI/Sources/Items/ChatImageGalleryItem.swift"
+    if img_item.is_file():
+        t = img_item.read_text(encoding="utf-8")
+        changed = False
+        # Guard at createSticker entry point
+        old2a = "        guard let message = self.message, !message.isCopyProtected() && message.paidContent == nil else {"
+        new2a = "        guard let message = self.message else { // AorusGram: bypass paidContent"
+        if old2a in t:
+            t = t.replace(old2a, new2a, 1); changed = True
+        # Save-to-camera-roll button condition
+        old2b = "                if !message.isCopyProtected() && !self.peerIsCopyProtected && message.paidContent == nil, let media = self.contextAndMedia?.1 {"
+        new2b = "                if let media = self.contextAndMedia?.1 { // AorusGram: bypass save restriction"
+        if old2b in t:
+            t = t.replace(old2b, new2b, 1); changed = True
+        if changed:
+            img_item.write_text(t, encoding="utf-8")
+            print("CopyProtect: patched ChatImageGalleryItem save guards")
+        elif "AorusGram: bypass" in t:
+            print("CopyProtect: ChatImageGalleryItem already patched")
+        else:
+            print("CopyProtect: WARNING — ChatImageGalleryItem anchors not found")
+    else:
+        print("CopyProtect: ChatImageGalleryItem.swift not found")
+
+    # 3) UniversalVideoGalleryItem — remove paidContent checks from save buttons
+    vid_item = tg / "submodules/GalleryUI/Sources/Items/UniversalVideoGalleryItem.swift"
+    if vid_item.is_file():
+        t = vid_item.read_text(encoding="utf-8")
+        changed = False
+        old3a = "                if let (message, maybeFile, _) = strongSelf.contentInfo(), let file = maybeFile, !message.isCopyProtected() && !item.peerIsCopyProtected && message.paidContent == nil {"
+        new3a = "                if let (message, maybeFile, _) = strongSelf.contentInfo(), let file = maybeFile { // AorusGram: bypass save restriction"
+        if old3a in t:
+            t = t.replace(old3a, new3a, 1); changed = True
+        old3b = "                if let (message, _, _) = strongSelf.contentInfo(), let image = message.media.first(where: { $0 is TelegramMediaImage }) as? TelegramMediaImage, !message.isCopyProtected() && !item.peerIsCopyProtected && message.paidContent == nil {"
+        new3b = "                if let (message, _, _) = strongSelf.contentInfo(), let image = message.media.first(where: { $0 is TelegramMediaImage }) as? TelegramMediaImage { // AorusGram: bypass save restriction"
+        if old3b in t:
+            t = t.replace(old3b, new3b, 1); changed = True
+        if changed:
+            vid_item.write_text(t, encoding="utf-8")
+            print("CopyProtect: patched UniversalVideoGalleryItem save guards")
+        elif "AorusGram: bypass save restriction" in t:
+            print("CopyProtect: UniversalVideoGalleryItem already patched")
+        else:
+            print("CopyProtect: WARNING — UniversalVideoGalleryItem anchors not found")
+    else:
+        print("CopyProtect: UniversalVideoGalleryItem.swift not found")
+
+
+def patch_bypass_story_download(tg: Path) -> None:
+    """Allow saving protected stories (isForwardingDisabled = true).
+
+    The story context menu shows a 'Save to Gallery' item only when
+    isForwardingDisabled is false. We replace the `else if` guard with a
+    plain `else` so the save item always appears.
+
+    The premium check inside the block (accountUser.isPremium ? requestSave :
+    presentSaveUpgradeScreen) is already covered by local-premium patch, which
+    makes the own account always premium — so requestSave() is always called.
+    """
+    story_file = tg / "submodules/TelegramUI/Components/Stories/StoryContainerScreen/Sources/StoryItemSetContainerComponent.swift"
+    if not story_file.is_file():
+        print("StoryDownload: StoryItemSetContainerComponent.swift not found")
+        return
+    t = story_file.read_text(encoding="utf-8")
+    old = "                    } else if !component.slice.item.storyItem.isForwardingDisabled {"
+    new = "                    } else { // AorusGram: bypass story download protection"
+    if "AorusGram: bypass story download" in t:
+        print("StoryDownload: already patched")
+    elif old in t:
+        story_file.write_text(t.replace(old, new, 1), encoding="utf-8")
+        print("StoryDownload: patched — save button always shown for stories")
+    else:
+        print("StoryDownload: WARNING — isForwardingDisabled anchor not found")
+
+
+def patch_save_view_once(tg: Path) -> None:
+    """Allow saving view-once (one-time) media to Camera Roll.
+
+    SecretMediaPreviewController creates gallery items with peerIsCopyProtected: true,
+    which hides the save button. Flipping to false re-enables saving. The media
+    file is already downloaded to a tempFilePath by the time it's displayed.
+    """
+    ctrl = tg / "submodules/GalleryUI/Sources/SecretMediaPreviewController.swift"
+    if not ctrl.is_file():
+        print("ViewOnce: SecretMediaPreviewController.swift not found")
+        return
+    t = ctrl.read_text(encoding="utf-8")
+    old = "peerIsCopyProtected: true, tempFilePath: tempFilePath"
+    new = "peerIsCopyProtected: false, tempFilePath: tempFilePath // AorusGram: allow saving view-once"
+    if "AorusGram: allow saving view-once" in t:
+        print("ViewOnce: already patched")
+    elif old in t:
+        ctrl.write_text(t.replace(old, new, 1), encoding="utf-8")
+        print("ViewOnce: patched SecretMediaPreviewController — peerIsCopyProtected: false")
+    else:
+        print("ViewOnce: WARNING — peerIsCopyProtected anchor not found")
+
+
+def patch_device_spoof(tg: Path) -> None:
+    """Device spoof: read chosen device name from UserDefaults and pass to NetworkArguments.
+
+    AppDelegate builds NetworkArguments with `deviceModelName: nil`, which makes
+    MTProtoKit report the real UIDevice model to Telegram servers. We replace nil
+    with a UserDefaults lookup so the AorusGram settings device-spoof picker is
+    effective immediately (no relaunch needed — the value is read each time an
+    account session re-initialises the network layer).
+    """
+    delegate = tg / "submodules/TelegramUI/Sources/AppDelegate.swift"
+    if not delegate.is_file():
+        print("DeviceSpoof: AppDelegate.swift not found")
+        return
+    t = delegate.read_text(encoding="utf-8")
+    old = "            deviceModelName: nil,"
+    new = "            deviceModelName: UserDefaults.standard.string(forKey: \"aorusgram_spoofed_device\"), // AorusGram device spoof"
+    if "AorusGram device spoof" in t:
+        print("DeviceSpoof: AppDelegate already patched")
+    elif old in t:
+        delegate.write_text(t.replace(old, new, 1), encoding="utf-8")
+        print("DeviceSpoof: patched AppDelegate deviceModelName → UserDefaults lookup")
+    else:
+        print("DeviceSpoof: WARNING — deviceModelName: nil anchor not found")
+
+
 def patch_app_badge(tg: Path) -> None:
     """Replace the stock Telegram 'TELEGRAM' pill badge with our AORUSGRAM one.
 
@@ -3741,6 +3907,10 @@ def main() -> None:
     patch_default_auto_night(tg)
     patch_aorus_badges(tg)
     patch_local_premium(tg)
+    patch_bypass_copy_protection(tg)
+    patch_bypass_story_download(tg)
+    patch_save_view_once(tg)
+    patch_device_spoof(tg)
     patch_app_badge(tg)
     for name in ("Info.plist", "InfoBazel.plist"):
         patch_plist_icons_and_urls(tg / "Telegram/Telegram-iOS" / name)

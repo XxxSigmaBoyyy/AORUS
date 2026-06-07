@@ -93,6 +93,18 @@ public struct AorusL10n {
     public var aorusCode: String { t("AorusCode", "AorusCode") }
     public var officialChannel: String { t("Официальный канал @aorusgram", "Official channel @aorusgram") }
 
+    // MARK: Device Spoof
+    public var deviceSpoofHeader: String { t("ДЕВАЙС-СПУФ", "DEVICE SPOOF") }
+    public var deviceSpoof: String { t("Устройство", "Device") }
+    public var deviceSpoofOff: String { t("Выкл.", "Off") }
+    public var deviceSpoofCancel: String { t("Отмена", "Cancel") }
+
+    // MARK: Media bypass
+    public var bypassHeader: String { t("ОБХОД ОГРАНИЧЕНИЙ", "BYPASS") }
+    public var bypassSavePaid: String { t("Сохранение платных медиа", "Save Paid Media") }
+    public var bypassSaveViewOnce: String { t("Сохранение одноразовых", "Save View-Once Media") }
+    public var bypassStoryDownload: String { t("Скачивание защищённых сторис", "Download Protected Stories") }
+
     // MARK: Deleted / edited markers
     // Trailing space matches the original "Удалено " + relative-time layout.
     public var deletedPrefix: String { t("Удалено ", "Deleted ") }
