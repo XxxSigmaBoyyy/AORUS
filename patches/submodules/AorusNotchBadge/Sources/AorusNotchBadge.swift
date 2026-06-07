@@ -127,8 +127,16 @@ public final class AorusNotchBadge {
 // iPhone14,3 in two groups, iPhone11,6 for 11 Pro Max). This table is the
 // corrected, de-duplicated mapping — every identifier appears exactly once.
 enum AorusNotchBadgeDevice {
+    // Uniform upward lift (points) applied on every device so the pill sits a
+    // touch higher and clears the Dynamic Island / notch edge — otherwise a thin
+    // sliver of the system island shows below the badge.
+    private static let verticalLift: CGFloat = 4.0
+
     static func isSupported() -> Bool {
-        return yOffset() > 0.0
+        // Device capability is decided by the model table, NOT by the (possibly
+        // lifted-to-zero) yOffset, so the badge never disappears on small-offset
+        // notch devices after the lift.
+        return defaultOffset(for: machineIdentifier()) > 0.0
     }
 
     static func yOffset() -> CGFloat {
@@ -136,12 +144,13 @@ enum AorusNotchBadgeDevice {
         if base <= 0.0 {
             return 0.0
         }
+        let lifted = max(0.0, base - verticalLift)
         // Account for Display Zoom (Settings → Display → Zoom): nativeScale differs
         // from scale when zoomed, shifting the visual top region.
         let scale = UIScreen.main.scale
         let nativeScale = UIScreen.main.nativeScale
         let scaleFactor = nativeScale > 0.0 ? scale / nativeScale : 1.0
-        let value = base * scaleFactor
+        let value = lifted * scaleFactor
         return floor(value * scale) / scale
     }
 
