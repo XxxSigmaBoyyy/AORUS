@@ -400,9 +400,9 @@ public func aorusGramController(context: AccountContext) -> ViewController {
         antiSpoofOnline:    spoof.antiSpoofOnline,
         aorusCodeEnabled:   stealth.isEnabled,
         spoofedDeviceName:  UserDefaults.standard.string(forKey: "aorusgram_spoofed_device"),
-        bypassSavePaid:     UserDefaults.standard.bool(forKey: "aorusgram_bypass_save_paid"),
-        bypassSaveViewOnce: UserDefaults.standard.bool(forKey: "aorusgram_bypass_view_once"),
-        bypassStoryDownload: UserDefaults.standard.bool(forKey: "aorusgram_bypass_story_dl")
+        bypassSavePaid:     UserDefaults.standard.object(forKey: "aorusgram_bypass_save_paid") as? Bool ?? true,
+        bypassSaveViewOnce: UserDefaults.standard.object(forKey: "aorusgram_bypass_view_once") as? Bool ?? true,
+        bypassStoryDownload: UserDefaults.standard.object(forKey: "aorusgram_bypass_story_dl") as? Bool ?? true
     )
     let statePromise = ValuePromise(initialState, ignoreRepeated: true)
     let stateValue   = Atomic(value: initialState)
