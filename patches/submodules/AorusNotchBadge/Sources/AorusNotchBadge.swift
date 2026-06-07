@@ -130,7 +130,7 @@ enum AorusNotchBadgeDevice {
     // Uniform upward lift (points) applied on every device so the pill sits a
     // touch higher and clears the Dynamic Island / notch edge — otherwise a thin
     // sliver of the system island shows below the badge.
-    private static let verticalLift: CGFloat = 0.2
+    private static let verticalLift: CGFloat = 0.4
 
     static func isSupported() -> Bool {
         // Device capability is decided by the model table, NOT by the (possibly
