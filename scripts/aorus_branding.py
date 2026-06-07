@@ -2,10 +2,23 @@
 """Apply AorusGram branding to a Telegram-iOS checkout (CI or local)."""
 from __future__ import annotations
 
+import hashlib
+import os
 import plistlib
 import re
 import sys
 from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Security: opaque per-deployment keys — replace the grep-able "aorusgram_*"
+# identifiers in the compiled binary with UUIDs that carry no semantic meaning.
+# To rotate: change all four values and rebuild (existing user toggles reset to
+# default on first launch, which is acceptable since defaults are all "on").
+# ---------------------------------------------------------------------------
+_AG_K_BYPASS_PAID  = os.environ.get("AORUS_K1", "f3a7c892-1b4e-4d08-a6f1-e9c2b5d07a3f")
+_AG_K_BYPASS_ONCE  = os.environ.get("AORUS_K2", "8d2e1f47-c9a3-4b7d-9e5c-3f1a8b6d2e4c")
+_AG_K_BYPASS_STORY = os.environ.get("AORUS_K3", "2b9f4e16-7a8c-4d3f-b2e1-c5d7a9f3b8e6")
+_AG_K_SPOOF_DEVICE = os.environ.get("AORUS_K4", "a1c4e7f9-3b6d-4e2a-c8f5-7d1b3e9a5c2f")
 
 # Match http(s), tg://, and t.me/… segments so we never edit URLs inside .strings values.
 _URL_GUARD = re.compile(r"(https?://[^\s\"]+)|(tg://[^\s\"]+)|(t\.me/[^\s\"]+)", re.IGNORECASE)
@@ -3650,12 +3663,12 @@ def patch_local_premium(tg: Path) -> None:
 
 
 def patch_bypass_copy_protection(tg: Path) -> None:
-    """Gate copy-protection bypass on UserDefaults flag 'aorusgram_bypass_save_paid'.
+    """Gate copy-protection bypass on opaque UUID UserDefaults key (_AG_K_BYPASS_PAID).
 
     Toggle ON  → isCopyProtected() returns false + paidContent check skipped → save allowed.
     Toggle OFF → original Telegram behaviour restored.
     """
-    SENTINEL = "aorusgram_bypass_save_paid"
+    SENTINEL = _AG_K_BYPASS_PAID
 
     # 1) isCopyProtected — prepend UserDefaults early-return
     msg_utils = tg / "submodules/TelegramCore/Sources/Utils/MessageUtils.swift"
@@ -3676,7 +3689,7 @@ def patch_bypass_copy_protection(tg: Path) -> None:
         )
         new = (
             "    func isCopyProtected() -> Bool {\n"
-            "        if UserDefaults.standard.bool(forKey: \"aorusgram_bypass_save_paid\") { return false } // AorusGram\n"
+            f"        if UserDefaults.standard.bool(forKey: \"{_AG_K_BYPASS_PAID}\") {{ return false }}\n"
             "        if self.flags.contains(.CopyProtected) {\n"
             "            return true\n"
             "        } else if let group = self.peers[self.id.peerId] as? TelegramGroup, group.flags.contains(.copyProtectionEnabled) {\n"
@@ -3709,7 +3722,7 @@ def patch_bypass_copy_protection(tg: Path) -> None:
         )
         new2a = (
             "        guard let message = self.message, "
-            "!message.isCopyProtected() && (message.paidContent == nil || UserDefaults.standard.bool(forKey: \"aorusgram_bypass_save_paid\")) else { // AorusGram"
+            f"!message.isCopyProtected() && (message.paidContent == nil || UserDefaults.standard.bool(forKey: \"{_AG_K_BYPASS_PAID}\")) else {{"
         )
         if old2a in t:
             t = t.replace(old2a, new2a, 1); changed = True
@@ -3719,14 +3732,14 @@ def patch_bypass_copy_protection(tg: Path) -> None:
         )
         new2b = (
             "                if !message.isCopyProtected() && !self.peerIsCopyProtected "
-            "&& (message.paidContent == nil || UserDefaults.standard.bool(forKey: \"aorusgram_bypass_save_paid\")), let media = self.contextAndMedia?.1 { // AorusGram"
+            f"&& (message.paidContent == nil || UserDefaults.standard.bool(forKey: \"{_AG_K_BYPASS_PAID}\")), let media = self.contextAndMedia?.1 {{"
         )
         if old2b in t:
             t = t.replace(old2b, new2b, 1); changed = True
         if changed:
             img_item.write_text(t, encoding="utf-8")
             print("CopyProtect: patched ChatImageGalleryItem — paidContent gated")
-        elif "AorusGram" in t and SENTINEL in t:
+        elif SENTINEL in t:
             print("CopyProtect: ChatImageGalleryItem already patched")
         else:
             print("CopyProtect: WARNING — ChatImageGalleryItem anchors not found")
@@ -3746,7 +3759,7 @@ def patch_bypass_copy_protection(tg: Path) -> None:
         new3a = (
             "                if let (message, maybeFile, _) = strongSelf.contentInfo(), "
             "let file = maybeFile, !message.isCopyProtected() && !item.peerIsCopyProtected "
-            "&& (message.paidContent == nil || UserDefaults.standard.bool(forKey: \"aorusgram_bypass_save_paid\")) { // AorusGram"
+            f"&& (message.paidContent == nil || UserDefaults.standard.bool(forKey: \"{_AG_K_BYPASS_PAID}\")) {{"
         )
         if old3a in t:
             t = t.replace(old3a, new3a, 1); changed = True
@@ -3759,14 +3772,14 @@ def patch_bypass_copy_protection(tg: Path) -> None:
             "                if let (message, _, _) = strongSelf.contentInfo(), "
             "let image = message.media.first(where: { $0 is TelegramMediaImage }) as? TelegramMediaImage, "
             "!message.isCopyProtected() && !item.peerIsCopyProtected "
-            "&& (message.paidContent == nil || UserDefaults.standard.bool(forKey: \"aorusgram_bypass_save_paid\")) { // AorusGram"
+            f"&& (message.paidContent == nil || UserDefaults.standard.bool(forKey: \"{_AG_K_BYPASS_PAID}\")) {{"
         )
         if old3b in t:
             t = t.replace(old3b, new3b, 1); changed = True
         if changed:
             vid_item.write_text(t, encoding="utf-8")
             print("CopyProtect: patched UniversalVideoGalleryItem — paidContent gated")
-        elif "AorusGram" in t and SENTINEL in t:
+        elif SENTINEL in t:
             print("CopyProtect: UniversalVideoGalleryItem already patched")
         else:
             print("CopyProtect: WARNING — UniversalVideoGalleryItem anchors not found")
@@ -3775,11 +3788,12 @@ def patch_bypass_copy_protection(tg: Path) -> None:
 
 
 def patch_bypass_story_download(tg: Path) -> None:
-    """Gate story download bypass on UserDefaults flag 'aorusgram_bypass_story_dl'.
+    """Gate story download bypass on opaque UUID UserDefaults key (_AG_K_BYPASS_STORY).
 
     Toggle ON  → save button shown even when isForwardingDisabled = true.
     Toggle OFF → original Telegram behaviour (save hidden for protected stories).
     """
+    SENTINEL = _AG_K_BYPASS_STORY
     story_file = tg / "submodules/TelegramUI/Components/Stories/StoryContainerScreen/Sources/StoryItemSetContainerComponent.swift"
     if not story_file.is_file():
         print("StoryDownload: StoryItemSetContainerComponent.swift not found")
@@ -3788,9 +3802,9 @@ def patch_bypass_story_download(tg: Path) -> None:
     old = "                    } else if !component.slice.item.storyItem.isForwardingDisabled {"
     new = (
         "                    } else if !component.slice.item.storyItem.isForwardingDisabled "
-        "|| UserDefaults.standard.bool(forKey: \"aorusgram_bypass_story_dl\") { // AorusGram"
+        f"|| UserDefaults.standard.bool(forKey: \"{_AG_K_BYPASS_STORY}\") {{"
     )
-    if "aorusgram_bypass_story_dl" in t:
+    if SENTINEL in t:
         print("StoryDownload: already patched")
     elif old in t:
         story_file.write_text(t.replace(old, new, 1), encoding="utf-8")
@@ -3800,11 +3814,12 @@ def patch_bypass_story_download(tg: Path) -> None:
 
 
 def patch_save_view_once(tg: Path) -> None:
-    """Gate view-once save on UserDefaults flag 'aorusgram_bypass_view_once'.
+    """Gate view-once save on opaque UUID UserDefaults key (_AG_K_BYPASS_ONCE).
 
     Toggle ON  → peerIsCopyProtected: false → save button visible in view-once gallery.
     Toggle OFF → peerIsCopyProtected: true  → original behaviour (no save button).
     """
+    SENTINEL = _AG_K_BYPASS_ONCE
     ctrl = tg / "submodules/GalleryUI/Sources/SecretMediaPreviewController.swift"
     if not ctrl.is_file():
         print("ViewOnce: SecretMediaPreviewController.swift not found")
@@ -3812,10 +3827,10 @@ def patch_save_view_once(tg: Path) -> None:
     t = ctrl.read_text(encoding="utf-8")
     old = "peerIsCopyProtected: true, tempFilePath: tempFilePath"
     new = (
-        "peerIsCopyProtected: !UserDefaults.standard.bool(forKey: \"aorusgram_bypass_view_once\"), "
+        f"peerIsCopyProtected: !UserDefaults.standard.bool(forKey: \"{_AG_K_BYPASS_ONCE}\"), "
         "tempFilePath: tempFilePath"
     )
-    if "aorusgram_bypass_view_once" in t:
+    if SENTINEL in t:
         print("ViewOnce: already patched")
     elif old in t:
         ctrl.write_text(t.replace(old, new, 1), encoding="utf-8")
@@ -3825,7 +3840,7 @@ def patch_save_view_once(tg: Path) -> None:
 
 
 def patch_device_spoof(tg: Path) -> None:
-    """Device spoof: read chosen device name from UserDefaults and pass to NetworkArguments.
+    """Device spoof: read chosen device name from opaque UUID UserDefaults key (_AG_K_SPOOF_DEVICE).
 
     AppDelegate builds NetworkArguments with `deviceModelName: nil`, which makes
     MTProtoKit report the real UIDevice model to Telegram servers. We replace nil
@@ -3833,20 +3848,208 @@ def patch_device_spoof(tg: Path) -> None:
     effective immediately (no relaunch needed — the value is read each time an
     account session re-initialises the network layer).
     """
+    SENTINEL = _AG_K_SPOOF_DEVICE
     delegate = tg / "submodules/TelegramUI/Sources/AppDelegate.swift"
     if not delegate.is_file():
         print("DeviceSpoof: AppDelegate.swift not found")
         return
     t = delegate.read_text(encoding="utf-8")
     old = "            deviceModelName: nil,"
-    new = "            deviceModelName: UserDefaults.standard.string(forKey: \"aorusgram_spoofed_device\"), // AorusGram device spoof"
-    if "AorusGram device spoof" in t:
+    new = f"            deviceModelName: UserDefaults.standard.string(forKey: \"{_AG_K_SPOOF_DEVICE}\"),"
+    if SENTINEL in t:
         print("DeviceSpoof: AppDelegate already patched")
     elif old in t:
         delegate.write_text(t.replace(old, new, 1), encoding="utf-8")
         print("DeviceSpoof: patched AppDelegate deviceModelName → UserDefaults lookup")
     else:
         print("DeviceSpoof: WARNING — deviceModelName: nil anchor not found")
+
+
+def patch_aorus_controller_keys(tg: Path) -> None:
+    """Replace semantic 'aorusgram_*' UserDefaults keys in AorusGramController with opaque UUIDs.
+
+    The controller is copied from patches/ into tg/submodules/AorusGramUI/ by the
+    'Inject AorusGram sources' CI step, so we patch the injected copy here.
+    """
+    ctrl = tg / "submodules/AorusGramUI/Sources/AorusGramController.swift"
+    if not ctrl.is_file():
+        print("ControllerKeys: AorusGramController.swift not found — skipped")
+        return
+    t = ctrl.read_text(encoding="utf-8")
+    if _AG_K_BYPASS_PAID in t:
+        print("ControllerKeys: already patched")
+        return
+    replacements = [
+        ('"aorusgram_bypass_save_paid"',  f'"{_AG_K_BYPASS_PAID}"'),
+        ('"aorusgram_bypass_view_once"',  f'"{_AG_K_BYPASS_ONCE}"'),
+        ('"aorusgram_bypass_story_dl"',   f'"{_AG_K_BYPASS_STORY}"'),
+        ('"aorusgram_spoofed_device"',    f'"{_AG_K_SPOOF_DEVICE}"'),
+    ]
+    changed = 0
+    for old_key, new_key in replacements:
+        n = t.count(old_key)
+        if n:
+            t = t.replace(old_key, new_key)
+            changed += n
+            print(f"ControllerKeys: {n}× {old_key!r} → {new_key!r}")
+        else:
+            print(f"ControllerKeys: WARNING — {old_key!r} not found")
+    if changed:
+        ctrl.write_text(t, encoding="utf-8")
+        print(f"ControllerKeys: {changed} replacements written")
+    else:
+        print("ControllerKeys: no changes applied")
+
+
+def patch_decoy_keys(tg: Path) -> None:
+    """Inject a dead-code @inline(never) function with 20 fake UUID UserDefaults lookups.
+
+    Raises the noise floor for static string analysis: the binary will contain 20 UUID
+    strings that look identical to real keys, forcing an attacker to trace runtime
+    paths rather than simply grepping the binary for UUID patterns.
+    """
+    ctrl = tg / "submodules/AorusGramUI/Sources/AorusGramController.swift"
+    if not ctrl.is_file():
+        print("DecoyKeys: AorusGramController.swift not found — skipped")
+        return
+    t = ctrl.read_text(encoding="utf-8")
+    SENTINEL = "// __aorus_decoy_anchor__"
+    if SENTINEL in t:
+        print("DecoyKeys: already injected")
+        return
+    decoy = (
+        "\n"
+        "// __aorus_decoy_anchor__\n"
+        "@inline(never) private func _aorusInternals() {\n"
+        "    // Dead code — referenced only to prevent optimiser elision.\n"
+        "    let _d: [String] = [\n"
+        '        "3f8a1d2e-9c4b-4e7f-b1a3-6d5e2f9c0b8a",\n'
+        '        "7b2c6e1a-4f8d-4a3e-c9b2-1d7f3e5a8c6b",\n'
+        '        "e1d4f9a3-2b7c-4c8e-d5a1-9f3b6e2c7d4a",\n'
+        '        "5c9b3e7d-1a4f-4f2a-e8c6-3b9d1a7f5e2c",\n'
+        '        "a4e8c2f6-7d1b-4b9e-f3a5-2c8e4d6b1f9a",\n'
+        '        "9d1f5b3a-6c2e-4e4c-a7f9-5b3d8c2e6a1f",\n'
+        '        "2e7c4a9f-3b8d-4d5b-b4e2-8a1f9c3d7b5e",\n'
+        '        "f6a3d8e2-9b1c-4a8d-c2f6-4e7b3a9d1c8f",\n'
+        '        "4b8e2c7d-1f6a-4c1f-d9b3-7c5a2e8f4b1d",\n'
+        '        "c2f9b4e1-8a3d-4b7a-e1c4-9d2f6b8e3a5c",\n'
+        '        "8a5d3f9c-4e2b-4e3c-f8a2-6b1d4c9e7f3a",\n'
+        '        "1f4c7a2e-9d6b-4f9b-a3e1-2c8f5d3b6a9e",\n'
+        '        "6e9b1d4f-2a7c-4a2e-b5f8-3d6c9a1f2e7b",\n'
+        '        "d3a7e5c1-8f4b-4c6f-e2d9-7a3b1c5e8d4f",\n'
+        '        "b5f2c9a4-3e8d-4d1a-c6b4-9f2e7a5d3c8b",\n'
+        '        "7c1e8b6d-5a4f-4f8d-d1c7-4e9b2f6a8e3d",\n'
+        '        "3a6f4e9b-8c2d-4b3e-a9f3-1d5c7b2e6a4f",\n'
+        '        "e8d2a7f3-1b9c-4a5c-f4e8-6c3d9b1f7a2e",\n'
+        '        "5f3b9e2c-7a1d-4e7b-c8f5-2a4e6d9b3c1f",\n'
+        '        "0d8c5a4e-3f9b-4c4d-b7a6-8e1f2c9d5b3a",\n'
+        "    ]\n"
+        "    _ = _d.reduce(false) { UserDefaults.standard.bool(forKey: $1) || $0 }\n"
+        "}\n"
+    )
+    # Inject just before the first private enum / struct declaration
+    anchor = "\n// MARK: - Sections\n"
+    if anchor in t:
+        t = t.replace(anchor, decoy + anchor, 1)
+        ctrl.write_text(t, encoding="utf-8")
+        print("DecoyKeys: injected 20 decoy UUID lookups")
+    else:
+        # Fallback: prepend after the last import line
+        lines = t.splitlines(keepends=True)
+        last_import = 0
+        for i, line in enumerate(lines):
+            if line.startswith("import "):
+                last_import = i
+        insert_at = last_import + 1
+        lines.insert(insert_at, decoy)
+        ctrl.write_text("".join(lines), encoding="utf-8")
+        print("DecoyKeys: injected 20 decoy UUID lookups (fallback position)")
+
+
+def patch_aorus_code_keys(tg: Path) -> None:
+    """Upgrade AorusCodeManager HMAC secret from 2-array XOR to 3-array XOR.
+
+    Before: actual = secretXOR ^ xorMask  (secretXOR is ASCII of the plaintext seed)
+    After:  actual = _kA ^ _kB ^ _kC      (all three arrays are opaque SHA-256 digests
+                                            or derived noise; no plaintext seed present)
+
+    _kA = SHA256("aorusgram::code::arm::k1::2025")
+    _kB = SHA256("aorusgram::code::arm::k2::2025")
+    _kC = _kA ^ _kB ^ actual_secret   (so _kA ^ _kB ^ _kC == actual_secret)
+
+    generate_code.py must use the same actual_secret (unchanged).
+    """
+    code_mgr = tg / "submodules/AorusGramUI/Sources/Core/AorusCodeManager.swift"
+    if not code_mgr.is_file():
+        print("AorusCodeKeys: AorusCodeManager.swift not found — skipped")
+        return
+    t = code_mgr.read_text(encoding="utf-8")
+    SENTINEL = "// __aorus_3xor__"
+    if SENTINEL in t:
+        print("AorusCodeKeys: already upgraded to 3-array XOR")
+        return
+
+    # Compute actual_secret (same value as before — keeps generate_code.py compatible)
+    secret_xor = [
+        0x41,0x4F,0x52,0x55,0x53,0x47,0x52,0x41,
+        0x4D,0x5F,0x53,0x45,0x43,0x52,0x45,0x54,
+        0x5F,0x4B,0x45,0x59,0x5F,0x56,0x31,0x5F,
+        0x32,0x30,0x32,0x35,0x5F,0x41,0x4F,0x52,
+    ]
+    xor_mask = [
+        0x1A,0x2B,0x3C,0x4D,0x5E,0x6F,0x7A,0x1B,
+        0x2C,0x3D,0x4E,0x5F,0x60,0x71,0x82,0x13,
+        0x24,0x35,0x46,0x57,0x68,0x79,0x8A,0x1B,
+        0x2C,0x3D,0x4E,0x5F,0x60,0x71,0x82,0x93,
+    ]
+    actual = [a ^ b for a, b in zip(secret_xor, xor_mask)]
+
+    kA = list(hashlib.sha256(b"aorusgram::code::arm::k1::2025").digest())
+    kB = list(hashlib.sha256(b"aorusgram::code::arm::k2::2025").digest())
+    kC = [a ^ b ^ s for a, b, s in zip(kA, kB, actual)]
+
+    def fmt_array(name: str, values: list[int]) -> str:
+        hex_vals = ",".join(f"0x{v:02X}" for v in values)
+        return f"    private static let {name}: [UInt8] = [{hex_vals}]  {SENTINEL}\n"
+
+    new_arrays = (
+        fmt_array("_kA", kA) +
+        fmt_array("_kB", kB) +
+        fmt_array("_kC", kC)
+    )
+    new_hmac = (
+        "    private func hmacSecret() -> SymmetricKey {\n"
+        "        SymmetricKey(data: Data(zip(zip(Self._kA, Self._kB).map { $0 ^ $1 }, Self._kC).map { $0 ^ $1 }))\n"
+        "    }\n"
+    )
+
+    old_arrays = (
+        "    // Secret XOR-обфусцирован чтобы не торчал голым в бинарнике.\n"
+        "    // Те же константы ДОЛЖНЫ быть в tools/generate_code.py.\n"
+        "    private static let secretXOR: [UInt8] = [\n"
+        "        0x41,0x4F,0x52,0x55,0x53,0x47,0x52,0x41,\n"
+        "        0x4D,0x5F,0x53,0x45,0x43,0x52,0x45,0x54,\n"
+        "        0x5F,0x4B,0x45,0x59,0x5F,0x56,0x31,0x5F,\n"
+        "        0x32,0x30,0x32,0x35,0x5F,0x41,0x4F,0x52,\n"
+        "    ]\n"
+        "    private static let xorMask: [UInt8] = [\n"
+        "        0x1A,0x2B,0x3C,0x4D,0x5E,0x6F,0x7A,0x1B,\n"
+        "        0x2C,0x3D,0x4E,0x5F,0x60,0x71,0x82,0x13,\n"
+        "        0x24,0x35,0x46,0x57,0x68,0x79,0x8A,0x1B,\n"
+        "        0x2C,0x3D,0x4E,0x5F,0x60,0x71,0x82,0x93,\n"
+        "    ]\n"
+        "\n"
+        "    private func hmacSecret() -> SymmetricKey {\n"
+        "        SymmetricKey(data: Data(zip(Self.secretXOR, Self.xorMask).map { $0 ^ $1 }))\n"
+        "    }\n"
+    )
+
+    if old_arrays in t:
+        t = t.replace(old_arrays, new_arrays + "\n" + new_hmac, 1)
+        code_mgr.write_text(t, encoding="utf-8")
+        print("AorusCodeKeys: upgraded to 3-array XOR (secretXOR/xorMask → _kA/_kB/_kC)")
+    else:
+        print("AorusCodeKeys: WARNING — secretXOR/xorMask/hmacSecret anchor not found")
 
 
 def patch_app_badge(tg: Path) -> None:
@@ -3945,6 +4148,9 @@ def main() -> None:
     patch_bypass_story_download(tg)
     patch_save_view_once(tg)
     patch_device_spoof(tg)
+    patch_aorus_controller_keys(tg)
+    patch_decoy_keys(tg)
+    patch_aorus_code_keys(tg)
     patch_app_badge(tg)
     for name in ("Info.plist", "InfoBazel.plist"):
         patch_plist_icons_and_urls(tg / "Telegram/Telegram-iOS" / name)

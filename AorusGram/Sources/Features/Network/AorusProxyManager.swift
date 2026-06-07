@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import Security
 import UIKit
 
 // MARK: - AorusGram system proxy
@@ -43,8 +44,9 @@ public final class AorusProxyManager {
     // when rotating SECRET_KEY.
     private let keyVersion = "1"
 
-    private let cacheKey = "aorusgram_proxy_cache_v1"
-    private let cacheStampKey = "aorusgram_proxy_cache_stamp_v1"
+    // Proxy config JSON lives in Keychain — not in UserDefaults where it's readable
+    // via file managers on jailbroken devices. Timestamp uses an opaque UD key.
+    private let cacheStampKey = "b4e9f2d1-7a3c-4b8f-d6e1-2c5a9f7b4e3d"
 
     private var cached: AorusProxyConfig?
     private var cachedAt: Date = .distantPast
@@ -113,6 +115,7 @@ public final class AorusProxyManager {
     // MARK: - Request building
 
     private func buildSignedRequest() -> URLRequest? {
+        guard !AorusTamperGuard.isFridaDetected else { return nil }
         let urlString = Obf.reveal(Obf.url)
         guard let url = URL(string: urlString) else { return nil }
 
@@ -158,7 +161,7 @@ public final class AorusProxyManager {
         cachedAt = Date()
         lock.unlock()
         if let data = try? JSONEncoder().encode(cfg) {
-            UserDefaults.standard.set(data, forKey: cacheKey)
+            ProxyKeychain.write(data)
             UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: cacheStampKey)
         }
         // Mirror to flat keys so the AppDelegate proxy bridge (injected into the
@@ -173,7 +176,7 @@ public final class AorusProxyManager {
     }
 
     private func load() {
-        guard let data = UserDefaults.standard.data(forKey: cacheKey),
+        guard let data = ProxyKeychain.read(),
               let cfg = try? JSONDecoder().decode(AorusProxyConfig.self, from: data) else { return }
         cached = cfg
         let stamp = UserDefaults.standard.double(forKey: cacheStampKey)
@@ -213,15 +216,50 @@ public extension Notification.Name {
     static let aorusProxyConfigUpdated = Notification.Name("aorusgram_proxy_config_updated")
 }
 
+// MARK: - Proxy config Keychain storage
+//
+// Keeps the proxy config JSON off UserDefaults (readable by file managers on
+// jailbroken devices) and into the Keychain which requires Secure Enclave unlock.
+private enum ProxyKeychain {
+    private static let svc = "com.aorusgram.proxy"
+    private static let acct = "cfg.v1"
+
+    static func write(_ data: Data) {
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                kSecAttrService as String: svc,
+                                kSecAttrAccount as String: acct]
+        SecItemDelete(q as CFDictionary)
+        var add = q
+        add[kSecValueData as String] = data
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        SecItemAdd(add as CFDictionary, nil)
+    }
+
+    static func read() -> Data? {
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                kSecAttrService as String: svc,
+                                kSecAttrAccount as String: acct,
+                                kSecReturnData as String: true,
+                                kSecMatchLimit as String: kSecMatchLimitOne]
+        var ref: AnyObject?
+        guard SecItemCopyMatching(q as CFDictionary, &ref) == errSecSuccess else { return nil }
+        return ref as? Data
+    }
+}
+
 // MARK: - String obfuscation
 //
 // Sensitive constants are XOR'd against a pad derived from SHA256 of a seed, so
 // none of them appear verbatim in the binary. Decoded only at point of use.
 private enum Obf {
-    // pad = SHA256("aorusgram::netshield::v1::shield-pad")
+    // pad = SHA256(concatenation of the three byte segments below).
+    // No single searchable string exists in the binary — the segments are
+    // meaningless individually and only their concatenation matters to SHA256.
     private static let pad: [UInt8] = {
-        let seed = "aorusgram::netshield::v1::shield-pad"
-        return Array(SHA256.hash(data: Data(seed.utf8)))
+        let s0: [UInt8] = [0x61,0x6f,0x72,0x75,0x73,0x67,0x72,0x61,0x6d,0x3a,0x3a,0x6e]
+        let s1: [UInt8] = [0x65,0x74,0x73,0x68,0x69,0x65,0x6c,0x64,0x3a,0x3a,0x76,0x31]
+        let s2: [UInt8] = [0x3a,0x3a,0x73,0x68,0x69,0x65,0x6c,0x64,0x2d,0x70,0x61,0x64]
+        return Array(SHA256.hash(data: Data(s0 + s1 + s2)))
     }()
 
     static func reveal(_ bytes: [UInt8]) -> String {

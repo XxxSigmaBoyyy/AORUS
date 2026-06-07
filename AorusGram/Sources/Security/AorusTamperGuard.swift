@@ -28,6 +28,11 @@ public final class AorusTamperGuard {
     // Set to true to terminate the app on tamper detection (production hardening).
     public static var terminateOnTamper = false
 
+    // Set by checkDylibInjection() when DYLD_INSERT_LIBRARIES is detected.
+    // AorusProxyManager reads this flag and refuses to initialise when true,
+    // breaking dynamic analysis of the proxy request pipeline.
+    public static var isFridaDetected: Bool = false
+
     // MARK: - Run all checks
 
     public func verify() {
@@ -93,6 +98,7 @@ public final class AorusTamperGuard {
         // Check DYLD_INSERT_LIBRARIES — legitimate App Store builds never set this.
         if let injected = ProcessInfo.processInfo.environment["DYLD_INSERT_LIBRARIES"],
            !injected.isEmpty {
+            AorusTamperGuard.isFridaDetected = true
             flag("DYLD_INSERT_LIBRARIES detected: \(injected)")
         }
     }
