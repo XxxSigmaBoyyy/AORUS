@@ -97,8 +97,10 @@ public struct AorusL10n {
     public var aorusCode: String { t("AorusCode", "AorusCode") }
     public var officialChannel: String { t("Официальный канал @aorusgram", "Official channel @aorusgram") }
 
-    // MARK: Local editing
-    public var editLocalHeader: String { t("РЕДАКТИРОВАНИЕ", "EDITING") }
+    // MARK: Messages section (tap gestures + local editing)
+    public var messagesHeader: String { t("СООБЩЕНИЯ", "MESSAGES") }
+    public var doubleTapCopy: String { t("Двойное нажатие для копирования", "Double Tap to Copy") }
+    public var tripleTapDelete: String { t("Тройное нажатие для удаления", "Triple Tap to Delete") }
     public var editLocally: String { t("Изменить локально", "Edit Locally") }
     public var editLocallyFooter: String { t("Изменяет текст сообщения только у вас на устройстве. Собеседник изменений не видит.", "Edits a message's text only on your device. Other people don't see the change.") }
 

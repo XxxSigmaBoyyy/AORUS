@@ -257,6 +257,8 @@ private struct AorusState: Equatable {
     var ramAutoClean: Bool
     var ramInterval: Int
     var editLocally: Bool
+    var doubleTapCopy: Bool
+    var tripleTapDelete: Bool
     var glassUI: Bool
     var siriShortcuts: Bool
     var antiSpoofDeleted: Bool
@@ -320,6 +322,8 @@ private enum AorusEntry: ItemListNodeEntry {
     case siriShortcuts(PresentationTheme, String, Bool)
 
     case editLocalHeader(PresentationTheme, String)
+    case messagesDoubleCopy(PresentationTheme, String, Bool)
+    case messagesTripleDelete(PresentationTheme, String, Bool)
     case editLocalEnabled(PresentationTheme, String, Bool)
 
     case antiSpoofHeader(PresentationTheme, String)
@@ -352,7 +356,7 @@ private enum AorusEntry: ItemListNodeEntry {
             return AorusSection.performance.rawValue
         case .uiHeader, .glassUI, .siriShortcuts:
             return AorusSection.ui.rawValue
-        case .editLocalHeader, .editLocalEnabled:
+        case .editLocalHeader, .messagesDoubleCopy, .messagesTripleDelete, .editLocalEnabled:
             return AorusSection.editLocal.rawValue
         case .deviceSpoofHeader, .deviceSpoof:
             return AorusSection.deviceSpoof.rawValue
@@ -391,9 +395,11 @@ private enum AorusEntry: ItemListNodeEntry {
         case .glassUI:              return 31
         case .siriShortcuts:        return 32
         case .editLocalHeader:      return 33
-        case .editLocalEnabled:     return 34
-        case .deviceSpoofHeader:    return 35
-        case .deviceSpoof:          return 36
+        case .messagesDoubleCopy:   return 34
+        case .messagesTripleDelete: return 35
+        case .editLocalEnabled:     return 36
+        case .deviceSpoofHeader:    return 37
+        case .deviceSpoof:          return 38
         case .bypassHeader:         return 40
         case .bypassSavePaid:       return 41
         case .bypassSaveViewOnce:   return 42
@@ -455,6 +461,10 @@ private enum AorusEntry: ItemListNodeEntry {
             if case let .siriShortcuts(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
         case let .editLocalHeader(lt, ls):
             if case let .editLocalHeader(rt, rs) = rhs { return lt === rt && ls == rs }
+        case let .messagesDoubleCopy(lt, ls, lv):
+            if case let .messagesDoubleCopy(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
+        case let .messagesTripleDelete(lt, ls, lv):
+            if case let .messagesTripleDelete(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
         case let .editLocalEnabled(lt, ls, lv):
             if case let .editLocalEnabled(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
         case let .antiSpoofHeader(lt, ls):
@@ -533,6 +543,10 @@ private enum AorusEntry: ItemListNodeEntry {
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.siriShortcuts, $0) })
         case let .editLocalHeader(_, text):
             return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: section)
+        case let .messagesDoubleCopy(_, title, value):
+            return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.doubleTapCopy, $0) })
+        case let .messagesTripleDelete(_, title, value):
+            return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.tripleTapDelete, $0) })
         case let .editLocalEnabled(_, title, value):
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.editLocally, $0) })
         case let .antiSpoofHeader(_, text):
@@ -579,7 +593,7 @@ private func aorusEntries(state: AorusState, theme: PresentationTheme, l10n: Aor
     // A small destructive 'Clear Deleted Cache' action sits between (2) and (3) and
     // wipes preserved postbox rows accumulated by the source patches.
     // All visible strings are localized via AorusL10n (RU/EN, follows Telegram language).
-    return [
+    var entries: [AorusEntry] = [
         .privacyHeader(theme, l10n.privacyHeader),
         .ghostMode(theme, l10n.ghostMode, state.ghostMode),
         .saveDeletedMessages(theme, l10n.deletedMessages, state.saveDeletedMessages),
@@ -597,13 +611,15 @@ private func aorusEntries(state: AorusState, theme: PresentationTheme, l10n: Aor
         .antiSpam(theme, l10n.antiSpam, state.antiSpamEnabled),
         .ramShow(theme, l10n.ramShow, state.ramShow),
         .ramAutoClean(theme, l10n.ramAutoClean, state.ramAutoClean),
-        .ramInterval(theme, l10n.ramInterval, state.ramInterval),
+        // .ramInterval is appended below, only when auto-clean is enabled.
 
         .uiHeader(theme, l10n.uiHeader),
         .glassUI(theme, l10n.glassUI, state.glassUI),
         .siriShortcuts(theme, l10n.siriShortcuts, state.siriShortcuts),
 
-        .editLocalHeader(theme, l10n.editLocalHeader),
+        .editLocalHeader(theme, l10n.messagesHeader),
+        .messagesDoubleCopy(theme, l10n.doubleTapCopy, state.doubleTapCopy),
+        .messagesTripleDelete(theme, l10n.tripleTapDelete, state.tripleTapDelete),
         .editLocalEnabled(theme, l10n.editLocally, state.editLocally),
 
         .deviceSpoofHeader(theme, l10n.deviceSpoofHeader),
@@ -626,6 +642,15 @@ private func aorusEntries(state: AorusState, theme: PresentationTheme, l10n: Aor
 
         .officialChannel(theme, l10n.officialChannel),
     ]
+
+    // The cleanup-interval slider only appears once auto-clean is switched on.
+    if state.ramAutoClean, let idx = entries.firstIndex(where: {
+        if case .ramAutoClean = $0 { return true }; return false
+    }) {
+        entries.insert(.ramInterval(theme, l10n.ramInterval, state.ramInterval), at: idx + 1)
+    }
+
+    return entries
 }
 
 // MARK: - Public factory
@@ -651,6 +676,8 @@ public func aorusGramController(context: AccountContext) -> ViewController {
         ramAutoClean:       mgr.ramAutoClean,
         ramInterval:        mgr.ramInterval,
         editLocally:        mgr.editLocally,
+        doubleTapCopy:      mgr.doubleTapCopy,
+        tripleTapDelete:    mgr.tripleTapDelete,
         glassUI:            mgr.glassUI,
         siriShortcuts:      mgr.siriShortcuts,
         antiSpoofDeleted:   spoof.antiSpoofDeleted,
@@ -695,6 +722,8 @@ public func aorusGramController(context: AccountContext) -> ViewController {
             mgr.ramAutoClean        = s.ramAutoClean
             mgr.ramInterval         = s.ramInterval
             mgr.editLocally         = s.editLocally
+            mgr.doubleTapCopy       = s.doubleTapCopy
+            mgr.tripleTapDelete     = s.tripleTapDelete
             mgr.glassUI             = s.glassUI
             mgr.siriShortcuts       = s.siriShortcuts
             spoof.antiSpoofDeleted  = s.antiSpoofDeleted
@@ -749,13 +778,30 @@ public func aorusGramController(context: AccountContext) -> ViewController {
             guard let controller = weakController else { return }
             let isRu = AorusLang.current == .ru
 
+            // Derive a system-version string that matches the device family, so
+            // Telegram's session list shows the correct platform icon (the icon is
+            // chosen from deviceModel + systemVersion). Empty string = keep real iOS.
+            let systemVersionFor: (String) -> String = { model in
+                let m = model.lowercased()
+                if m.contains("windows") { return "Windows 10" }
+                if m.contains("macos") || m.contains("macbook") || m.contains("imac") || m.contains("mac ") { return "macOS 14.0" }
+                if m.contains("ubuntu") { return "Ubuntu 22.04" }
+                if m.contains("linux") { return "Linux" }
+                if m.contains("iphone") || m.contains("ipad") || m.contains("ios") { return "" }
+                if m.contains("web") || m.contains("chrome") || m.contains("safari") || m.contains("firefox") { return "" }
+                // Everything else is treated as an Android handset/tablet.
+                return "Android 14"
+            }
+
             // Apply a chosen device model: nil clears the spoof (real device).
             let apply: (String?) -> Void = { value in
                 if let value = value, !value.isEmpty {
                     UserDefaults.standard.set(value, forKey: "aorusgram_spoofed_device")
+                    UserDefaults.standard.set(systemVersionFor(value), forKey: "aorusgram_spoofed_sysver")
                     updateState { s in var n = s; n.spoofedDeviceName = value; return n }
                 } else {
                     UserDefaults.standard.removeObject(forKey: "aorusgram_spoofed_device")
+                    UserDefaults.standard.removeObject(forKey: "aorusgram_spoofed_sysver")
                     updateState { s in var n = s; n.spoofedDeviceName = nil; return n }
                 }
             }

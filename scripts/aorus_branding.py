@@ -19,6 +19,7 @@ _AG_K_BYPASS_PAID  = os.environ.get("AORUS_K1", "f3a7c892-1b4e-4d08-a6f1-e9c2b5d
 _AG_K_BYPASS_ONCE  = os.environ.get("AORUS_K2", "8d2e1f47-c9a3-4b7d-9e5c-3f1a8b6d2e4c")
 _AG_K_BYPASS_STORY = os.environ.get("AORUS_K3", "2b9f4e16-7a8c-4d3f-b2e1-c5d7a9f3b8e6")
 _AG_K_SPOOF_DEVICE = os.environ.get("AORUS_K4", "a1c4e7f9-3b6d-4e2a-c8f5-7d1b3e9a5c2f")
+_AG_K_SPOOF_SYSVER = os.environ.get("AORUS_K5", "6e3b1d8a-4f2c-4a7e-b9d1-5c8f2a4e7b3d")
 
 # Match http(s), tg://, and t.me/… segments so we never edit URLs inside .strings values.
 _URL_GUARD = re.compile(r"(https?://[^\s\"]+)|(tg://[^\s\"]+)|(t\.me/[^\s\"]+)", re.IGNORECASE)
@@ -1938,6 +1939,86 @@ def patch_chat_context_menu_edit_locally(tg: Path) -> None:
     t = t.replace(anchor, injection + anchor, 1)
     path.write_text(t, encoding="utf-8")
     print("EditLocally: injected AorusGram edit-locally action above Delete")
+
+
+def patch_chat_message_tap_gestures(tg: Path) -> None:
+    """Double-tap-to-copy and triple-tap-to-delete on message bubbles.
+
+    Both are opt-in (gated by aorusgram_feature_double_copy /
+    aorusgram_feature_triple_delete) so when off the native tap behaviour
+    (open media, react on double-tap) is completely unchanged.
+
+    The shared TapLongTapOrDoubleTapGestureRecognizer only emits .tap and
+    .doubleTap, so a triple tap surfaces as a .tap landing shortly after a
+    .doubleTap — we detect that timing window. When both options are on, the
+    double-tap copy is deferred ~0.45s so a pending third tap can cancel it and
+    delete instead, keeping the two gestures cleanly distinct.
+    """
+    path = tg / "submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/Sources/ChatMessageBubbleItemNode.swift"
+    if not path.is_file():
+        print("TapGestures: ChatMessageBubbleItemNode.swift not found, skip")
+        return
+    t = path.read_text(encoding="utf-8")
+    sentinel = "// AorusGram: tap gestures v1"
+    if sentinel in t:
+        print("TapGestures: already injected")
+        return
+
+    # 1) Stored state, injected just before the gesture handler.
+    method_anchor = "    @objc private func tapLongTapOrDoubleTapGesture(_ recognizer: TapLongTapOrDoubleTapGestureRecognizer) {"
+    if method_anchor not in t:
+        print("TapGestures: method anchor not found — skipped")
+        return
+    state_decl = (
+        "    " + sentinel + "\n"
+        "    private var _agLastDoubleTapTime: Double = 0\n"
+        "    private var _agPendingCopy: DispatchWorkItem?\n"
+        + method_anchor
+    )
+    t = t.replace(method_anchor, state_decl, 1)
+
+    # 2) Handling, injected at the very start of the `.ended` branch.
+    ended_anchor = (
+        "        case .ended:\n"
+        "            if let (gesture, location) = recognizer.lastRecognizedGestureAndLocation, let item = self.item {\n"
+    )
+    if ended_anchor not in t:
+        print("TapGestures: .ended anchor not found — skipped (state decl already applied)")
+        path.write_text(t, encoding="utf-8")
+        return
+    injection = (
+        ended_anchor
+        + "                let _agUD = UserDefaults.standard\n"
+        + "                let _agDoubleCopy = _agUD.bool(forKey: \"aorusgram_feature_double_copy\")\n"
+        + "                let _agTripleDelete = _agUD.bool(forKey: \"aorusgram_feature_triple_delete\")\n"
+        + "                if _agDoubleCopy || _agTripleDelete {\n"
+        + "                    if case .doubleTap = gesture {\n"
+        + "                        self._agLastDoubleTapTime = CFAbsoluteTimeGetCurrent()\n"
+        + "                        self._agPendingCopy?.cancel(); self._agPendingCopy = nil\n"
+        + "                        if _agDoubleCopy {\n"
+        + "                            let _agText = item.message.text\n"
+        + "                            let _agCopy = { if !_agText.isEmpty { item.controllerInteraction.copyText(_agText) } }\n"
+        + "                            if _agTripleDelete {\n"
+        + "                                let _agWI = DispatchWorkItem(block: _agCopy)\n"
+        + "                                self._agPendingCopy = _agWI\n"
+        + "                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: _agWI)\n"
+        + "                            } else {\n"
+        + "                                _agCopy()\n"
+        + "                            }\n"
+        + "                            self.mainContainerNode.cancelGesture()\n"
+        + "                            return\n"
+        + "                        }\n"
+        + "                    } else if case .tap = gesture, _agTripleDelete, CFAbsoluteTimeGetCurrent() - self._agLastDoubleTapTime < 0.6 {\n"
+        + "                        self._agLastDoubleTapTime = 0\n"
+        + "                        self._agPendingCopy?.cancel(); self._agPendingCopy = nil\n"
+        + "                        let _ = item.context.engine.messages.deleteMessagesInteractively(messageIds: [item.message.id], type: .forLocalPeer).start()\n"
+        + "                        return\n"
+        + "                    }\n"
+        + "                }\n"
+    )
+    t = t.replace(ended_anchor, injection, 1)
+    path.write_text(t, encoding="utf-8")
+    print("TapGestures: injected double-tap-copy / triple-tap-delete")
 
 
 def patch_chat_context_menu_hide_name_forward(tg: Path) -> None:
@@ -4258,17 +4339,31 @@ def patch_view_once_direct_save_button(tg: Path) -> None:
         "\n"
         f"    // {_s}\n"
         # ── _aorusInjectVOSaveButton ──────────────────────────────────────────
-        # Sets a save icon in the navigation bar (right side).
-        # The nav bar hides/shows with the gallery controls automatically.
-        # Path presence is checked at tap time — no timing dependency here.
+        # A white save icon pinned bottom-right (mirroring the share button on
+        # the left). It fades together with the gallery HUD via the
+        # controlsVisibilityChanged hook, so a tap that hides the controls hides
+        # the save icon too. Path presence is checked at tap time.
         f"    @objc private func _aorusInjectVOSaveButton() {{\n"
         f'        guard UserDefaults.standard.bool(forKey: "{once}") else {{ return }}\n'
-        "        guard self.navigationItem.rightBarButtonItem == nil else { return }\n"
-        "        let img = UIImage(systemName: \"square.and.arrow.down\") ?? UIImage(systemName: \"arrow.down.to.line\")\n"
-        "        let barBtn = UIBarButtonItem(image: img, style: .plain,\n"
-        "                                     target: self, action: #selector(_aorusVOSave))\n"
-        "        barBtn.tintColor = .white\n"
-        "        self.navigationItem.rightBarButtonItem = barBtn\n"
+        "        guard self.view.viewWithTag(0xA0530BEB) == nil else { return }\n"
+        "        let btn = UIButton(type: .system)\n"
+        "        btn.tag = 0xA0530BEB\n"
+        "        let cfg = UIImage.SymbolConfiguration(pointSize: 22, weight: .semibold)\n"
+        "        btn.setImage(UIImage(systemName: \"square.and.arrow.down\", withConfiguration: cfg), for: .normal)\n"
+        "        btn.tintColor = .white\n"
+        "        btn.translatesAutoresizingMaskIntoConstraints = false\n"
+        "        btn.addTarget(self, action: #selector(_aorusVOSave), for: .touchUpInside)\n"
+        "        self.view.addSubview(btn)\n"
+        "        NSLayoutConstraint.activate([\n"
+        "            btn.trailingAnchor.constraint(equalTo: self.view.safeAreaLayoutGuide.trailingAnchor, constant: -22),\n"
+        "            btn.bottomAnchor.constraint(equalTo: self.view.safeAreaLayoutGuide.bottomAnchor, constant: -4),\n"
+        "            btn.widthAnchor.constraint(equalToConstant: 44),\n"
+        "            btn.heightAnchor.constraint(equalToConstant: 44),\n"
+        "        ])\n"
+        "        btn.alpha = self.controllerNode.areControlsHidden ? 0.0 : 1.0\n"
+        "        self.controllerNode.controlsVisibilityChanged = { [weak btn] visible in\n"
+        "            UIView.animate(withDuration: 0.3) { btn?.alpha = visible ? 1.0 : 0.0 }\n"
+        "        }\n"
         "    }\n"
         "\n"
         # ── _aorusVOSave ─────────────────────────────────────────────────────
@@ -4418,6 +4513,43 @@ def patch_device_spoof(tg: Path) -> None:
     else:
         print("DeviceSpoof: WARNING — deviceModelName: nil anchor not found")
 
+    # Spoof systemVersion in MTApiEnvironment so Telegram's session list shows
+    # the platform icon that matches the chosen device (Android/Windows/macOS…).
+    # The icon is derived from deviceModel + systemVersion; without this an
+    # Android device name still renders with an Apple icon. Server-side this is
+    # applied to the session on (re)connect / fresh login.
+    env = tg / "submodules/MtProtoKit/Sources/MTApiEnvironment.m"
+    env_sentinel = "// AorusGram: spoof system version"
+    if env.is_file():
+        et = env.read_text(encoding="utf-8")
+        if env_sentinel in et:
+            print("DeviceSpoof: MTApiEnvironment already patched")
+        else:
+            env_anchor = (
+                "#if TARGET_OS_IPHONE\n"
+                "        _systemVersion = [[UIDevice currentDevice] systemVersion];\n"
+                "#else\n"
+                "        NSProcessInfo *pInfo = [NSProcessInfo processInfo];\n"
+                "        _systemVersion = [[[pInfo operatingSystemVersionString] componentsSeparatedByString:@\" \"] objectAtIndex:1];\n"
+                "#endif\n"
+            )
+            if env_anchor in et:
+                env_inject = env_anchor + (
+                    "        " + env_sentinel + "\n"
+                    "        NSString *_agSysVer = [[NSUserDefaults standardUserDefaults] stringForKey:@\""
+                    + _AG_K_SPOOF_SYSVER + "\"];\n"
+                    "        if (_agSysVer != nil && _agSysVer.length > 0) {\n"
+                    "            _systemVersion = _agSysVer;\n"
+                    "        }\n"
+                )
+                et = et.replace(env_anchor, env_inject, 1)
+                env.write_text(et, encoding="utf-8")
+                print("DeviceSpoof: patched MTApiEnvironment systemVersion → UserDefaults lookup")
+            else:
+                print("DeviceSpoof: WARNING — MTApiEnvironment systemVersion anchor not found")
+    else:
+        print("DeviceSpoof: MTApiEnvironment.m not found — skip systemVersion spoof")
+
 
 def patch_aorus_controller_keys(tg: Path) -> None:
     """Replace semantic 'aorusgram_*' UserDefaults keys in AorusGramController with opaque UUIDs.
@@ -4438,6 +4570,7 @@ def patch_aorus_controller_keys(tg: Path) -> None:
         ('"aorusgram_bypass_view_once"',  f'"{_AG_K_BYPASS_ONCE}"'),
         ('"aorusgram_bypass_story_dl"',   f'"{_AG_K_BYPASS_STORY}"'),
         ('"aorusgram_spoofed_device"',    f'"{_AG_K_SPOOF_DEVICE}"'),
+        ('"aorusgram_spoofed_sysver"',    f'"{_AG_K_SPOOF_SYSVER}"'),
     ]
     changed = 0
     for old_key, new_key in replacements:
@@ -4705,6 +4838,7 @@ def main() -> None:
     patch_view_once_save_button(tg)
     patch_view_once_direct_save_button(tg)
     patch_chat_context_menu_edit_locally(tg)
+    patch_chat_message_tap_gestures(tg)
     patch_chat_context_menu_hide_name_forward(tg)
     patch_forward_hide_names_default(tg)
     patch_device_spoof(tg)

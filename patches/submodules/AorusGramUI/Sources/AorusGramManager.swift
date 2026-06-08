@@ -31,6 +31,10 @@ public final class AorusGramManager {
     // Local editing — context-menu action to edit any message in the local DB only.
     public var editLocally: Bool       = false { didSet { save() } }
 
+    // Message tap gestures (opt-in, off by default).
+    public var doubleTapCopy: Bool     = false { didSet { save() } }
+    public var tripleTapDelete: Bool   = false { didSet { save() } }
+
     // RAM management (replaces the former Streak feature in the Performance section).
     public var ramShow: Bool           = false { didSet { save() } }
     public var ramAutoClean: Bool      = false { didSet { save() } }
@@ -64,6 +68,8 @@ public final class AorusGramManager {
         siriShortcuts       = d["siriShortcuts"]       as? Bool ?? false
         autoReply           = d["autoReply"]           as? Bool ?? false
         editLocally         = d["editLocally"]         as? Bool ?? false
+        doubleTapCopy       = d["doubleTapCopy"]       as? Bool ?? false
+        tripleTapDelete     = d["tripleTapDelete"]     as? Bool ?? false
         ramShow             = d["ramShow"]             as? Bool ?? false
         ramAutoClean        = d["ramAutoClean"]        as? Bool ?? false
         ramInterval         = d["ramInterval"]         as? Int  ?? 60
@@ -86,6 +92,8 @@ public final class AorusGramManager {
             "siriShortcuts":       siriShortcuts,
             "autoReply":           autoReply,
             "editLocally":         editLocally,
+            "doubleTapCopy":       doubleTapCopy,
+            "tripleTapDelete":     tripleTapDelete,
             "ramShow":             ramShow,
             "ramAutoClean":        ramAutoClean,
             "ramInterval":         ramInterval,
@@ -105,6 +113,8 @@ public final class AorusGramManager {
         ud.set(streaks,             forKey: "aorusgram_feature_streaks")
         ud.set(siriShortcuts,       forKey: "aorusgram_feature_siri_shortcuts")
         ud.set(editLocally,         forKey: "aorusgram_feature_edit_locally")
+        ud.set(doubleTapCopy,       forKey: "aorusgram_feature_double_copy")
+        ud.set(tripleTapDelete,     forKey: "aorusgram_feature_triple_delete")
 
         if antiScreenshot {
             AntiScreenshotManager.shared.enable()
