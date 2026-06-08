@@ -3839,6 +3839,73 @@ def patch_save_view_once(tg: Path) -> None:
         print("ViewOnce: WARNING — peerIsCopyProtected anchor not found")
 
 
+def patch_view_once_capture(tg: Path) -> None:
+    """Disable capture-protection for view-once / secret media when the view-once toggle is ON.
+
+    Flipping `peerIsCopyProtected` alone does NOT unlock view-once media, because the
+    secure-capture flag is computed as an OR of several independent conditions:
+
+        captureProtected = isCopyProtected() || containsSecretMedia
+                        || minAutoremoveOrClearTimeout == viewOnceTimeout
+                        || paidContent != nil || peerIsCopyProtected
+
+    For a view-once message `containsSecretMedia` / `viewOnceTimeout` are true on their
+    own, so the screen stays capture-protected (black on screenshot / screen-record)
+    regardless of peerIsCopyProtected. We wrap the whole expression in
+    `!UserDefaults.bool(forKey: ONCE) && (...)` so the toggle can lift it.
+
+    Toggle ON  → captureProtected = false → view-once photo/video can be screenshotted,
+                 screen-recorded and saved.
+    Toggle OFF → original Telegram behaviour (capture-protected).
+    """
+    SENTINEL = _AG_K_BYPASS_ONCE
+
+    # 1) galleryItemForEntry — two identical captureProtected lines (image-video + file-video)
+    gc = tg / "submodules/GalleryUI/Sources/GalleryController.swift"
+    if gc.is_file():
+        t = gc.read_text(encoding="utf-8")
+        old = (
+            "            let captureProtected = message.isCopyProtected() || message.containsSecretMedia "
+            "|| message.minAutoremoveOrClearTimeout == viewOnceTimeout || message.paidContent != nil || peerIsCopyProtected"
+        )
+        new = (
+            f"            let captureProtected = !UserDefaults.standard.bool(forKey: \"{_AG_K_BYPASS_ONCE}\") && (message.isCopyProtected() || message.containsSecretMedia "
+            "|| message.minAutoremoveOrClearTimeout == viewOnceTimeout || message.paidContent != nil || peerIsCopyProtected)"
+        )
+        if SENTINEL in t:
+            print("ViewOnceCapture: GalleryController already patched")
+        elif old in t:
+            n = t.count(old)
+            gc.write_text(t.replace(old, new), encoding="utf-8")
+            print(f"ViewOnceCapture: patched GalleryController captureProtected ({n} site(s))")
+        else:
+            print("ViewOnceCapture: WARNING — GalleryController captureProtected anchor not found")
+    else:
+        print("ViewOnceCapture: GalleryController.swift not found")
+
+    # 2) ChatImageGalleryItem — imageNode.captureProtected for secret photos
+    img = tg / "submodules/GalleryUI/Sources/Items/ChatImageGalleryItem.swift"
+    if img.is_file():
+        t = img.read_text(encoding="utf-8")
+        old = (
+            "        self.imageNode.captureProtected = message.id.peerId.namespace == Namespaces.Peer.SecretChat "
+            "|| message.isCopyProtected() || peerIsCopyProtected || isSecret || message.paidContent != nil"
+        )
+        new = (
+            f"        self.imageNode.captureProtected = !UserDefaults.standard.bool(forKey: \"{_AG_K_BYPASS_ONCE}\") && (message.id.peerId.namespace == Namespaces.Peer.SecretChat "
+            "|| message.isCopyProtected() || peerIsCopyProtected || isSecret || message.paidContent != nil)"
+        )
+        if SENTINEL in t and "self.imageNode.captureProtected = !UserDefaults" in t:
+            print("ViewOnceCapture: ChatImageGalleryItem already patched")
+        elif old in t:
+            img.write_text(t.replace(old, new, 1), encoding="utf-8")
+            print("ViewOnceCapture: patched ChatImageGalleryItem imageNode.captureProtected")
+        else:
+            print("ViewOnceCapture: WARNING — ChatImageGalleryItem captureProtected anchor not found")
+    else:
+        print("ViewOnceCapture: ChatImageGalleryItem.swift not found")
+
+
 def patch_device_spoof(tg: Path) -> None:
     """Device spoof: read chosen device name from opaque UUID UserDefaults key (_AG_K_SPOOF_DEVICE).
 
@@ -4147,6 +4214,7 @@ def main() -> None:
     patch_bypass_copy_protection(tg)
     patch_bypass_story_download(tg)
     patch_save_view_once(tg)
+    patch_view_once_capture(tg)
     patch_device_spoof(tg)
     patch_aorus_controller_keys(tg)
     patch_decoy_keys(tg)
