@@ -1,62 +1,55 @@
 import Foundation
 import UIKit
+import Darwin
 
 // MARK: - AorusTamperGuard
 //
 // Runtime integrity checks that run once at bootstrap. Goals:
 //   1. Detect if the IPA was repacked with a different bundle ID or signing cert.
 //   2. Detect jailbreak / dylib injection that could facilitate patching.
-//   3. Embed an immutable authorship watermark that survives decompilation.
+//   3. Deny debugger attachment and detect active debugger.
+//   4. Detect Frida gadget via dylib scan and open port probe.
+//   5. Embed an immutable authorship watermark that survives decompilation.
 //
-// None of these checks are foolproof against a determined attacker, but they
-// raise the bar significantly above a simple `otool -L` + re-sign workflow.
-//
-// On failure we log and optionally terminate. The default policy is LOG-ONLY
-// so a false-positive on a legitimate device doesn't break production users.
-// Set `AorusTamperGuard.terminateOnTamper = true` to make checks fatal.
+// On failure the default policy is LOG-ONLY. Set terminateOnTamper = true
+// for production hardening. All detections also set the cross-module
+// UserDefaults flag "_ag_frida" which ProxyManager checks before
+// processing proxy requests.
 
 public final class AorusTamperGuard {
     public static let shared = AorusTamperGuard()
     private init() {}
 
-    // Authorship watermark — survives decompilation and static analysis.
-    // Changing this would require re-signing with a valid Anthropic key, which
-    // is impossible without the private key.
+    // Authorship watermark.
     public static let author = "AorusGram by @aorusgram — Powered by Claude AI"
     public static let buildSignature = "AORUS-AUTH-2025-CLAUDE-SIGNED"
 
-    // Set to true to terminate the app on tamper detection (production hardening).
+    // Set to true to terminate on tamper (production hardening).
     public static var terminateOnTamper = false
 
-    // Set by checkDylibInjection() when DYLD_INSERT_LIBRARIES is detected.
-    // AorusProxyManager reads this flag and refuses to initialise when true,
-    // breaking dynamic analysis of the proxy request pipeline.
+    // In-module Frida detection flag — also mirrored to UserDefaults "_ag_frida"
+    // so AorusProxyManager (same module) gets the result after async checks finish.
     public static var isFridaDetected: Bool = false
 
     // MARK: - Run all checks
 
     public func verify() {
+        applyAntiDebug()
         checkBundleIntegrity()
         checkJailbreak()
         checkDylibInjection()
+        checkDebugger()
+        checkFridaPort()
     }
 
     // MARK: - Bundle ID check
 
     private func checkBundleIntegrity() {
-        // The expected prefix covers all AorusGram distribution variants.
-        // Any repack with a different bundle ID is flagged.
         guard let bundleId = Bundle.main.bundleIdentifier else {
-            flag("bundle ID is nil")
-            return
+            flag("bundle ID is nil"); return
         }
-        let allowed: [String] = [
-            "ph.telegra.Telegraph",     // base Telegram bundle (legitimate fork base)
-            "aorusgram",                // any bundle containing our identifier
-            "com.aorusgram",
-        ]
-        let ok = allowed.contains(where: { bundleId.lowercased().contains($0.lowercased()) })
-        if !ok {
+        let allowed = ["ph.telegra.Telegraph", "aorusgram", "com.aorusgram"]
+        if !allowed.contains(where: { bundleId.lowercased().contains($0.lowercased()) }) {
             flag("unexpected bundle ID: \(bundleId)")
         }
     }
@@ -65,42 +58,115 @@ public final class AorusTamperGuard {
 
     private func checkJailbreak() {
         #if targetEnvironment(simulator)
-        return // simulators always look jailbroken; skip
+        return
         #else
-        let jailbreakPaths = [
+        let paths = [
             "/Applications/Cydia.app",
             "/Library/MobileSubstrate/MobileSubstrate.dylib",
             "/bin/bash",
             "/usr/sbin/sshd",
             "/etc/apt",
             "/private/var/lib/apt/",
-            "/private/var/jb",           // Dopamine / palera1n root
+            "/private/var/jb",
         ]
-        for path in jailbreakPaths where FileManager.default.fileExists(atPath: path) {
-            flag("jailbreak indicator at \(path)")
+        for p in paths where FileManager.default.fileExists(atPath: p) {
+            flag("jailbreak indicator: \(p)"); return
+        }
+        let testPath = "/private/jb_test_ag_\(arc4random())"
+        do {
+            try "t".write(toFile: testPath, atomically: true, encoding: .utf8)
+            try FileManager.default.removeItem(atPath: testPath)
+            flag("sandbox escape — possible jailbreak")
+        } catch {}
+        #endif
+    }
+
+    // MARK: - Dylib injection + Frida gadget detection
+
+    private func checkDylibInjection() {
+        // DYLD_INSERT_LIBRARIES env var — never set in legitimate App Store builds.
+        if let injected = ProcessInfo.processInfo.environment["DYLD_INSERT_LIBRARIES"],
+           !injected.isEmpty {
+            markFrida()
+            flag("DYLD_INSERT_LIBRARIES: \(injected)")
             return
         }
-        // Sandbox escape test
-        let testPath = "/private/jb_test_aorus_\(arc4random())"
-        do {
-            try "test".write(toFile: testPath, atomically: true, encoding: .utf8)
-            try FileManager.default.removeItem(atPath: testPath)
-            flag("sandbox escape detected — possible jailbreak")
-        } catch {
-            // write failed → sandbox intact → OK
+        // Scan all loaded dylib names for known Frida/substrate strings.
+        let count = _dyld_image_count()
+        let suspects = ["frida", "gadget", "cynject", "substrate", "substitute", "cycript"]
+        for i in 0..<count {
+            guard let raw = _dyld_get_image_name(i) else { continue }
+            let name = String(cString: raw).lowercased()
+            if suspects.contains(where: { name.contains($0) }) {
+                markFrida()
+                flag("suspicious dylib: \(String(cString: raw))")
+                return
+            }
+        }
+    }
+
+    // MARK: - Debugger checks
+
+    // C1: deny debugger attachment via ptrace — symbol resolved at runtime
+    // so "ptrace" never appears in the binary's import table.
+    private func applyAntiDebug() {
+        #if !targetEnvironment(simulator)
+        typealias PtraceT = @convention(c) (CInt, CInt, CInt, CInt) -> CInt
+        let handle = dlopen(nil, RTLD_LAZY)
+        if let sym = dlsym(handle, "ptrace") {
+            _ = unsafeBitCast(sym, to: PtraceT.self)(31, 0, 0, 0) // PT_DENY_ATTACH = 31
+        }
+        dlclose(handle)
+        #endif
+    }
+
+    // C2: sysctl P_TRACED flag — detects an already-attached debugger.
+    private func checkDebugger() {
+        #if !targetEnvironment(simulator)
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.size
+        var mib: [CInt] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]
+        sysctl(&mib, 4, &info, &size, nil, 0)
+        if info.kp_proc.p_flag & P_TRACED != 0 {
+            markFrida()
+            flag("debugger attached (P_TRACED)")
         }
         #endif
     }
 
-    // MARK: - Dylib injection detection
-
-    private func checkDylibInjection() {
-        // Check DYLD_INSERT_LIBRARIES — legitimate App Store builds never set this.
-        if let injected = ProcessInfo.processInfo.environment["DYLD_INSERT_LIBRARIES"],
-           !injected.isEmpty {
-            AorusTamperGuard.isFridaDetected = true
-            flag("DYLD_INSERT_LIBRARIES detected: \(injected)")
+    // B3: probe Frida default gadget port 27042 on localhost.
+    // Runs async so it never blocks app startup; uses a 300 ms connect timeout.
+    private func checkFridaPort() {
+        #if !targetEnvironment(simulator)
+        DispatchQueue.global(qos: .background).async { [weak self] in
+            var addr = sockaddr_in()
+            addr.sin_family = sa_family_t(AF_INET)
+            addr.sin_port = CFSwapInt16HostToBig(27042)
+            addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+            let sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+            guard sock >= 0 else { return }
+            defer { close(sock) }
+            var tv = timeval(tv_sec: 0, tv_usec: 300_000)
+            setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+            setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+            let ok = withUnsafePointer(to: &addr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    connect(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+            if ok == 0 {
+                self?.markFrida()
+                self?.flag("Frida server port 27042 open")
+            }
         }
+        #endif
+    }
+
+    // MARK: - Shared detection marker
+
+    private func markFrida() {
+        AorusTamperGuard.isFridaDetected = true
+        UserDefaults.standard.set(true, forKey: "_ag_frida")
     }
 
     // MARK: - Flag handler
@@ -108,11 +174,7 @@ public final class AorusTamperGuard {
     private func flag(_ reason: String) {
         let msg = "[AorusTamperGuard] INTEGRITY WARNING: \(reason)"
         print(msg)
-        // Post internal notification so UI can optionally show a warning banner.
-        NotificationCenter.default.post(
-            name: .aorusTamperDetected,
-            object: reason
-        )
+        NotificationCenter.default.post(name: .aorusTamperDetected, object: reason)
         if AorusTamperGuard.terminateOnTamper {
             fatalError(msg)
         }

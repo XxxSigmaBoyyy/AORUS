@@ -20,6 +20,15 @@ public final class AorusGramBootstrap {
             AccountBackupManager.shared.rootPath = accountPath
         }
 
+        // Reset tamper signals so each clean launch starts from zero.
+        // The "_ag_frida" key is the cross-module bridge (AorusGramUI → AorusGram).
+        // "d4b9e2f1-8c3a-4d7f-b2e5-1a9c6f4b8e2d" is the AorusTamperAccumulator
+        // persistence key — resetting it here ensures the accumulator in the
+        // AorusGram module starts from 0 on every clean launch.
+        let ud = UserDefaults.standard
+        ud.removeObject(forKey: "_ag_frida")
+        ud.removeObject(forKey: "d4b9e2f1-8c3a-4d7f-b2e5-1a9c6f4b8e2d")
+
         // Integrity check — runs async so it never blocks app launch
         DispatchQueue.global(qos: .utility).async {
             AorusTamperGuard.shared.verify()

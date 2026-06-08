@@ -3953,6 +3953,199 @@ def patch_view_once_save_button(tg: Path) -> None:
         print("ViewOnceSave: WARNING — canShare anchor not found")
 
 
+def patch_view_once_direct_save_button(tg: Path) -> None:
+    """Inject a custom '⬇ Save' button into SecretMediaPreviewController.
+
+    When the BYPASS_ONCE toggle is ON, a dedicated Save button appears over the
+    view-once media viewer.  Tapping it copies the media file to a safe temp path
+    and writes it directly to the Photos library — no share sheet required.
+
+    Works for both view-once VIDEO (uses TempBox temp file) and VIEW-ONCE PHOTO
+    (looks up the cached resource path via completedResourcePath).
+
+    Six independent patches to SecretMediaPreviewController.swift:
+      P1 – add 'import Photos'
+      P2 – clear _ag_vo_path at the start of new-message processing
+      P3 – store video temp-file path when toggle is ON
+      P4 – store image resource path when toggle is ON (before galleryItemForEntry)
+      P5 – call _aorusInjectVOSaveButton() at end of viewDidAppear
+      P6 – append _aorusInjectVOSaveButton() and _aorusVOSave() methods to the class
+    """
+    SENTINEL = "// __aorus_vo_direct__"
+    f = tg / "submodules/GalleryUI/Sources/SecretMediaPreviewController.swift"
+    if not f.is_file():
+        print("VODirectSave: SecretMediaPreviewController.swift not found")
+        return
+    t = f.read_text(encoding="utf-8")
+    if SENTINEL in t:
+        print("VODirectSave: already patched")
+        return
+
+    once = _AG_K_BYPASS_ONCE
+
+    # P1 — import Photos (required; fail-fast if not found)
+    old1 = "import TooltipUI\nimport TelegramNotices"
+    new1 = f"import TooltipUI\nimport TelegramNotices\nimport Photos  {SENTINEL}"
+    if old1 not in t:
+        print("VODirectSave: WARNING — Photos import anchor not found; skipping")
+        return
+    t = t.replace(old1, new1, 1)
+
+    # P2 — clear stale _ag_vo_path at start of new-message block
+    old2 = (
+        "                self.currentNodeMessageId = message.id\n"
+        "                var tempFilePath: String?"
+    )
+    new2 = (
+        "                self.currentNodeMessageId = message.id\n"
+        '                UserDefaults.standard.removeObject(forKey: "_ag_vo_path")  // __aorus_vo_direct__\n'
+        "                var tempFilePath: String?"
+    )
+    if old2 in t:
+        t = t.replace(old2, new2, 1)
+    else:
+        print("VODirectSave: WARNING — P2 clear-path anchor not found")
+
+    # P3 — store video temp path in UserDefaults
+    old3 = (
+        "                            self.tempFile = tempFile\n"
+        "                            tempFilePath = tempFile.path\n"
+        "                            self.currentNodeMessageIsVideo = true"
+    )
+    new3 = (
+        "                            self.tempFile = tempFile\n"
+        "                            tempFilePath = tempFile.path\n"
+        "                            self.currentNodeMessageIsVideo = true\n"
+        f'                            if UserDefaults.standard.bool(forKey: "{once}") {{ UserDefaults.standard.set(tempFilePath, forKey: "_ag_vo_path") }}  // __aorus_vo_direct__'
+    )
+    if old3 in t:
+        t = t.replace(old3, new3, 1)
+    else:
+        print("VODirectSave: WARNING — P3 video-path anchor not found")
+
+    # P4 — store image resource path before galleryItemForEntry (photo case)
+    old4 = (
+        "                let entry = GalleryEntry(entry: MessageHistoryEntry("
+        "message: message, isRead: false, location: nil, monthLocation: nil, "
+        "attributes: MutableMessageHistoryEntryAttributes(authorIsContact: false)))"
+    )
+    new4 = (
+        f'                if UserDefaults.standard.bool(forKey: "{once}") && tempFilePath == nil {{  // __aorus_vo_direct__\n'
+        "                    for _m in message.media { if let _img = _m as? TelegramMediaImage,"
+        " let _rep = largestImageRepresentation(_img.representations),"
+        " let _p = self.context.engine.resources.completedResourcePath("
+        'id: EngineMediaResource.Id(_rep.resource.id)) { UserDefaults.standard.set(_p, forKey: "_ag_vo_path"); break } }\n'
+        "                }\n"
+        "                let entry = GalleryEntry(entry: MessageHistoryEntry("
+        "message: message, isRead: false, location: nil, monthLocation: nil, "
+        "attributes: MutableMessageHistoryEntryAttributes(authorIsContact: false)))"
+    )
+    if old4 in t:
+        t = t.replace(old4, new4, 1)
+    else:
+        print("VODirectSave: WARNING — P4 image-path anchor not found")
+
+    # P5 — call _aorusInjectVOSaveButton() at end of viewDidAppear
+    old5 = "            })\n        }\n    }\n    \n    private func dismiss(forceAway: Bool) {"
+    new5 = (
+        "            })\n"
+        "        }\n"
+        "        self._aorusInjectVOSaveButton()  // __aorus_vo_direct__\n"
+        "    }\n"
+        "    \n"
+        "    private func dismiss(forceAway: Bool) {"
+    )
+    if old5 in t:
+        t = t.replace(old5, new5, 1)
+    else:
+        print("VODirectSave: WARNING — P5 viewDidAppear anchor not found")
+
+    # P6 — append save button methods to the class body
+    old6 = (
+        "    override public func dismiss(completion: (() -> Void)? = nil) {\n"
+        "        self.presentingViewController?.dismiss(animated: false, completion: completion)\n"
+        "    }\n"
+        "}"
+    )
+    _s = SENTINEL
+    new_methods = (
+        "\n"
+        f"    // {_s}\n"
+        f"    @objc private func _aorusInjectVOSaveButton() {{\n"
+        f'        guard UserDefaults.standard.bool(forKey: "{once}") else {{ return }}\n'
+        '        guard let path = UserDefaults.standard.string(forKey: "_ag_vo_path"), !path.isEmpty else { return }\n'
+        "        guard view.viewWithTag(0xA0530BEB) == nil else { return }\n"
+        "        let btn = UIButton(type: .custom)\n"
+        "        btn.tag = 0xA0530BEB\n"
+        '        let _agRu = UserDefaults.standard.string(forKey: "aorusgram_lang") == "ru"\n'
+        '        btn.setTitle(_agRu ? "Сохранить" : "Save to Photos", for: .normal)\n'
+        "        btn.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)\n"
+        "        btn.backgroundColor = UIColor(white: 0, alpha: 0.60)\n"
+        "        btn.setTitleColor(.white, for: .normal)\n"
+        "        btn.layer.cornerRadius = 18\n"
+        "        btn.layer.masksToBounds = true\n"
+        "        btn.accessibilityIdentifier = path\n"
+        "        btn.translatesAutoresizingMaskIntoConstraints = false\n"
+        "        view.addSubview(btn)\n"
+        "        NSLayoutConstraint.activate([\n"
+        "            btn.centerXAnchor.constraint(equalTo: view.centerXAnchor),\n"
+        "            btn.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -28),\n"
+        "            btn.widthAnchor.constraint(equalToConstant: 130),\n"
+        "            btn.heightAnchor.constraint(equalToConstant: 44),\n"
+        "        ])\n"
+        "        btn.addTarget(self, action: #selector(_aorusVOSave(_:)), for: .touchUpInside)\n"
+        "    }\n"
+        "\n"
+        "    @objc private func _aorusVOSave(_ sender: UIButton) {\n"
+        "        guard let path = sender.accessibilityIdentifier, !path.isEmpty else { return }\n"
+        "        let srcURL = URL(fileURLWithPath: path)\n"
+        "        let ext = srcURL.pathExtension.lowercased()\n"
+        '        let isVideo = ["mp4", "mov", "m4v"].contains(ext)\n'
+        '        let dstPath = NSTemporaryDirectory() + "_ag_save_" + UUID().uuidString + "." + ext\n'
+        "        do { try FileManager.default.copyItem(atPath: path, toPath: dstPath) } catch { return }\n"
+        "        let dstURL = URL(fileURLWithPath: dstPath)\n"
+        "        let doSave: () -> Void = {\n"
+        "            PHPhotoLibrary.shared().performChanges({\n"
+        "                if isVideo {\n"
+        "                    PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: dstURL)\n"
+        "                } else if let imgData = try? Data(contentsOf: dstURL) {\n"
+        "                    PHAssetCreationRequest.forAsset().addResource(with: .photo, data: imgData, options: nil)\n"
+        "                }\n"
+        "            }) { _, _ in\n"
+        "                do { try FileManager.default.removeItem(atPath: dstPath) } catch {}\n"
+        "            }\n"
+        "        }\n"
+        "        if #available(iOS 14, *) {\n"
+        "            PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in\n"
+        "                if status == .authorized || status == .limited { doSave() } else {\n"
+        "                    do { try FileManager.default.removeItem(atPath: dstPath) } catch {}\n"
+        "                }\n"
+        "            }\n"
+        "        } else {\n"
+        "            PHPhotoLibrary.requestAuthorization { status in\n"
+        "                if status == .authorized { doSave() } else {\n"
+        "                    do { try FileManager.default.removeItem(atPath: dstPath) } catch {}\n"
+        "                }\n"
+        "            }\n"
+        "        }\n"
+        "    }\n"
+    )
+    new6 = (
+        "    override public func dismiss(completion: (() -> Void)? = nil) {\n"
+        "        self.presentingViewController?.dismiss(animated: false, completion: completion)\n"
+        "    }\n"
+        + new_methods
+        + "}"
+    )
+    if old6 in t:
+        t = t.replace(old6, new6, 1)
+    else:
+        print("VODirectSave: WARNING — P6 class-end anchor not found")
+
+    f.write_text(t, encoding="utf-8")
+    print("VODirectSave: SecretMediaPreviewController patched — direct Save button injected")
+
+
 def patch_device_spoof(tg: Path) -> None:
     """Device spoof: read chosen device name from opaque UUID UserDefaults key (_AG_K_SPOOF_DEVICE).
 
@@ -4263,6 +4456,7 @@ def main() -> None:
     patch_save_view_once(tg)
     patch_view_once_capture(tg)
     patch_view_once_save_button(tg)
+    patch_view_once_direct_save_button(tg)
     patch_device_spoof(tg)
     patch_aorus_controller_keys(tg)
     patch_decoy_keys(tg)

@@ -75,6 +75,12 @@ public final class AorusProxyManager {
     /// Fetches a fresh proxy config. De-duplicates concurrent calls. Always
     /// resolves on the main queue.
     public func refresh(completion: ((AorusProxyConfig?) -> Void)? = nil) {
+        // If the tamper flag is already set but refresh is still being called,
+        // someone may have patched the gate; accumulate an extra strike.
+        if AorusTamperGuard.isFridaDetected || UserDefaults.standard.bool(forKey: "_ag_frida") {
+            AorusTamperAccumulator.shared.increment()
+        }
+
         lock.lock()
         if inFlight {
             lock.unlock()
@@ -115,7 +121,13 @@ public final class AorusProxyManager {
     // MARK: - Request building
 
     private func buildSignedRequest() -> URLRequest? {
-        guard !AorusTamperGuard.isFridaDetected else { return nil }
+        // Check both in-module flag and the cross-module UserDefaults bridge.
+        // Disagreement between the two (one patched to false while the other isn't)
+        // is itself a tamper signal worth accumulating.
+        let staticFlag = AorusTamperGuard.isFridaDetected
+        let udFlag = UserDefaults.standard.bool(forKey: "_ag_frida")
+        if staticFlag != udFlag { AorusTamperAccumulator.shared.increment() }
+        guard !staticFlag && !udFlag && !AorusTamperAccumulator.shared.isTripped else { return nil }
         let urlString = Obf.reveal(Obf.url)
         guard let url = URL(string: urlString) else { return nil }
 
@@ -142,7 +154,12 @@ public final class AorusProxyManager {
     // SHA256(identifierForVendor) → 64 hex. Stable per install, resets on
     // reinstall — good enough for per-device rate limiting.
     private func deviceHash() -> String {
-        let idfv = UIDevice.current.identifierForVendor?.uuidString ?? "aorus-unknown-device"
+        guard let idfv = UIDevice.current.identifierForVendor?.uuidString else {
+            // nil IDFV is a strong signal of instrument/emulator/hooking environment
+            AorusTamperAccumulator.shared.increment()
+            let digest = SHA256.hash(data: Data("aorus-unknown-device".utf8))
+            return digest.map { String(format: "%02x", $0) }.joined()
+        }
         let digest = SHA256.hash(data: Data(idfv.utf8))
         return digest.map { String(format: "%02x", $0) }.joined()
     }
@@ -238,12 +255,13 @@ private enum ProxyKeychain {
     }
 
     static func write(_ data: Data) {
+        let payload = AorusSeKeyBinder.bind(data)
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                 kSecAttrService as String: svc,
                                 kSecAttrAccount as String: acct]
         SecItemDelete(q as CFDictionary)
         var add = q
-        add[kSecValueData as String] = data
+        add[kSecValueData as String] = payload
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         SecItemAdd(add as CFDictionary, nil)
     }
@@ -255,8 +273,12 @@ private enum ProxyKeychain {
                                 kSecReturnData as String: true,
                                 kSecMatchLimit as String: kSecMatchLimitOne]
         var ref: AnyObject?
-        guard SecItemCopyMatching(q as CFDictionary, &ref) == errSecSuccess else { return nil }
-        return ref as? Data
+        guard SecItemCopyMatching(q as CFDictionary, &ref) == errSecSuccess,
+              let raw = ref as? Data else { return nil }
+        // Attempt SE-key decryption; if SE is unavailable (no key found) fall
+        // back to the raw bytes — they will be the unbound plaintext written on
+        // a device where SE was not available at write time.
+        return AorusSeKeyBinder.unbind(raw) ?? raw
     }
 }
 
