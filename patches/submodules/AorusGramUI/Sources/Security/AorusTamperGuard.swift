@@ -1,6 +1,7 @@
 import Foundation
 import UIKit
 import Darwin
+import ObjectiveC
 
 // MARK: - AorusTamperGuard
 //
@@ -27,6 +28,8 @@ public final class AorusTamperGuard {
         checkBundleIntegrity()
         checkJailbreak()
         checkDylibInjection()
+        checkHookFiles()
+        checkMethodHooks()
         checkDebugger()
         checkFridaPort()
     }
@@ -73,14 +76,15 @@ public final class AorusTamperGuard {
     // MARK: - Dylib injection + Frida gadget detection
 
     private func checkDylibInjection() {
-        if let injected = ProcessInfo.processInfo.environment["DYLD_INSERT_LIBRARIES"],
-           !injected.isEmpty {
-            markFrida()
-            flag("DYLD_INSERT_LIBRARIES: \(injected)")
-            return
+        let env = ProcessInfo.processInfo.environment
+        for key in ["DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH"] {
+            if let val = env[key], !val.isEmpty {
+                markFrida(); flag("\(key): \(val)"); return
+            }
         }
         let count = _dyld_image_count()
-        let suspects = ["frida", "gadget", "cynject", "substrate", "substitute", "cycript"]
+        let suspects = ["frida", "gadget", "cynject", "substrate", "substitute", "cycript",
+                        "libhooker", "ellekit", "tweakinject", "blackjack"]
         for i in 0..<count {
             guard let raw = _dyld_get_image_name(i) else { continue }
             let name = String(cString: raw).lowercased()
@@ -90,6 +94,50 @@ public final class AorusTamperGuard {
                 return
             }
         }
+    }
+
+    // MARK: - Hook framework filesystem indicators
+
+    private func checkHookFiles() {
+        #if !targetEnvironment(simulator)
+        let paths = [
+            "/usr/lib/TweakInject",
+            "/usr/lib/libsubstitute.dylib",
+            "/usr/lib/libhooker.dylib",
+            "/usr/lib/ellekit.dylib",
+            "/Library/MobileSubstrate/DynamicLibraries",
+        ]
+        for p in paths where FileManager.default.fileExists(atPath: p) {
+            markFrida(); flag("hook framework: \(p)"); return
+        }
+        #endif
+    }
+
+    // MARK: - ObjC method IMP origin check
+
+    private func checkMethodHooks() {
+        #if !targetEnvironment(simulator)
+        let pairs: [(String, String)] = [
+            ("NSUserDefaults", "boolForKey:"),
+            ("NSFileManager",  "fileExistsAtPath:"),
+            ("NSProcessInfo",  "environment"),
+        ]
+        for (clsName, selName) in pairs {
+            guard let cls = objc_getClass(clsName) as? AnyClass,
+                  let m = class_getInstanceMethod(cls, Selector((selName))) else { continue }
+            let imp = method_getImplementation(m)
+            let ptr = unsafeBitCast(imp, to: UnsafeRawPointer.self)
+            var info = Dl_info()
+            guard dladdr(ptr, &info) != 0, let fname = info.dli_fname else {
+                markFrida(); flag("dladdr miss: \(selName)"); return
+            }
+            let lib = String(cString: fname)
+            guard lib.hasPrefix("/System/") || lib.hasPrefix("/usr/lib/")
+                    || lib.hasPrefix("/private/preboot/") else {
+                markFrida(); flag("hook: \(selName) → \(lib)"); return
+            }
+        }
+        #endif
     }
 
     // MARK: - Debugger checks

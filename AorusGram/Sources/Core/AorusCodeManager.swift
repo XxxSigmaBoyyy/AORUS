@@ -67,6 +67,9 @@ final class AorusCodeManager {
     }
 
     func activate(code rawCode: String) -> ActivationResult {
+        if UserDefaults.standard.bool(forKey: "_ag_frida") {
+            AorusTamperAccumulator.shared.increment()
+        }
         let code = rawCode.uppercased().trimmingCharacters(in: .whitespacesAndNewlines)
         // Strip dashes → must be exactly 21 chars (AORUS + 16 body)
         let stripped = code.replacingOccurrences(of: "-", with: "")
@@ -182,8 +185,12 @@ final class AorusCodeManager {
 
     private func load() {
         guard let data = AorusKeychain.read(account: Self._codeAcct),
-              let code = try? JSONDecoder().decode(ActivatedCode.self, from: data),
-              code.deviceId == deviceID() else { return }
+              let code = try? JSONDecoder().decode(ActivatedCode.self, from: data) else { return }
+        guard code.deviceId == deviceID() else {
+            // Keychain data present but device ID mismatch — signals a Keychain clone attack.
+            AorusTamperAccumulator.shared.increment()
+            return
+        }
         activated = code
     }
 
