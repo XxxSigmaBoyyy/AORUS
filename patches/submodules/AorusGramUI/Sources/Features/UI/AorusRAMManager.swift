@@ -102,6 +102,9 @@ public final class AorusRAMManager {
         window.windowLevel = UIWindow.Level(rawValue: UIWindow.Level.statusBar.rawValue + 1)
         window.backgroundColor = .clear
         window.isUserInteractionEnabled = false
+        // UIWindow(windowScene:) does NOT inherit a frame — without this the
+        // window has zero bounds and the pill is laid out off-screen.
+        window.frame = sceneBounds(scene)
 
         let root = UIViewController()
         root.view.backgroundColor = .clear
@@ -145,6 +148,10 @@ public final class AorusRAMManager {
               let pill = overlayPill,
               let label = ramLabel else { return }
 
+        // Keep the window sized to its scene (handles rotation / late layout).
+        if let scene = window.windowScene {
+            window.frame = sceneBounds(scene)
+        }
         let bounds = window.bounds
         let safeTop = window.safeAreaInsets.top > 0 ? window.safeAreaInsets.top : 50
         let pillW: CGFloat = 94
@@ -179,6 +186,17 @@ public final class AorusRAMManager {
     }
 
     // MARK: - Helpers
+
+    // Full-screen bounds for a scene, derived from one of its real windows
+    // (UIWindowScene has no `coordinateSpace`; we avoid the deprecated `.screen`).
+    private func sceneBounds(_ scene: UIWindowScene) -> CGRect {
+        if let ref = scene.windows.first(where: {
+            !($0 is _AGPassthroughWindow) && $0.bounds.width > 0
+        }) {
+            return ref.bounds
+        }
+        return UIScreen.main.bounds
+    }
 
     private func bestWindowScene() -> UIWindowScene? {
         // Prefer an active foreground scene; fall back to any connected scene.
