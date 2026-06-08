@@ -1,6 +1,7 @@
 import Foundation
 import UIKit
 import Darwin
+import MachO
 import ObjectiveC
 
 // MARK: - AorusTamperGuard
