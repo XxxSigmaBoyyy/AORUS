@@ -9,6 +9,219 @@ import ItemListUI
 import PresentationDataUtils
 import AccountContext
 
+// MARK: - Interval slider
+
+// Discrete snap points (minutes) for the RAM cleanup interval.
+private let _aorusIntervalPresets = [15, 30, 60, 120, 240]
+
+/// A settings row that embeds a UISlider for selecting from `_aorusIntervalPresets`.
+private final class AorusIntervalSliderItem: ListViewItem, ItemListItem {
+    let theme: PresentationTheme
+    let title: String
+    let value: Int
+    let sectionId: ItemListSectionId
+    let requestsNoInset: Bool = false
+    let updated: (Int) -> Void
+
+    init(theme: PresentationTheme, title: String, value: Int,
+         sectionId: ItemListSectionId, updated: @escaping (Int) -> Void) {
+        self.theme = theme
+        self.title = title
+        self.value = value
+        self.sectionId = sectionId
+        self.updated = updated
+    }
+
+    func nodeConfiguredForParams(async: @escaping (@escaping () -> Void) -> Void,
+                                  params: ListViewItemLayoutParams,
+                                  synchronousLoads: Bool,
+                                  previousItem: ListViewItem?,
+                                  nextItem: ListViewItem?,
+                                  completion: @escaping (ListViewItemNode, @escaping () -> (Signal<Void, NoError>?, (ListViewItemApply) -> Void)) -> Void) {
+        async {
+            let node = AorusIntervalSliderItemNode()
+            let (layout, apply) = node.asyncLayout()(
+                self, params,
+                itemListNeighbors(item: self,
+                                  topItem: previousItem as? ItemListItem,
+                                  bottomItem: nextItem as? ItemListItem))
+            node.contentSize = layout.contentSize
+            node.insets = layout.insets
+            Queue.mainQueue().async {
+                completion(node, { return (nil, { _ in apply() }) })
+            }
+        }
+    }
+
+    func updateNode(async: @escaping (@escaping () -> Void) -> Void,
+                    node: @escaping () -> ListViewItemNode,
+                    params: ListViewItemLayoutParams,
+                    previousItem: ListViewItem?,
+                    nextItem: ListViewItem?,
+                    animation: ListViewItemUpdateAnimation,
+                    completion: @escaping (ListViewItemNodeLayout, @escaping (ListViewItemApply) -> Void) -> Void) {
+        Queue.mainQueue().async {
+            if let nodeValue = node() as? AorusIntervalSliderItemNode {
+                let makeLayout = nodeValue.asyncLayout()
+                async {
+                    let (layout, apply) = makeLayout(
+                        self, params,
+                        itemListNeighbors(item: self,
+                                          topItem: previousItem as? ItemListItem,
+                                          bottomItem: nextItem as? ItemListItem))
+                    Queue.mainQueue().async { completion(layout, { _ in apply() }) }
+                }
+            }
+        }
+    }
+}
+
+private final class AorusIntervalSliderItemNode: ListViewItemNode {
+    private let backgroundNode = ASDisplayNode()
+    private let topStripeNode  = ASDisplayNode()
+    private let bottomStripeNode = ASDisplayNode()
+    private let maskNode = ASImageNode()
+
+    private weak var titleLabel: UILabel?
+    private weak var valueLabel: UILabel?
+    private weak var sliderView: UISlider?
+
+    private var item: AorusIntervalSliderItem?
+    private var layoutParams: ListViewItemLayoutParams?
+
+    init() {
+        backgroundNode.isLayerBacked  = true
+        topStripeNode.isLayerBacked   = true
+        bottomStripeNode.isLayerBacked = true
+        super.init(layerBacked: false, dynamicBounce: false)
+        addSubnode(backgroundNode)
+        addSubnode(topStripeNode)
+        addSubnode(bottomStripeNode)
+        addSubnode(maskNode)
+    }
+
+    override func didLoad() {
+        super.didLoad()
+
+        let tl = UILabel()
+        tl.font = .systemFont(ofSize: 17)
+        view.addSubview(tl)
+        titleLabel = tl
+
+        let vl = UILabel()
+        vl.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+        vl.textAlignment = .right
+        view.addSubview(vl)
+        valueLabel = vl
+
+        let sl = UISlider()
+        sl.minimumValue = 0
+        sl.maximumValue = Float(_aorusIntervalPresets.count - 1)
+        sl.isContinuous = true
+        sl.addTarget(self, action: #selector(sliderMoved(_:)), for: .valueChanged)
+        sl.addTarget(self, action: #selector(sliderEnded(_:)),
+                     for: [.touchUpInside, .touchUpOutside, .touchCancel])
+        view.addSubview(sl)
+        sliderView = sl
+
+        if let item = item { applyItem(item) }
+        layoutSubviews()
+    }
+
+    private func applyItem(_ item: AorusIntervalSliderItem) {
+        let isRu = UserDefaults.standard.string(forKey: "aorusgram_lang") == "ru"
+        let idx = _aorusIntervalPresets.firstIndex(of: item.value) ?? 2
+        titleLabel?.text = item.title
+        titleLabel?.textColor = item.theme.list.itemPrimaryTextColor
+        valueLabel?.text = isRu ? "\(_aorusIntervalPresets[idx]) мин"
+                                : "\(_aorusIntervalPresets[idx]) min"
+        valueLabel?.textColor = item.theme.list.itemSecondaryTextColor
+        sliderView?.value = Float(idx)
+        sliderView?.tintColor = item.theme.list.itemAccentColor
+    }
+
+    private func layoutSubviews() {
+        guard let p = layoutParams else { return }
+        let li = p.leftInset + 16
+        let ri = p.rightInset + 16
+        let w  = p.width
+        titleLabel?.frame = CGRect(x: li,          y: 12, width: w - li - ri - 68, height: 22)
+        valueLabel?.frame  = CGRect(x: w - ri - 66, y: 12, width: 62,              height: 22)
+        sliderView?.frame  = CGRect(x: li - 4,      y: 38, width: w - li - ri + 8, height: 30)
+    }
+
+    @objc private func sliderMoved(_ sender: UISlider) {
+        let idx = max(0, min(Int(sender.value.rounded()), _aorusIntervalPresets.count - 1))
+        sender.value = Float(idx)
+        let isRu = UserDefaults.standard.string(forKey: "aorusgram_lang") == "ru"
+        valueLabel?.text = isRu ? "\(_aorusIntervalPresets[idx]) мин"
+                                : "\(_aorusIntervalPresets[idx]) min"
+    }
+
+    @objc private func sliderEnded(_ sender: UISlider) {
+        let idx = max(0, min(Int(sender.value.rounded()), _aorusIntervalPresets.count - 1))
+        sender.value = Float(idx)
+        item?.updated(_aorusIntervalPresets[idx])
+    }
+
+    func asyncLayout() -> (AorusIntervalSliderItem, ListViewItemLayoutParams, ItemListNeighbors)
+        -> (ListViewItemNodeLayout, () -> Void) {
+        return { item, params, neighbors in
+            let sep = UIScreenPixel
+            let contentSize = CGSize(width: params.width, height: 74)
+            let insets = itemListNeighborsGroupedInsets(neighbors, params)
+            let layout = ListViewItemNodeLayout(contentSize: contentSize, insets: insets)
+
+            return (layout, { [weak self] in
+                guard let self = self else { return }
+                self.item = item
+                self.layoutParams = params
+
+                self.backgroundNode.backgroundColor  = item.theme.list.itemBlocksBackgroundColor
+                self.topStripeNode.backgroundColor    = item.theme.list.itemBlocksSeparatorColor
+                self.bottomStripeNode.backgroundColor = item.theme.list.itemBlocksSeparatorColor
+
+                let hasCorners = itemListHasRoundedBlockLayout(params)
+                var topCorners = false, bottomCorners = false
+
+                switch neighbors.top {
+                case .sameSection(false): self.topStripeNode.isHidden = true
+                default: topCorners = true; self.topStripeNode.isHidden = hasCorners
+                }
+
+                let bInset: CGFloat
+                let bOff: CGFloat
+                switch neighbors.bottom {
+                case .sameSection(false):
+                    bInset = params.leftInset + 16; bOff = -sep
+                    self.bottomStripeNode.isHidden = false
+                default:
+                    bInset = 0; bOff = 0; bottomCorners = true
+                    self.bottomStripeNode.isHidden = hasCorners
+                }
+
+                self.maskNode.image = hasCorners
+                    ? PresentationResourcesItemList.cornersImage(item.theme,
+                                                                  top: topCorners,
+                                                                  bottom: bottomCorners)
+                    : nil
+
+                let bgY = -min(insets.top, sep)
+                let bgH = contentSize.height + min(insets.top, sep) + min(insets.bottom, sep)
+                self.backgroundNode.frame   = CGRect(x: 0, y: bgY, width: params.width, height: bgH)
+                self.maskNode.frame         = self.backgroundNode.frame.insetBy(dx: params.leftInset, dy: 0)
+                self.topStripeNode.frame    = CGRect(x: 0, y: bgY, width: params.width, height: sep)
+                self.bottomStripeNode.frame = CGRect(x: bInset,
+                                                     y: contentSize.height + bOff,
+                                                     width: params.width - bInset, height: sep)
+
+                self.applyItem(item)
+                self.layoutSubviews()
+            })
+        }
+    }
+}
+
 // MARK: - Sections
 
 private enum AorusSection: Int32 {
@@ -62,20 +275,20 @@ private final class AorusArguments {
     let clearCache: () -> Void
     let openAccountBackup: () -> Void
     let openDeviceSpoof: () -> Void
-    let openRamInterval: () -> Void
+    let setRamInterval: (Int) -> Void
 
     init(set: @escaping (WritableKeyPath<AorusState, Bool>, Bool) -> Void,
          openChannel: @escaping () -> Void,
          clearCache: @escaping () -> Void,
          openAccountBackup: @escaping () -> Void,
          openDeviceSpoof: @escaping () -> Void,
-         openRamInterval: @escaping () -> Void) {
+         setRamInterval: @escaping (Int) -> Void) {
         self.set = set
         self.openChannel = openChannel
         self.clearCache = clearCache
         self.openAccountBackup = openAccountBackup
         self.openDeviceSpoof = openDeviceSpoof
-        self.openRamInterval = openRamInterval
+        self.setRamInterval = setRamInterval
     }
 }
 
@@ -99,7 +312,7 @@ private enum AorusEntry: ItemListNodeEntry {
     case antiSpam(PresentationTheme, String, Bool)
     case ramShow(PresentationTheme, String, Bool)
     case ramAutoClean(PresentationTheme, String, Bool)
-    case ramInterval(PresentationTheme, String, String)
+    case ramInterval(PresentationTheme, String, Int)
 
     case uiHeader(PresentationTheme, String)
     case glassUI(PresentationTheme, String, Bool)
@@ -232,7 +445,7 @@ private enum AorusEntry: ItemListNodeEntry {
         case let .ramAutoClean(lt, ls, lv):
             if case let .ramAutoClean(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
         case let .ramInterval(lt, ls, lv):
-            if case let .ramInterval(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
+            if case let .ramInterval(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }  // Int ==
         case let .uiHeader(lt, ls):
             if case let .uiHeader(rt, rs) = rhs { return lt === rt && ls == rs }
         case let .glassUI(lt, ls, lv):
@@ -308,8 +521,9 @@ private enum AorusEntry: ItemListNodeEntry {
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.ramShow, $0) })
         case let .ramAutoClean(_, title, value):
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.ramAutoClean, $0) })
-        case let .ramInterval(_, title, label):
-            return ItemListDisclosureItem(presentationData: presentationData, title: title, label: label, sectionId: section, style: .blocks, action: args.openRamInterval)
+        case let .ramInterval(theme, title, value):
+            return AorusIntervalSliderItem(theme: theme, title: title, value: value,
+                                           sectionId: section, updated: args.setRamInterval)
         case let .uiHeader(_, text):
             return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: section)
         case let .glassUI(_, title, value):
@@ -382,7 +596,7 @@ private func aorusEntries(state: AorusState, theme: PresentationTheme, l10n: Aor
         .antiSpam(theme, l10n.antiSpam, state.antiSpamEnabled),
         .ramShow(theme, l10n.ramShow, state.ramShow),
         .ramAutoClean(theme, l10n.ramAutoClean, state.ramAutoClean),
-        .ramInterval(theme, l10n.ramInterval, l10n.ramMinutes(state.ramInterval)),
+        .ramInterval(theme, l10n.ramInterval, state.ramInterval),
 
         .uiHeader(theme, l10n.uiHeader),
         .glassUI(theme, l10n.glassUI, state.glassUI),
@@ -620,26 +834,9 @@ public func aorusGramController(context: AccountContext) -> ViewController {
             anchorPopover(alert)
             controller.present(alert, animated: true)
         },
-        openRamInterval: {
-            guard let controller = weakController else { return }
-            let isRu = AorusLang.current == .ru
-            let title = isRu ? "Интервал очистки" : "Cleanup Interval"
-            let presets = [15, 30, 60, 120, 240]
-            let alert = UIAlertController(title: title, message: nil, preferredStyle: .actionSheet)
-            for minutes in presets {
-                let label = isRu ? "\(minutes) мин" : "\(minutes) min"
-                alert.addAction(UIAlertAction(title: label, style: .default) { _ in
-                    AorusGramManager.shared.ramInterval = minutes
-                    updateState { s in var n = s; n.ramInterval = minutes; return n }
-                })
-            }
-            alert.addAction(UIAlertAction(title: isRu ? "Отмена" : "Cancel", style: .cancel))
-            if let popover = alert.popoverPresentationController, let view = controller.view {
-                popover.sourceView = view
-                popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
-                popover.permittedArrowDirections = []
-            }
-            controller.present(alert, animated: true)
+        setRamInterval: { minutes in
+            AorusGramManager.shared.ramInterval = minutes
+            updateState { s in var n = s; n.ramInterval = minutes; return n }
         }
     )
 
