@@ -78,10 +78,10 @@ public struct AorusL10n {
     public var deletedMessages: String { t("Удалённые сообщения", "Deleted Messages") }
     public var clearDeletedCache: String { t("Очистить кеш удалённых", "Clear Deleted Cache") }
     public var antiScreenshot: String { t("Скрытие экрана при записи", "Hide Screen While Recording") }
-    public var voiceTranscription: String { t("Транскрипция войсов", "Voice Transcription") }
-    public var chatSummary: String { t("Саммари чата", "Chat Summary") }
+    public var voiceTranscription: String { t("Расшифровка голосовых", "Voice to Text") }
+    public var chatSummary: String { t("Сводка чата", "Chat Summary") }
     public var translator: String { t("Переводчик", "Translator") }
-    public var autoReply: String { t("Авто-ответчик", "Auto-Reply") }
+    public var autoReply: String { t("Автоответчик", "Auto-Reply") }
     public var downloadAccel: String { t("Ускоритель загрузок", "Download Accelerator") }
     public var antiSpam: String { t("Анти-спам", "Anti-Spam") }
     public var streaks: String { t("Streak счётчик", "Streak Counter") }
@@ -103,7 +103,7 @@ public struct AorusL10n {
     public var bypassHeader: String { t("ОБХОД ОГРАНИЧЕНИЙ", "BYPASS") }
     public var bypassSavePaid: String { t("Сохранение платных медиа", "Save Paid Media") }
     public var bypassSaveViewOnce: String { t("Сохранение одноразовых", "Save View-Once Media") }
-    public var bypassStoryDownload: String { t("Скачивание защищённых сторис", "Download Protected Stories") }
+    public var bypassStoryDownload: String { t("Скачивание сторис", "Download Stories") }
 
     // MARK: Deleted / edited markers
     // Trailing space matches the original "Удалено " + relative-time layout.

@@ -488,7 +488,59 @@ public func aorusGramController(context: AccountContext) -> ViewController {
         openDeviceSpoof: {
             guard let controller = weakController else { return }
             let isRu = AorusLang.current == .ru
+
+            // Apply a chosen device model: nil clears the spoof (real device).
+            let apply: (String?) -> Void = { value in
+                if let value = value, !value.isEmpty {
+                    UserDefaults.standard.set(value, forKey: "aorusgram_spoofed_device")
+                    updateState { s in var n = s; n.spoofedDeviceName = value; return n }
+                } else {
+                    UserDefaults.standard.removeObject(forKey: "aorusgram_spoofed_device")
+                    updateState { s in var n = s; n.spoofedDeviceName = nil; return n }
+                }
+            }
+
+            // Position a popover (iPad) at the centre of the controller's view.
+            let anchorPopover: (UIAlertController) -> Void = { alert in
+                if let popover = alert.popoverPresentationController, let view = controller.view {
+                    popover.sourceView = view
+                    popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
+                    popover.permittedArrowDirections = []
+                }
+            }
+
+            // Custom-device flow: pick a form-factor, then type a name.
+            let presentCustom: () -> Void = {
+                let typeTitle = isRu ? "Тип устройства" : "Device Type"
+                let typeSheet = UIAlertController(title: typeTitle, message: nil, preferredStyle: .actionSheet)
+                let types: [(String, String)] = isRu
+                    ? [("Desktop", "Desktop"), ("Веб", "Web"), ("Планшет", "Tablet"), ("Телефон", "Phone")]
+                    : [("Desktop", "Desktop"), ("Web", "Web"), ("Tablet", "Tablet"), ("Phone", "Phone")]
+                for (label, kind) in types {
+                    typeSheet.addAction(UIAlertAction(title: label, style: .default) { _ in
+                        let nameTitle = isRu ? "Название устройства" : "Device Name"
+                        let nameMsg = isRu ? "Как устройство будет видно в сессиях" : "How the device appears in active sessions"
+                        let nameAlert = UIAlertController(title: nameTitle, message: nameMsg, preferredStyle: .alert)
+                        nameAlert.addTextField { tf in
+                            tf.placeholder = kind
+                            tf.autocapitalizationType = .words
+                            tf.clearButtonMode = .whileEditing
+                        }
+                        nameAlert.addAction(UIAlertAction(title: isRu ? "Сохранить" : "Save", style: .default) { _ in
+                            let entered = (nameAlert.textFields?.first?.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                            apply(entered.isEmpty ? kind : entered)
+                        })
+                        nameAlert.addAction(UIAlertAction(title: isRu ? "Отмена" : "Cancel", style: .cancel))
+                        controller.present(nameAlert, animated: true)
+                    })
+                }
+                typeSheet.addAction(UIAlertAction(title: isRu ? "Отмена" : "Cancel", style: .cancel))
+                anchorPopover(typeSheet)
+                controller.present(typeSheet, animated: true)
+            }
+
             let title = isRu ? "Выбери устройство" : "Select Device"
+            // (label, model-string) — nil model clears the spoof.
             let devices: [(String, String?)] = [
                 (isRu ? "Выкл. (реальный девайс)" : "Off (real device)", nil),
                 ("iPhone 16 Pro Max",    "iPhone 16 Pro Max"),
@@ -505,24 +557,22 @@ public func aorusGramController(context: AccountContext) -> ViewController {
                 ("iPhone 12 Pro Max",    "iPhone 12 Pro Max"),
                 ("iPhone SE (3rd gen)",  "iPhone SE (3rd gen)"),
                 ("iPad Pro 12.9\"",      "iPad Pro 12.9"),
+                ("Desktop Windows",      "Desktop Windows"),
+                ("Desktop macOS",        "Desktop macOS"),
+                ("AorusGram Web",        "AorusGram Web"),
+                ("Samsung Galaxy S24 Ultra", "Samsung Galaxy S24 Ultra"),
+                ("Xiaomi 14 Pro",        "Xiaomi 14 Pro"),
+                ("Huawei Mate 60 Pro",   "Huawei Mate 60 Pro"),
             ]
             let alert = UIAlertController(title: title, message: nil, preferredStyle: .actionSheet)
             for (label, value) in devices {
-                alert.addAction(UIAlertAction(title: label, style: .default) { _ in
-                    if let value = value {
-                        UserDefaults.standard.set(value, forKey: "aorusgram_spoofed_device")
-                    } else {
-                        UserDefaults.standard.removeObject(forKey: "aorusgram_spoofed_device")
-                    }
-                    updateState { s in var n = s; n.spoofedDeviceName = value; return n }
-                })
+                alert.addAction(UIAlertAction(title: label, style: .default) { _ in apply(value) })
             }
+            alert.addAction(UIAlertAction(title: isRu ? "Своё устройство…" : "Custom device…", style: .default) { _ in
+                presentCustom()
+            })
             alert.addAction(UIAlertAction(title: isRu ? "Отмена" : "Cancel", style: .cancel))
-            if let popover = alert.popoverPresentationController, let view = controller.view {
-                popover.sourceView = view
-                popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
-                popover.permittedArrowDirections = []
-            }
+            anchorPopover(alert)
             controller.present(alert, animated: true)
         }
     )
