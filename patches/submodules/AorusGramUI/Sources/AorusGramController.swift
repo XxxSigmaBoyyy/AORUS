@@ -1,6 +1,7 @@
 import Foundation
 import UIKit
 import Display
+import AsyncDisplayKit
 import SwiftSignalKit
 import Postbox
 import TelegramCore
@@ -93,7 +94,7 @@ private final class AorusIntervalSliderItemNode: ListViewItemNode {
         backgroundNode.isLayerBacked  = true
         topStripeNode.isLayerBacked   = true
         bottomStripeNode.isLayerBacked = true
-        super.init(layerBacked: false, dynamicBounce: false)
+        super.init(layerBacked: false)
         addSubnode(backgroundNode)
         addSubnode(topStripeNode)
         addSubnode(bottomStripeNode)
