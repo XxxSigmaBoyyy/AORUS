@@ -3840,25 +3840,29 @@ def patch_save_view_once(tg: Path) -> None:
 
 
 def patch_view_once_capture(tg: Path) -> None:
-    """Disable capture-protection for view-once / secret media when the view-once toggle is ON.
+    """Lift capture-protection per source: view-once on ONCE toggle, paid on PAID toggle.
 
-    Flipping `peerIsCopyProtected` alone does NOT unlock view-once media, because the
-    secure-capture flag is computed as an OR of several independent conditions:
+    The secure-capture flag is an OR of several independent conditions, e.g.:
 
         captureProtected = isCopyProtected() || containsSecretMedia
                         || minAutoremoveOrClearTimeout == viewOnceTimeout
                         || paidContent != nil || peerIsCopyProtected
 
     For a view-once message `containsSecretMedia` / `viewOnceTimeout` are true on their
-    own, so the screen stays capture-protected (black on screenshot / screen-record)
-    regardless of peerIsCopyProtected. We wrap the whole expression in
-    `!UserDefaults.bool(forKey: ONCE) && (...)` so the toggle can lift it.
+    own; for paid (stars) media `paidContent != nil` is true on its own — so the screen
+    stays capture-protected (black on screenshot / screen-record) regardless of
+    peerIsCopyProtected. We gate each protected SOURCE on its own toggle:
 
-    Toggle ON  → captureProtected = false → view-once photo/video can be screenshotted,
-                 screen-recorded and saved.
-    Toggle OFF → original Telegram behaviour (capture-protected).
+        containsSecretMedia / viewOnceTimeout / isSecret  →  && !bool(ONCE)
+        paidContent != nil                                →  && !bool(PAID)
+
+    View-once toggle ON → view-once photo/video can be screenshotted / recorded / saved.
+    Paid toggle      ON → paid (stars) media can be screenshotted / recorded.
+    Channel copy-protection (isCopyProtected / peerIsCopyProtected) is left untouched.
     """
-    SENTINEL = _AG_K_BYPASS_ONCE
+    once = _AG_K_BYPASS_ONCE
+    paid = _AG_K_BYPASS_PAID
+    SENTINEL = "// __aorus_capture__"
 
     # 1) galleryItemForEntry — two identical captureProtected lines (image-video + file-video)
     gc = tg / "submodules/GalleryUI/Sources/GalleryController.swift"
@@ -3869,8 +3873,11 @@ def patch_view_once_capture(tg: Path) -> None:
             "|| message.minAutoremoveOrClearTimeout == viewOnceTimeout || message.paidContent != nil || peerIsCopyProtected"
         )
         new = (
-            f"            let captureProtected = !UserDefaults.standard.bool(forKey: \"{_AG_K_BYPASS_ONCE}\") && (message.isCopyProtected() || message.containsSecretMedia "
-            "|| message.minAutoremoveOrClearTimeout == viewOnceTimeout || message.paidContent != nil || peerIsCopyProtected)"
+            "            let captureProtected = message.isCopyProtected() "
+            f"|| (message.containsSecretMedia && !UserDefaults.standard.bool(forKey: \"{once}\")) "
+            f"|| (message.minAutoremoveOrClearTimeout == viewOnceTimeout && !UserDefaults.standard.bool(forKey: \"{once}\")) "
+            f"|| (message.paidContent != nil && !UserDefaults.standard.bool(forKey: \"{paid}\")) "
+            f"|| peerIsCopyProtected  {SENTINEL}"
         )
         if SENTINEL in t:
             print("ViewOnceCapture: GalleryController already patched")
@@ -3883,7 +3890,7 @@ def patch_view_once_capture(tg: Path) -> None:
     else:
         print("ViewOnceCapture: GalleryController.swift not found")
 
-    # 2) ChatImageGalleryItem — imageNode.captureProtected for secret photos
+    # 2) ChatImageGalleryItem — imageNode.captureProtected for secret / paid photos
     img = tg / "submodules/GalleryUI/Sources/Items/ChatImageGalleryItem.swift"
     if img.is_file():
         t = img.read_text(encoding="utf-8")
@@ -3892,10 +3899,12 @@ def patch_view_once_capture(tg: Path) -> None:
             "|| message.isCopyProtected() || peerIsCopyProtected || isSecret || message.paidContent != nil"
         )
         new = (
-            f"        self.imageNode.captureProtected = !UserDefaults.standard.bool(forKey: \"{_AG_K_BYPASS_ONCE}\") && (message.id.peerId.namespace == Namespaces.Peer.SecretChat "
-            "|| message.isCopyProtected() || peerIsCopyProtected || isSecret || message.paidContent != nil)"
+            "        self.imageNode.captureProtected = message.id.peerId.namespace == Namespaces.Peer.SecretChat "
+            "|| message.isCopyProtected() || peerIsCopyProtected "
+            f"|| (isSecret && !UserDefaults.standard.bool(forKey: \"{once}\")) "
+            f"|| (message.paidContent != nil && !UserDefaults.standard.bool(forKey: \"{paid}\"))  {SENTINEL}"
         )
-        if SENTINEL in t and "self.imageNode.captureProtected = !UserDefaults" in t:
+        if SENTINEL in t:
             print("ViewOnceCapture: ChatImageGalleryItem already patched")
         elif old in t:
             img.write_text(t.replace(old, new, 1), encoding="utf-8")
@@ -3904,6 +3913,44 @@ def patch_view_once_capture(tg: Path) -> None:
             print("ViewOnceCapture: WARNING — ChatImageGalleryItem captureProtected anchor not found")
     else:
         print("ViewOnceCapture: ChatImageGalleryItem.swift not found")
+
+
+def patch_view_once_save_button(tg: Path) -> None:
+    """Show the gallery action (share/save) button for view-once media when ONCE toggle is ON.
+
+    In ChatItemGalleryFooterContentNode.setMessage the action button is driven by
+    `displayActionButton = canShare`, and canShare starts as:
+
+        var canShare = !message.containsSecretMedia && !allNonRegular.contains(namespace) && adAttribute == nil
+
+    For view-once media `containsSecretMedia` is true → canShare = false → no save button.
+    We gate that term on the ONCE toggle so the standard share/save button appears for
+    incoming view-once media (which already uses node.footerContent() as its footer).
+
+    Toggle ON  → save/share button visible on view-once photo/video.
+    Toggle OFF → original Telegram behaviour (no button).
+    """
+    SENTINEL = "// __aorus_vo_save__"
+    f = tg / "submodules/GalleryUI/Sources/ChatItemGalleryFooterContentNode.swift"
+    if not f.is_file():
+        print("ViewOnceSave: ChatItemGalleryFooterContentNode.swift not found")
+        return
+    t = f.read_text(encoding="utf-8")
+    old = (
+        "        var canShare = !message.containsSecretMedia "
+        "&& !Namespaces.Message.allNonRegular.contains(message.id.namespace) && message.adAttribute == nil"
+    )
+    new = (
+        f"        var canShare = (!message.containsSecretMedia || UserDefaults.standard.bool(forKey: \"{_AG_K_BYPASS_ONCE}\")) "
+        f"&& !Namespaces.Message.allNonRegular.contains(message.id.namespace) && message.adAttribute == nil  {SENTINEL}"
+    )
+    if SENTINEL in t:
+        print("ViewOnceSave: already patched")
+    elif old in t:
+        f.write_text(t.replace(old, new, 1), encoding="utf-8")
+        print("ViewOnceSave: patched canShare — save/share button shown for view-once")
+    else:
+        print("ViewOnceSave: WARNING — canShare anchor not found")
 
 
 def patch_device_spoof(tg: Path) -> None:
@@ -4215,6 +4262,7 @@ def main() -> None:
     patch_bypass_story_download(tg)
     patch_save_view_once(tg)
     patch_view_once_capture(tg)
+    patch_view_once_save_button(tg)
     patch_device_spoof(tg)
     patch_aorus_controller_keys(tg)
     patch_decoy_keys(tg)
