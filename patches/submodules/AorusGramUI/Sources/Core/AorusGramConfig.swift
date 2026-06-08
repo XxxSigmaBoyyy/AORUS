@@ -26,6 +26,7 @@ enum AorusGramConfig {
         case customIcons        = "custom_icons"
         case autoReply          = "auto_reply"
         case pinboard           = "pinboard"
+        case editLocally        = "edit_locally"
     }
 
     static func isEnabled(_ feature: Feature) -> Bool {

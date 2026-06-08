@@ -22,6 +22,7 @@ private enum AorusSection: Int32 {
     case accountBackup
     case aorusCode
     case channel
+    case editLocal
 }
 
 // MARK: - State
@@ -41,6 +42,7 @@ private struct AorusState: Equatable {
     var ramShow: Bool
     var ramAutoClean: Bool
     var ramInterval: Int
+    var editLocally: Bool
     var glassUI: Bool
     var siriShortcuts: Bool
     var antiSpoofDeleted: Bool
@@ -103,6 +105,9 @@ private enum AorusEntry: ItemListNodeEntry {
     case glassUI(PresentationTheme, String, Bool)
     case siriShortcuts(PresentationTheme, String, Bool)
 
+    case editLocalHeader(PresentationTheme, String)
+    case editLocalEnabled(PresentationTheme, String, Bool)
+
     case antiSpoofHeader(PresentationTheme, String)
     case antiSpoofDeleted(PresentationTheme, String, Bool)
     case antiSpoofOnline(PresentationTheme, String, Bool)
@@ -133,6 +138,8 @@ private enum AorusEntry: ItemListNodeEntry {
             return AorusSection.performance.rawValue
         case .uiHeader, .glassUI, .siriShortcuts:
             return AorusSection.ui.rawValue
+        case .editLocalHeader, .editLocalEnabled:
+            return AorusSection.editLocal.rawValue
         case .deviceSpoofHeader, .deviceSpoof:
             return AorusSection.deviceSpoof.rawValue
         case .bypassHeader, .bypassSavePaid, .bypassSaveViewOnce, .bypassStoryDownload:
@@ -169,6 +176,8 @@ private enum AorusEntry: ItemListNodeEntry {
         case .uiHeader:             return 30
         case .glassUI:              return 31
         case .siriShortcuts:        return 32
+        case .editLocalHeader:      return 33
+        case .editLocalEnabled:     return 34
         case .deviceSpoofHeader:    return 35
         case .deviceSpoof:          return 36
         case .bypassHeader:         return 40
@@ -230,6 +239,10 @@ private enum AorusEntry: ItemListNodeEntry {
             if case let .glassUI(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
         case let .siriShortcuts(lt, ls, lv):
             if case let .siriShortcuts(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
+        case let .editLocalHeader(lt, ls):
+            if case let .editLocalHeader(rt, rs) = rhs { return lt === rt && ls == rs }
+        case let .editLocalEnabled(lt, ls, lv):
+            if case let .editLocalEnabled(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
         case let .antiSpoofHeader(lt, ls):
             if case let .antiSpoofHeader(rt, rs) = rhs { return lt === rt && ls == rs }
         case let .antiSpoofDeleted(lt, ls, lv):
@@ -303,6 +316,10 @@ private enum AorusEntry: ItemListNodeEntry {
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.glassUI, $0) })
         case let .siriShortcuts(_, title, value):
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.siriShortcuts, $0) })
+        case let .editLocalHeader(_, text):
+            return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: section)
+        case let .editLocalEnabled(_, title, value):
+            return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.editLocally, $0) })
         case let .antiSpoofHeader(_, text):
             return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: section)
         case let .antiSpoofDeleted(_, title, value):
@@ -371,6 +388,9 @@ private func aorusEntries(state: AorusState, theme: PresentationTheme, l10n: Aor
         .glassUI(theme, l10n.glassUI, state.glassUI),
         .siriShortcuts(theme, l10n.siriShortcuts, state.siriShortcuts),
 
+        .editLocalHeader(theme, l10n.editLocalHeader),
+        .editLocalEnabled(theme, l10n.editLocally, state.editLocally),
+
         .deviceSpoofHeader(theme, l10n.deviceSpoofHeader),
         .deviceSpoof(theme, l10n.deviceSpoof, state.spoofedDeviceName ?? l10n.deviceSpoofOff),
 
@@ -415,6 +435,7 @@ public func aorusGramController(context: AccountContext) -> ViewController {
         ramShow:            mgr.ramShow,
         ramAutoClean:       mgr.ramAutoClean,
         ramInterval:        mgr.ramInterval,
+        editLocally:        mgr.editLocally,
         glassUI:            mgr.glassUI,
         siriShortcuts:      mgr.siriShortcuts,
         antiSpoofDeleted:   spoof.antiSpoofDeleted,
@@ -458,6 +479,7 @@ public func aorusGramController(context: AccountContext) -> ViewController {
             mgr.ramShow             = s.ramShow
             mgr.ramAutoClean        = s.ramAutoClean
             mgr.ramInterval         = s.ramInterval
+            mgr.editLocally         = s.editLocally
             mgr.glassUI             = s.glassUI
             mgr.siriShortcuts       = s.siriShortcuts
             spoof.antiSpoofDeleted  = s.antiSpoofDeleted

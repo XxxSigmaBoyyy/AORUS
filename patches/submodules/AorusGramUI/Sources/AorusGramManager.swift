@@ -28,6 +28,9 @@ public final class AorusGramManager {
     public var siriShortcuts: Bool     = false { didSet { save() } }
     public var autoReply: Bool         = false { didSet { save() } }
 
+    // Local editing — context-menu action to edit any message in the local DB only.
+    public var editLocally: Bool       = false { didSet { save() } }
+
     // RAM management (replaces the former Streak feature in the Performance section).
     public var ramShow: Bool           = false { didSet { save() } }
     public var ramAutoClean: Bool      = false { didSet { save() } }
@@ -60,6 +63,7 @@ public final class AorusGramManager {
         streaks             = d["streaks"]             as? Bool ?? false
         siriShortcuts       = d["siriShortcuts"]       as? Bool ?? false
         autoReply           = d["autoReply"]           as? Bool ?? false
+        editLocally         = d["editLocally"]         as? Bool ?? false
         ramShow             = d["ramShow"]             as? Bool ?? false
         ramAutoClean        = d["ramAutoClean"]        as? Bool ?? false
         ramInterval         = d["ramInterval"]         as? Int  ?? 60
@@ -81,6 +85,7 @@ public final class AorusGramManager {
             "streaks":             streaks,
             "siriShortcuts":       siriShortcuts,
             "autoReply":           autoReply,
+            "editLocally":         editLocally,
             "ramShow":             ramShow,
             "ramAutoClean":        ramAutoClean,
             "ramInterval":         ramInterval,
@@ -99,6 +104,7 @@ public final class AorusGramManager {
         ud.set(glassUI,             forKey: "aorusgram_feature_glass_ui")
         ud.set(streaks,             forKey: "aorusgram_feature_streaks")
         ud.set(siriShortcuts,       forKey: "aorusgram_feature_siri_shortcuts")
+        ud.set(editLocally,         forKey: "aorusgram_feature_edit_locally")
 
         if antiScreenshot {
             AntiScreenshotManager.shared.enable()

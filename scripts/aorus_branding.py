@@ -1845,6 +1845,82 @@ def patch_chat_context_menu_translate_transcribe(tg: Path) -> None:
     print("ChatContextMenu: injected AorusGram translate + transcribe v4")
 
 
+def patch_chat_context_menu_edit_locally(tg: Path) -> None:
+    """Add an 'Edit Locally' action to the message context menu, just above Delete.
+
+    Gated by the `aorusgram_feature_edit_locally` flag (mirrored by
+    AorusGramManager from the settings toggle). Tapping it opens a single-field
+    editor pre-filled with the message text; on save the message text is
+    rewritten in the LOCAL postbox only (transaction.updateMessage → StoreMessage),
+    exactly like the native translate action — the change never reaches the
+    server and the other party sees nothing. Works on any message, incoming or
+    outgoing.
+    """
+    path = tg / "submodules/TelegramUI/Sources/ChatInterfaceStateContextMenus.swift"
+    if not path.is_file():
+        print("EditLocally: ChatInterfaceStateContextMenus.swift not found, skip")
+        return
+    t = path.read_text(encoding="utf-8")
+    sentinel = "// AorusGram: edit locally v1"
+    if sentinel in t:
+        print("EditLocally: already injected")
+        return
+
+    anchor = "        if !isReplyThreadHead, (!data.messageActions.options.intersection([.deleteLocally, .deleteGlobally]).isEmpty || clearCacheAsDelete) {"
+    if anchor not in t:
+        print("EditLocally: delete-block anchor not found — skipped")
+        return
+
+    injection = (
+        "        " + sentinel + "\n"
+        "        if UserDefaults.standard.bool(forKey: \"aorusgram_feature_edit_locally\") {\n"
+        "            let aorusEditMsg = messages[0]\n"
+        "            let aorusEditMid = aorusEditMsg.id\n"
+        "            let aorusEditBody = aorusEditMsg.text\n"
+        "            let aorusEditRu = UserDefaults.standard.string(forKey: \"aorusgram_lang\") == \"ru\"\n"
+        "            actions.append(.action(ContextMenuActionItem(text: aorusEditRu ? \"Изменить локально\" : \"Edit Locally\", icon: { theme in\n"
+        "                return generateTintedImage(image: UIImage(bundleImageName: \"Chat/Context Menu/Edit\"), color: theme.actionSheet.primaryTextColor)\n"
+        "            }, action: { [weak context] _, f in\n"
+        "                f(.default)\n"
+        "                guard let context = context else { return }\n"
+        "                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {\n"
+        "                    var aorusWindow: UIWindow?\n"
+        "                    for aorusScene in UIApplication.shared.connectedScenes {\n"
+        "                        if let ws = aorusScene as? UIWindowScene {\n"
+        "                            aorusWindow = ws.windows.first(where: { $0.isKeyWindow }) ?? ws.windows.first\n"
+        "                            if aorusWindow != nil { break }\n"
+        "                        }\n"
+        "                    }\n"
+        "                    var aorusTop = aorusWindow?.rootViewController\n"
+        "                    while let p = aorusTop?.presentedViewController { aorusTop = p }\n"
+        "                    guard let aorusPresenter = aorusTop else { return }\n"
+        "                    let aorusAlert = UIAlertController(title: aorusEditRu ? \"Изменить локально\" : \"Edit Locally\", message: aorusEditRu ? \"Изменения видны только вам\" : \"Changes are visible only to you\", preferredStyle: .alert)\n"
+        "                    aorusAlert.addTextField { tf in\n"
+        "                        tf.text = aorusEditBody\n"
+        "                        tf.autocapitalizationType = .sentences\n"
+        "                        tf.clearButtonMode = .whileEditing\n"
+        "                    }\n"
+        "                    aorusAlert.addAction(UIAlertAction(title: aorusEditRu ? \"Сохранить\" : \"Save\", style: .default) { _ in\n"
+        "                        let aorusNew = aorusAlert.textFields?.first?.text ?? \"\"\n"
+        "                        let _ = context.account.postbox.transaction { transaction -> Void in\n"
+        "                            transaction.updateMessage(aorusEditMid, update: { current in\n"
+        "                                let storeForwardInfo = current.forwardInfo.flatMap(StoreMessageForwardInfo.init)\n"
+        "                                return .update(StoreMessage(id: current.id, customStableId: nil, globallyUniqueId: current.globallyUniqueId, groupingKey: current.groupingKey, threadId: current.threadId, timestamp: current.timestamp, flags: StoreMessageFlags(current.flags), tags: current.tags, globalTags: current.globalTags, localTags: current.localTags, forwardInfo: storeForwardInfo, authorId: current.author?.id, text: aorusNew, attributes: current.attributes, media: current.media))\n"
+        "                            })\n"
+        "                        }.start()\n"
+        "                    })\n"
+        "                    aorusAlert.addAction(UIAlertAction(title: aorusEditRu ? \"Отмена\" : \"Cancel\", style: .cancel))\n"
+        "                    aorusPresenter.present(aorusAlert, animated: true)\n"
+        "                }\n"
+        "            })))\n"
+        "        }\n"
+        "\n"
+    )
+    t = t.replace(anchor, injection + anchor, 1)
+    path.write_text(t, encoding="utf-8")
+    print("EditLocally: injected AorusGram edit-locally action above Delete")
+
+
 def patch_incoming_message_hook(tg: Path) -> None:
     """Post NotificationCenter event for each incoming message.
 
@@ -4525,6 +4601,7 @@ def main() -> None:
     patch_view_once_capture(tg)
     patch_view_once_save_button(tg)
     patch_view_once_direct_save_button(tg)
+    patch_chat_context_menu_edit_locally(tg)
     patch_device_spoof(tg)
     patch_aorus_controller_keys(tg)
     patch_decoy_keys(tg)

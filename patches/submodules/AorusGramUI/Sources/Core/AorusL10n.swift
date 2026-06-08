@@ -97,6 +97,11 @@ public struct AorusL10n {
     public var aorusCode: String { t("AorusCode", "AorusCode") }
     public var officialChannel: String { t("Официальный канал @aorusgram", "Official channel @aorusgram") }
 
+    // MARK: Local editing
+    public var editLocalHeader: String { t("РЕДАКТИРОВАНИЕ", "EDITING") }
+    public var editLocally: String { t("Изменить локально", "Edit Locally") }
+    public var editLocallyFooter: String { t("Изменяет текст сообщения только у вас на устройстве. Собеседник изменений не видит.", "Edits a message's text only on your device. Other people don't see the change.") }
+
     // MARK: Device Spoof
     public var deviceSpoofHeader: String { t("ДЕВАЙС-СПУФ", "DEVICE SPOOF") }
     public var deviceSpoof: String { t("Устройство", "Device") }
