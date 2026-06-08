@@ -1921,6 +1921,97 @@ def patch_chat_context_menu_edit_locally(tg: Path) -> None:
     print("EditLocally: injected AorusGram edit-locally action above Delete")
 
 
+def patch_chat_context_menu_hide_name_forward(tg: Path) -> None:
+    """Add a 'Hide Name' action to the message context menu, above Delete.
+
+    Tapping it sets a one-shot flag (aorusgram_force_hide_fwd) and starts the
+    standard forward flow. When the user picks a destination, the forward panel
+    for that chat is initialised with hideNames = true (see
+    patch_forward_hide_names_default), so the message is forwarded without the
+    'Forwarded from …' sender attribution. The flag is consumed on the next
+    forward staging, so it never leaks into a subsequent normal forward.
+    """
+    path = tg / "submodules/TelegramUI/Sources/ChatInterfaceStateContextMenus.swift"
+    if not path.is_file():
+        print("HideName: ChatInterfaceStateContextMenus.swift not found, skip")
+        return
+    t = path.read_text(encoding="utf-8")
+    sentinel = "// AorusGram: hide-name forward v1"
+    if sentinel in t:
+        print("HideName: already injected")
+        return
+
+    anchor = "        if !isReplyThreadHead, (!data.messageActions.options.intersection([.deleteLocally, .deleteGlobally]).isEmpty || clearCacheAsDelete) {"
+    if anchor not in t:
+        print("HideName: delete-block anchor not found — skipped")
+        return
+
+    injection = (
+        "        " + sentinel + "\n"
+        "        if data.messageActions.options.contains(.forward) {\n"
+        "            let aorusFwdRu = UserDefaults.standard.string(forKey: \"aorusgram_lang\") == \"ru\"\n"
+        "            actions.append(.action(ContextMenuActionItem(text: aorusFwdRu ? \"Скрыть имя\" : \"Hide Name\", icon: { theme in\n"
+        "                return generateTintedImage(image: UIImage(bundleImageName: \"Chat/Context Menu/Forward\"), color: theme.actionSheet.primaryTextColor)\n"
+        "            }, action: { _, f in\n"
+        "                UserDefaults.standard.set(true, forKey: \"aorusgram_force_hide_fwd\")\n"
+        "                interfaceInteraction.forwardMessages(selectAll ? messages : [messages[0]])\n"
+        "                f(.dismissWithoutContent)\n"
+        "            })))\n"
+        "        }\n"
+        "\n"
+    )
+    t = t.replace(anchor, injection + anchor, 1)
+    path.write_text(t, encoding="utf-8")
+    print("HideName: injected AorusGram hide-name forward action above Delete")
+
+
+def patch_forward_hide_names_default(tg: Path) -> None:
+    """Honour the one-shot 'hide name' flag when a forward is staged into a chat.
+
+    ChatControllerForwardMessages.swift initialises the destination chat's
+    forward panel with `ChatInterfaceForwardOptionsState(hideNames: !hasNotOwnMessages, …)`
+    at two sites. We route both through a file-level helper that flips hideNames
+    to true when aorusgram_force_hide_fwd is set, then clears the flag.
+    """
+    path = tg / "submodules/TelegramUI/Sources/ChatControllerForwardMessages.swift"
+    if not path.is_file():
+        print("HideNameDefault: ChatControllerForwardMessages.swift not found, skip")
+        return
+    t = path.read_text(encoding="utf-8")
+    sentinel = "// AorusGram: hide-name forward default v1"
+    if sentinel in t:
+        print("HideNameDefault: already injected")
+        return
+
+    helper = (
+        "\n"
+        + sentinel + "\n"
+        "private func aorusForwardOptions(hasNotOwnMessages: Bool) -> ChatInterfaceForwardOptionsState {\n"
+        "    var hide = !hasNotOwnMessages\n"
+        "    if UserDefaults.standard.bool(forKey: \"aorusgram_force_hide_fwd\") {\n"
+        "        hide = true\n"
+        "        UserDefaults.standard.removeObject(forKey: \"aorusgram_force_hide_fwd\")\n"
+        "    }\n"
+        "    return ChatInterfaceForwardOptionsState(hideNames: hide, hideCaptions: false, unhideNamesOnCaptionChange: false)\n"
+        "}\n"
+    )
+    import_anchor = "import ChatMessagePaymentAlertController\n"
+    if import_anchor not in t:
+        print("HideNameDefault: import anchor not found — skipped")
+        return
+    t = t.replace(import_anchor, import_anchor + helper, 1)
+
+    old_expr = "ChatInterfaceForwardOptionsState(hideNames: !hasNotOwnMessages, hideCaptions: false, unhideNamesOnCaptionChange: false)"
+    new_expr = "aorusForwardOptions(hasNotOwnMessages: hasNotOwnMessages)"
+    n = t.count(old_expr)
+    if n == 0:
+        print("HideNameDefault: WARNING — forward-options expression not found")
+        return
+    t = t.replace(old_expr, new_expr)
+    path.write_text(t, encoding="utf-8")
+    print(f"HideNameDefault: helper injected, {n} forward-option site(s) routed through it")
+
+
 def patch_incoming_message_hook(tg: Path) -> None:
     """Post NotificationCenter event for each incoming message.
 
@@ -4602,6 +4693,8 @@ def main() -> None:
     patch_view_once_save_button(tg)
     patch_view_once_direct_save_button(tg)
     patch_chat_context_menu_edit_locally(tg)
+    patch_chat_context_menu_hide_name_forward(tg)
+    patch_forward_hide_names_default(tg)
     patch_device_spoof(tg)
     patch_aorus_controller_keys(tg)
     patch_decoy_keys(tg)
