@@ -84,7 +84,11 @@ public struct AorusL10n {
     public var autoReply: String { t("Автоответчик", "Auto-Reply") }
     public var downloadAccel: String { t("Ускоритель загрузок", "Download Accelerator") }
     public var antiSpam: String { t("Анти-спам", "Anti-Spam") }
-    public var streaks: String { t("Streak счётчик", "Streak Counter") }
+    public var ramShow: String { t("Показывать потребление RAM", "Show RAM Usage") }
+    public var ramAutoClean: String { t("Автоочистка RAM", "Auto-Clean RAM") }
+    public var ramInterval: String { t("Интервал очистки", "Cleanup Interval") }
+    // Interval value, e.g. "60 мин" / "60 min".
+    public func ramMinutes(_ n: Int) -> String { t("\(n) мин", "\(n) min") }
     public var glassUI: String { t("Glass UI", "Glass UI") }
     public var siriShortcuts: String { t("Siri Shortcuts", "Siri Shortcuts") }
     public var antiSpoofDeleted: String { t("Анти-спуф удалёнок", "Anti-Spoof Deletions") }

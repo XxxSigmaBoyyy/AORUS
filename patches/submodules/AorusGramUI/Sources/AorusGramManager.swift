@@ -28,6 +28,11 @@ public final class AorusGramManager {
     public var siriShortcuts: Bool     = false { didSet { save() } }
     public var autoReply: Bool         = false { didSet { save() } }
 
+    // RAM management (replaces the former Streak feature in the Performance section).
+    public var ramShow: Bool           = false { didSet { save() } }
+    public var ramAutoClean: Bool      = false { didSet { save() } }
+    public var ramInterval: Int        = 60    { didSet { save() } }   // minutes
+
     private let key = "aorusgram_settings_v1"
 
     private func load() {
@@ -55,6 +60,9 @@ public final class AorusGramManager {
         streaks             = d["streaks"]             as? Bool ?? false
         siriShortcuts       = d["siriShortcuts"]       as? Bool ?? false
         autoReply           = d["autoReply"]           as? Bool ?? false
+        ramShow             = d["ramShow"]             as? Bool ?? false
+        ramAutoClean        = d["ramAutoClean"]        as? Bool ?? false
+        ramInterval         = d["ramInterval"]         as? Int  ?? 60
     }
 
     private func save() {
@@ -73,6 +81,9 @@ public final class AorusGramManager {
             "streaks":             streaks,
             "siriShortcuts":       siriShortcuts,
             "autoReply":           autoReply,
+            "ramShow":             ramShow,
+            "ramAutoClean":        ramAutoClean,
+            "ramInterval":         ramInterval,
         ], forKey: key)
 
         let ud = UserDefaults.standard

@@ -38,7 +38,9 @@ private struct AorusState: Equatable {
     var autoReply: Bool
     var downloadAccel: Bool
     var antiSpamEnabled: Bool
-    var streaks: Bool
+    var ramShow: Bool
+    var ramAutoClean: Bool
+    var ramInterval: Int
     var glassUI: Bool
     var siriShortcuts: Bool
     var antiSpoofDeleted: Bool
@@ -58,17 +60,20 @@ private final class AorusArguments {
     let clearCache: () -> Void
     let openAccountBackup: () -> Void
     let openDeviceSpoof: () -> Void
+    let openRamInterval: () -> Void
 
     init(set: @escaping (WritableKeyPath<AorusState, Bool>, Bool) -> Void,
          openChannel: @escaping () -> Void,
          clearCache: @escaping () -> Void,
          openAccountBackup: @escaping () -> Void,
-         openDeviceSpoof: @escaping () -> Void) {
+         openDeviceSpoof: @escaping () -> Void,
+         openRamInterval: @escaping () -> Void) {
         self.set = set
         self.openChannel = openChannel
         self.clearCache = clearCache
         self.openAccountBackup = openAccountBackup
         self.openDeviceSpoof = openDeviceSpoof
+        self.openRamInterval = openRamInterval
     }
 }
 
@@ -90,7 +95,9 @@ private enum AorusEntry: ItemListNodeEntry {
     case perfHeader(PresentationTheme, String)
     case downloadAccel(PresentationTheme, String, Bool)
     case antiSpam(PresentationTheme, String, Bool)
-    case streaks(PresentationTheme, String, Bool)
+    case ramShow(PresentationTheme, String, Bool)
+    case ramAutoClean(PresentationTheme, String, Bool)
+    case ramInterval(PresentationTheme, String, String)
 
     case uiHeader(PresentationTheme, String)
     case glassUI(PresentationTheme, String, Bool)
@@ -122,7 +129,7 @@ private enum AorusEntry: ItemListNodeEntry {
             return AorusSection.privacy.rawValue
         case .aiHeader, .voiceTranscription, .chatSummary, .translator, .autoReply:
             return AorusSection.ai.rawValue
-        case .perfHeader, .downloadAccel, .antiSpam, .streaks:
+        case .perfHeader, .downloadAccel, .antiSpam, .ramShow, .ramAutoClean, .ramInterval:
             return AorusSection.performance.rawValue
         case .uiHeader, .glassUI, .siriShortcuts:
             return AorusSection.ui.rawValue
@@ -156,7 +163,9 @@ private enum AorusEntry: ItemListNodeEntry {
         case .perfHeader:           return 20
         case .downloadAccel:        return 21
         case .antiSpam:             return 22
-        case .streaks:              return 23
+        case .ramShow:              return 23
+        case .ramAutoClean:         return 24
+        case .ramInterval:          return 25
         case .uiHeader:             return 30
         case .glassUI:              return 31
         case .siriShortcuts:        return 32
@@ -209,8 +218,12 @@ private enum AorusEntry: ItemListNodeEntry {
             if case let .downloadAccel(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
         case let .antiSpam(lt, ls, lv):
             if case let .antiSpam(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
-        case let .streaks(lt, ls, lv):
-            if case let .streaks(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
+        case let .ramShow(lt, ls, lv):
+            if case let .ramShow(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
+        case let .ramAutoClean(lt, ls, lv):
+            if case let .ramAutoClean(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
+        case let .ramInterval(lt, ls, lv):
+            if case let .ramInterval(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
         case let .uiHeader(lt, ls):
             if case let .uiHeader(rt, rs) = rhs { return lt === rt && ls == rs }
         case let .glassUI(lt, ls, lv):
@@ -278,8 +291,12 @@ private enum AorusEntry: ItemListNodeEntry {
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.downloadAccel, $0) })
         case let .antiSpam(_, title, value):
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.antiSpamEnabled, $0) })
-        case let .streaks(_, title, value):
-            return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.streaks, $0) })
+        case let .ramShow(_, title, value):
+            return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.ramShow, $0) })
+        case let .ramAutoClean(_, title, value):
+            return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.ramAutoClean, $0) })
+        case let .ramInterval(_, title, label):
+            return ItemListDisclosureItem(presentationData: presentationData, title: title, label: label, sectionId: section, style: .blocks, action: args.openRamInterval)
         case let .uiHeader(_, text):
             return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: section)
         case let .glassUI(_, title, value):
@@ -346,7 +363,9 @@ private func aorusEntries(state: AorusState, theme: PresentationTheme, l10n: Aor
         .perfHeader(theme, l10n.perfHeader),
         .downloadAccel(theme, l10n.downloadAccel, state.downloadAccel),
         .antiSpam(theme, l10n.antiSpam, state.antiSpamEnabled),
-        .streaks(theme, l10n.streaks, state.streaks),
+        .ramShow(theme, l10n.ramShow, state.ramShow),
+        .ramAutoClean(theme, l10n.ramAutoClean, state.ramAutoClean),
+        .ramInterval(theme, l10n.ramInterval, l10n.ramMinutes(state.ramInterval)),
 
         .uiHeader(theme, l10n.uiHeader),
         .glassUI(theme, l10n.glassUI, state.glassUI),
@@ -393,7 +412,9 @@ public func aorusGramController(context: AccountContext) -> ViewController {
         autoReply:          mgr.autoReply,
         downloadAccel:      mgr.downloadAccel,
         antiSpamEnabled:    mgr.antiSpamEnabled,
-        streaks:            mgr.streaks,
+        ramShow:            mgr.ramShow,
+        ramAutoClean:       mgr.ramAutoClean,
+        ramInterval:        mgr.ramInterval,
         glassUI:            mgr.glassUI,
         siriShortcuts:      mgr.siriShortcuts,
         antiSpoofDeleted:   spoof.antiSpoofDeleted,
@@ -434,7 +455,9 @@ public func aorusGramController(context: AccountContext) -> ViewController {
             mgr.autoReply           = s.autoReply
             mgr.downloadAccel       = s.downloadAccel
             mgr.antiSpamEnabled     = s.antiSpamEnabled
-            mgr.streaks             = s.streaks
+            mgr.ramShow             = s.ramShow
+            mgr.ramAutoClean        = s.ramAutoClean
+            mgr.ramInterval         = s.ramInterval
             mgr.glassUI             = s.glassUI
             mgr.siriShortcuts       = s.siriShortcuts
             spoof.antiSpoofDeleted  = s.antiSpoofDeleted
@@ -573,6 +596,27 @@ public func aorusGramController(context: AccountContext) -> ViewController {
             })
             alert.addAction(UIAlertAction(title: isRu ? "Отмена" : "Cancel", style: .cancel))
             anchorPopover(alert)
+            controller.present(alert, animated: true)
+        },
+        openRamInterval: {
+            guard let controller = weakController else { return }
+            let isRu = AorusLang.current == .ru
+            let title = isRu ? "Интервал очистки" : "Cleanup Interval"
+            let presets = [15, 30, 60, 120, 240]
+            let alert = UIAlertController(title: title, message: nil, preferredStyle: .actionSheet)
+            for minutes in presets {
+                let label = isRu ? "\(minutes) мин" : "\(minutes) min"
+                alert.addAction(UIAlertAction(title: label, style: .default) { _ in
+                    AorusGramManager.shared.ramInterval = minutes
+                    updateState { s in var n = s; n.ramInterval = minutes; return n }
+                })
+            }
+            alert.addAction(UIAlertAction(title: isRu ? "Отмена" : "Cancel", style: .cancel))
+            if let popover = alert.popoverPresentationController, let view = controller.view {
+                popover.sourceView = view
+                popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
+                popover.permittedArrowDirections = []
+            }
             controller.present(alert, animated: true)
         }
     )
