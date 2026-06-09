@@ -4363,26 +4363,26 @@ def patch_view_once_direct_save_button(tg: Path) -> None:
         f"    @objc private func _aorusVOPlaceSaveButton() {{\n"
         f'        guard UserDefaults.standard.bool(forKey: "{once}") else {{ return }}\n'
         "        guard self.view.viewWithTag(0xA0530BEB) == nil else { return }\n"
-        "        // Locate the native share button: the left-most roughly-circular\n"
-        "        // view in the lower portion of the screen (same heuristic works\n"
-        "        // for the photo HUD and the video HUD).\n"
-        "        let _agH = self.view.bounds.height\n"
+        "        // Find the native share button INSIDE the gallery footer node.\n"
+        "        // The footer exists for both photo and video view-once and holds\n"
+        "        // the share button regardless of whether the controls are shown,\n"
+        "        // so this is reliable where a whole-screen geometry scan was not.\n"
+        "        let _agRoot: UIView = self.controllerNode.footerNode.view\n"
         "        var _agShare: UIView?\n"
         "        var _agBestX = CGFloat.greatestFiniteMagnitude\n"
-        "        var _agQ: [UIView] = [self.view]\n"
+        "        var _agQ: [UIView] = [_agRoot]\n"
         "        while !_agQ.isEmpty {\n"
         "            let _agV = _agQ.removeFirst()\n"
-        "            let _agF = _agV.convert(_agV.bounds, to: self.view)\n"
-        "            if _agF.width >= 38 && _agF.width <= 72\n"
-        "                && abs(_agF.width - _agF.height) < 12\n"
-        "                && _agF.midY > _agH * 0.6 {\n"
+        "            let _agF = _agV.convert(_agV.bounds, to: _agRoot)\n"
+        "            if _agV !== _agRoot && _agF.width >= 30 && _agF.width <= 80\n"
+        "                && abs(_agF.width - _agF.height) < 14 {\n"
         "                if _agF.minX < _agBestX { _agBestX = _agF.minX; _agShare = _agV }\n"
         "            }\n"
         "            _agQ.append(contentsOf: _agV.subviews)\n"
         "        }\n"
         "        guard let _agShareBtn = _agShare, let _agHost = _agShareBtn.superview else {\n"
         "            self._agVOTries += 1\n"
-        "            if self._agVOTries < 15 {\n"
+        "            if self._agVOTries < 20 {\n"
         "                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in\n"
         "                    self?._aorusVOPlaceSaveButton()\n"
         "                }\n"
@@ -4571,11 +4571,12 @@ def patch_device_spoof(tg: Path) -> None:
     else:
         print("DeviceSpoof: WARNING — deviceModelName: nil anchor not found")
 
-    # Spoof systemVersion in MTApiEnvironment so Telegram's session list shows
-    # the platform icon that matches the chosen device (Android/Windows/macOS…).
-    # The icon is derived from deviceModel + systemVersion; without this an
-    # Android device name still renders with an Apple icon. Server-side this is
-    # applied to the session on (re)connect / fresh login.
+    # Spoof systemVersion in MTApiEnvironment so the chosen device's OS version
+    # reaches the server. Anchored on the stable single statement
+    # `_langPackCode = @"";` near the end of -initWithDeviceModelName: — far more
+    # robust than the whitespace-sensitive #if/#else block used before. The
+    # override runs after _systemVersion is first assigned and before the init
+    # hash is computed.
     env = tg / "submodules/MtProtoKit/Sources/MTApiEnvironment.m"
     env_sentinel = "// AorusGram: spoof system version"
     if env.is_file():
@@ -4583,30 +4584,87 @@ def patch_device_spoof(tg: Path) -> None:
         if env_sentinel in et:
             print("DeviceSpoof: MTApiEnvironment already patched")
         else:
-            env_anchor = (
-                "#if TARGET_OS_IPHONE\n"
-                "        _systemVersion = [[UIDevice currentDevice] systemVersion];\n"
-                "#else\n"
-                "        NSProcessInfo *pInfo = [NSProcessInfo processInfo];\n"
-                "        _systemVersion = [[[pInfo operatingSystemVersionString] componentsSeparatedByString:@\" \"] objectAtIndex:1];\n"
-                "#endif\n"
-            )
+            env_anchor = '_langPackCode = @"";'
             if env_anchor in et:
                 env_inject = env_anchor + (
+                    "\n"
                     "        " + env_sentinel + "\n"
                     "        NSString *_agSysVer = [[NSUserDefaults standardUserDefaults] stringForKey:@\""
                     + _AG_K_SPOOF_SYSVER + "\"];\n"
-                    "        if (_agSysVer != nil && _agSysVer.length > 0) {\n"
-                    "            _systemVersion = _agSysVer;\n"
-                    "        }\n"
+                    "        if (_agSysVer != nil && _agSysVer.length > 0) { _systemVersion = _agSysVer; }"
                 )
                 et = et.replace(env_anchor, env_inject, 1)
                 env.write_text(et, encoding="utf-8")
                 print("DeviceSpoof: patched MTApiEnvironment systemVersion → UserDefaults lookup")
             else:
-                print("DeviceSpoof: WARNING — MTApiEnvironment systemVersion anchor not found")
+                print("DeviceSpoof: WARNING — MTApiEnvironment _langPackCode anchor not found")
     else:
         print("DeviceSpoof: MTApiEnvironment.m not found — skip systemVersion spoof")
+
+
+def patch_session_platform_icon(tg: Path) -> None:
+    """Make the recent-sessions icon match the spoofed device.
+
+    iconForSession picks the Android icon ONLY when `platform` contains "android".
+    Our device spoof can set deviceModel + systemVersion, but NOT the
+    server-derived `platform` (which stays "ios" from the iOS lang pack), so an
+    Android spoof renders with an Apple icon. We extend the Android branch to
+    also honour systemVersion (= "Android 14") and deviceModel, so our own client
+    shows the correct icon. Windows/macOS/Linux already key off systemVersion, so
+    they need no change here.
+    """
+    path = tg / "submodules/SettingsUI/Sources/Privacy and Security/Recent Sessions/ItemListRecentSessionItem.swift"
+    if not path.is_file():
+        print("SessionIcon: ItemListRecentSessionItem.swift not found, skip")
+        return
+    t = path.read_text(encoding="utf-8")
+    sentinel = "/* AorusGram: android by systemVersion */"
+    if sentinel in t:
+        print("SessionIcon: already patched")
+        return
+    old = 'if platform.contains("android") {'
+    new = ('if platform.contains("android") || systemVersion.contains("android") '
+           '|| device.contains("android") ' + sentinel + ' {')
+    if old in t:
+        t = t.replace(old, new, 1)
+        path.write_text(t, encoding="utf-8")
+        print("SessionIcon: Android icon now also keys off systemVersion/device")
+    else:
+        print("SessionIcon: WARNING — android branch anchor not found")
+
+
+def patch_ghost_mode_stealth_stories(tg: Path) -> None:
+    """Stealth story viewing under Ghost Mode.
+
+    When Ghost Mode is on, viewing a story must not report the view to the
+    server (no incrementStoryViews, no maxReadId advance), so the author never
+    sees you in the viewer list. Gated at the top of _internal_markStoryAsSeen
+    with an early `.complete()`. This is a one-shot per-view call (not a managed
+    sync loop), so an early complete is safe — unlike the read-state pipeline.
+    """
+    path = tg / "submodules/TelegramCore/Sources/TelegramEngine/Messages/Stories.swift"
+    if not path.is_file():
+        print("StealthStories: Stories.swift not found, skip")
+        return
+    t = path.read_text(encoding="utf-8")
+    sentinel = "// AorusGram: stealth story view"
+    if sentinel in t:
+        print("StealthStories: already injected")
+        return
+    anchor = ("func _internal_markStoryAsSeen(account: Account, peerId: PeerId, "
+              "id: Int32, asPinned: Bool) -> Signal<Never, NoError> {")
+    if anchor not in t:
+        print("StealthStories: _internal_markStoryAsSeen anchor not found — skipped")
+        return
+    inject = anchor + "\n" + (
+        "    " + sentinel + "\n"
+        "    if UserDefaults.standard.bool(forKey: \"aorusgram_ghost_mode\") {\n"
+        "        return .complete()\n"
+        "    }"
+    )
+    t = t.replace(anchor, inject, 1)
+    path.write_text(t, encoding="utf-8")
+    print("StealthStories: injected ghost-mode stealth story view")
 
 
 def patch_aorus_controller_keys(tg: Path) -> None:
@@ -4868,6 +4926,7 @@ def main() -> None:
     patch_ghost_mode_hide_online(tg)
     patch_ghost_mode_proactive_offline(tg)
     patch_ghost_mode_block_read(tg)
+    patch_ghost_mode_stealth_stories(tg)
     patch_aorus_code_encode(tg)
     patch_chat_context_menu_translate_transcribe(tg)
     patch_incoming_message_hook(tg)
@@ -4900,6 +4959,7 @@ def main() -> None:
     patch_chat_context_menu_hide_name_forward(tg)
     patch_forward_hide_names_default(tg)
     patch_device_spoof(tg)
+    patch_session_platform_icon(tg)
     patch_aorus_controller_keys(tg)
     patch_decoy_keys(tg)
     patch_aorus_code_keys(tg)
