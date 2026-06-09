@@ -1959,7 +1959,7 @@ def patch_chat_message_tap_gestures(tg: Path) -> None:
         print("TapGestures: ChatMessageBubbleItemNode.swift not found, skip")
         return
     t = path.read_text(encoding="utf-8")
-    sentinel = "// AorusGram: tap gestures v1"
+    sentinel = "// AorusGram: tap gestures v2"
     if sentinel in t:
         print("TapGestures: already injected")
         return
@@ -2011,7 +2011,7 @@ def patch_chat_message_tap_gestures(tg: Path) -> None:
         + "                    } else if case .tap = gesture, _agTripleDelete, CFAbsoluteTimeGetCurrent() - self._agLastDoubleTapTime < 0.6 {\n"
         + "                        self._agLastDoubleTapTime = 0\n"
         + "                        self._agPendingCopy?.cancel(); self._agPendingCopy = nil\n"
-        + "                        let _ = item.context.engine.messages.deleteMessagesInteractively(messageIds: [item.message.id], type: .forLocalPeer).start()\n"
+        + "                        let _ = item.context.engine.messages.deleteMessagesInteractively(messageIds: [item.message.id], type: .forEveryone).start()\n"
         + "                        return\n"
         + "                    }\n"
         + "                }\n"
@@ -4339,74 +4339,86 @@ def patch_view_once_direct_save_button(tg: Path) -> None:
         "\n"
         f"    // {_s}\n"
         # ── _aorusInjectVOSaveButton ──────────────────────────────────────────
-        # Waits 0.15 s for the footer to lay out, then BFS-walks the view tree
-        # to find the leftmost circular view in the bottom 32 % of the screen
-        # (that is the native share button). The save button is placed
-        # immediately to its right at the same vertical centre.
-        # Visual style: UIBlurEffect(.dark) + dim overlay → identical to the
-        # native gallery action buttons.
+        # Places a circular glass "save" button immediately to the RIGHT of the
+        # native share button, inside the SAME footer container. Because it is a
+        # sibling of the share button, it inherits the footer's show/hide fade
+        # automatically — no manual alpha syncing, no clobbering of
+        # controlsVisibilityChanged (the source of the previous timing bugs).
+        #
+        # Works for both the photo and the video view-once HUD: each lays out a
+        # circular share button in the lower area, which we locate by geometry
+        # and anchor to. A short retry loop (0.2s × up to 15) bridges the gap
+        # between viewDidAppear and the footer finishing layout.
+        #
+        # The icon is an explicit UIImageView subview (not UIButton's internal
+        # imageView), so it always renders on first paint — this fixes the
+        # "icon only appears after the HUD is toggled" glitch.
+        "    private var _agVOTries: Int = 0\n"
         f"    @objc private func _aorusInjectVOSaveButton() {{\n"
         f'        guard UserDefaults.standard.bool(forKey: "{once}") else {{ return }}\n'
+        "        self._agVOTries = 0\n"
+        "        self._aorusVOPlaceSaveButton()\n"
+        "    }\n"
+        "\n"
+        f"    @objc private func _aorusVOPlaceSaveButton() {{\n"
+        f'        guard UserDefaults.standard.bool(forKey: "{once}") else {{ return }}\n'
         "        guard self.view.viewWithTag(0xA0530BEB) == nil else { return }\n"
-        "        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in\n"
-        "            guard let self = self, self.view.viewWithTag(0xA0530BEB) == nil else { return }\n"
-        "            // BFS walk — find the leftmost circular view in the lower 32 % of the screen\n"
-        "            let _agH = self.view.bounds.height\n"
-        "            var _agBest: CGRect = .zero\n"
-        "            var _agQ: [UIView] = [self.view]\n"
-        "            while !_agQ.isEmpty {\n"
-        "                let _agV = _agQ.removeFirst()\n"
-        "                let _agF = _agV.convert(_agV.bounds, to: self.view)\n"
-        "                if _agF.width >= 40 && _agF.width <= 70\n"
-        "                    && _agF.height >= 40 && _agF.height <= 70\n"
-        "                    && abs(_agF.width - _agF.height) < 10\n"
-        "                    && _agF.midY > _agH * 0.68\n"
-        "                    && (_agBest == .zero || _agF.minX < _agBest.minX) {\n"
-        "                    _agBest = _agF\n"
-        "                }\n"
-        "                _agQ.append(contentsOf: _agV.subviews)\n"
+        "        // Locate the native share button: the left-most roughly-circular\n"
+        "        // view in the lower portion of the screen (same heuristic works\n"
+        "        // for the photo HUD and the video HUD).\n"
+        "        let _agH = self.view.bounds.height\n"
+        "        var _agShare: UIView?\n"
+        "        var _agBestX = CGFloat.greatestFiniteMagnitude\n"
+        "        var _agQ: [UIView] = [self.view]\n"
+        "        while !_agQ.isEmpty {\n"
+        "            let _agV = _agQ.removeFirst()\n"
+        "            let _agF = _agV.convert(_agV.bounds, to: self.view)\n"
+        "            if _agF.width >= 38 && _agF.width <= 72\n"
+        "                && abs(_agF.width - _agF.height) < 12\n"
+        "                && _agF.midY > _agH * 0.6 {\n"
+        "                if _agF.minX < _agBestX { _agBestX = _agF.minX; _agShare = _agV }\n"
         "            }\n"
-        "            let _agSide: CGFloat = _agBest == .zero ? 52 : max(44, min(60, _agBest.width))\n"
-        "            // Circular glass button — blur + dim overlay → matches native gallery buttons\n"
-        "            let btn = UIButton(type: .custom)\n"
-        "            btn.tag = 0xA0530BEB\n"
-        "            let _agBlurBg = UIVisualEffectView(effect: UIBlurEffect(style: .dark))\n"
-        "            _agBlurBg.frame = CGRect(x: 0, y: 0, width: _agSide, height: _agSide)\n"
-        "            _agBlurBg.layer.cornerRadius = _agSide / 2\n"
-        "            _agBlurBg.clipsToBounds = true\n"
-        "            _agBlurBg.isUserInteractionEnabled = false\n"
-        "            let _agDimBg = UIView()\n"
-        "            _agDimBg.frame = CGRect(x: 0, y: 0, width: _agSide, height: _agSide)\n"
-        "            _agDimBg.backgroundColor = UIColor(white: 0, alpha: 0.28)\n"
-        "            _agDimBg.isUserInteractionEnabled = false\n"
-        "            btn.insertSubview(_agBlurBg, at: 0)\n"
-        "            btn.insertSubview(_agDimBg, aboveSubview: _agBlurBg)\n"
-        "            btn.layer.cornerRadius = _agSide / 2\n"
-        "            btn.clipsToBounds = true\n"
-        "            let _agSymCfg = UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)\n"
-        "            btn.setImage(\n"
-        "                UIImage(systemName: \"square.and.arrow.down\", withConfiguration: _agSymCfg),\n"
-        "                for: .normal)\n"
-        "            btn.tintColor = .white\n"
-        "            btn.addTarget(self, action: #selector(_aorusVOSave), for: .touchUpInside)\n"
-        "            self.view.addSubview(btn)\n"
-        "            if _agBest != .zero {\n"
-        "                btn.frame = CGRect(\n"
-        "                    x: _agBest.maxX + 8,\n"
-        "                    y: _agBest.midY - _agSide / 2,\n"
-        "                    width: _agSide, height: _agSide)\n"
-        "            } else {\n"
-        "                let _agSafeB = self.view.safeAreaInsets.bottom\n"
-        "                btn.frame = CGRect(\n"
-        "                    x: 22,\n"
-        "                    y: self.view.bounds.height - _agSafeB - _agSide - 16,\n"
-        "                    width: _agSide, height: _agSide)\n"
-        "            }\n"
-        "            btn.alpha = self.controllerNode.areControlsHidden ? 0.0 : 1.0\n"
-        "            self.controllerNode.controlsVisibilityChanged = { [weak btn] visible in\n"
-        "                UIView.animate(withDuration: 0.3) { btn?.alpha = visible ? 1.0 : 0.0 }\n"
-        "            }\n"
+        "            _agQ.append(contentsOf: _agV.subviews)\n"
         "        }\n"
+        "        guard let _agShareBtn = _agShare, let _agHost = _agShareBtn.superview else {\n"
+        "            self._agVOTries += 1\n"
+        "            if self._agVOTries < 15 {\n"
+        "                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in\n"
+        "                    self?._aorusVOPlaceSaveButton()\n"
+        "                }\n"
+        "            }\n"
+        "            return\n"
+        "        }\n"
+        "        let _agShareFrame = _agShareBtn.frame\n"
+        "        let _agSide = max(40, min(58, _agShareFrame.width))\n"
+        "        let btn = UIButton(type: .custom)\n"
+        "        btn.tag = 0xA0530BEB\n"
+        "        btn.frame = CGRect(x: _agShareFrame.maxX + 10,\n"
+        "                           y: _agShareFrame.midY - _agSide / 2,\n"
+        "                           width: _agSide, height: _agSide)\n"
+        "        btn.autoresizingMask = [.flexibleLeftMargin, .flexibleTopMargin, .flexibleBottomMargin]\n"
+        "        btn.layer.cornerRadius = _agSide / 2\n"
+        "        btn.clipsToBounds = true\n"
+        "        btn.addTarget(self, action: #selector(_aorusVOSave), for: .touchUpInside)\n"
+        "        let _agBlur = UIVisualEffectView(effect: UIBlurEffect(style: .dark))\n"
+        "        _agBlur.frame = btn.bounds\n"
+        "        _agBlur.autoresizingMask = [.flexibleWidth, .flexibleHeight]\n"
+        "        _agBlur.isUserInteractionEnabled = false\n"
+        "        let _agDim = UIView(frame: btn.bounds)\n"
+        "        _agDim.autoresizingMask = [.flexibleWidth, .flexibleHeight]\n"
+        "        _agDim.backgroundColor = UIColor(white: 0, alpha: 0.28)\n"
+        "        _agDim.isUserInteractionEnabled = false\n"
+        "        let _agSymCfg = UIImage.SymbolConfiguration(pointSize: 21, weight: .medium)\n"
+        "        let _agIcon = UIImageView(image: UIImage(systemName: \"square.and.arrow.down\", withConfiguration: _agSymCfg))\n"
+        "        _agIcon.tintColor = .white\n"
+        "        _agIcon.contentMode = .center\n"
+        "        _agIcon.isUserInteractionEnabled = false\n"
+        "        _agIcon.frame = btn.bounds\n"
+        "        _agIcon.autoresizingMask = [.flexibleWidth, .flexibleHeight]\n"
+        "        btn.addSubview(_agBlur)\n"
+        "        btn.addSubview(_agDim)\n"
+        "        btn.addSubview(_agIcon)\n"
+        "        _agHost.addSubview(btn)\n"
         "    }\n"
         "\n"
         # ── _aorusVOSave ─────────────────────────────────────────────────────

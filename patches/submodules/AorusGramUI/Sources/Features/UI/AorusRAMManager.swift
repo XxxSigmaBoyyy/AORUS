@@ -107,7 +107,8 @@ public final class AorusRAMManager {
         let w = UIWindow(windowScene: scene)
         // Above statusBar → renders on top of every Telegram view and alert window.
         // Never calling makeKeyAndVisible() keeps Telegram as key window owner.
-        w.windowLevel = UIWindow.Level.statusBar + 100
+        // rawValue arithmetic — UIWindow.Level does not define a `+` operator.
+        w.windowLevel = UIWindow.Level(rawValue: UIWindow.Level.statusBar.rawValue + 100)
         w.backgroundColor = .clear
         w.isUserInteractionEnabled = false
         w.frame = scene.screen.bounds
