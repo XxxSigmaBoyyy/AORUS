@@ -30,7 +30,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: telegram-ios
-          key: tg-ios-src-v44-uuid-keys
+          key: tg-ios-src-v45-uuid-keys
 
       - name: Clone Telegram iOS
         if: steps.tg-cache.outputs.cache-hit != 'true'
@@ -324,8 +324,10 @@ jobs:
           mkdir -p $TG/submodules/AorusBadge
           cp -r $PATCHES/submodules/AorusBadge/. $TG/submodules/AorusBadge/
 
-          # 2. Copy PeerInfoScreen BUILD (adds AorusGramUI dep)
-          cp $PATCHES/submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/BUILD $PEER/
+          # 2. Add AorusGramUI dep to the REAL PeerInfoScreen BUILD in place.
+          #    (Do NOT overwrite with a stale full copy — upstream drifts, e.g. it
+          #    removed WebSearchUI, which broke analysis when our copy still listed it.)
+          python3 -c "import base64; exec(base64.b64decode('aW1wb3J0IHJlCnAgPSAndGVsZWdyYW0taW9zL3N1Ym1vZHVsZXMvVGVsZWdyYW1VSS9Db21wb25lbnRzL1BlZXJJbmZvL1BlZXJJbmZvU2NyZWVuL0JVSUxEJwp0ID0gb3BlbihwKS5yZWFkKCkKaWYgJy8vc3VibW9kdWxlcy9Bb3J1c0dyYW1VSScgaW4gdDoKICAgIHByaW50KCdQZWVySW5mb1NjcmVlbiBCVUlMRDogQW9ydXNHcmFtVUkgZGVwIGFscmVhZHkgcHJlc2VudCcpCmVsc2U6CiAgICBpID0gdC5maW5kKCdkZXBzID0gWycpCiAgICBpZiBpID09IC0xOgogICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoJ1BlZXJJbmZvU2NyZWVuIEJVSUxEOiBkZXBzIGFuY2hvciBub3QgZm91bmQnKQogICAgbmwgPSB0LmZpbmQoJ1xuJywgaSkgKyAxCiAgICB0ID0gdFs6bmxdICsgJyAgICAgICAgIi8vc3VibW9kdWxlcy9Bb3J1c0dyYW1VSSIsXG4nICsgdFtubDpdCiAgICBvcGVuKHAsICd3Jykud3JpdGUodCkKICAgIHByaW50KCdQZWVySW5mb1NjcmVlbiBCVUlMRDogYWRkZWQgQW9ydXNHcmFtVUkgZGVwJykK').decode())"
 
           # 3. Replace PeerInfoSettingsItems.swift (adds aorusGram menu item)
           cp $PATCHES/submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoSettingsItems.swift $PEER/Sources/
