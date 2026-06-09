@@ -12,8 +12,8 @@ import AccountContext
 
 // MARK: - Interval slider
 
-// Discrete snap points (hours) for the cache cleanup interval: 6 h, 24 h, 72 h, 7 d.
-private let _aorusIntervalPresets = [6, 24, 72, 168]
+// Discrete snap points (hours) for the cache cleanup interval: 6 h, 24 h, 7 d, 30 d.
+private let _aorusIntervalPresets = [6, 24, 168, 720]
 
 // Format an hours value for the slider's trailing label.
 private func _aorusIntervalText(_ hours: Int, isRu: Bool) -> String {
