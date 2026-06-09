@@ -1691,6 +1691,9 @@ def patch_chat_context_menu_translate_transcribe(tg: Path) -> None:
             print("ChatContextMenu: stripped previous translate/transcribe injection")
 
     # Add Speech import after Foundation if not present already
+    if "import Postbox" not in t:
+        t = t.replace("import Foundation\n", "import Postbox\nimport Foundation\n", 1)
+        print("ChatContextMenu: added import Postbox")
     if "import Speech" not in t:
         t = t.replace(
             "import Foundation\n",
@@ -1739,8 +1742,8 @@ def patch_chat_context_menu_translate_transcribe(tg: Path) -> None:
         "                if aorusIsTranslated, let aorusOrig = aorusSavedText {\n"
         "                    actions.append(.action(ContextMenuActionItem(text: \"AorusGram Оригинал\", icon: { theme in\n"
         "                        return generateTintedImage(image: UIImage(bundleImageName: \"Chat/Context Menu/Translate\"), color: theme.actionSheet.primaryTextColor)\n"
-        "                    }, action: { [weak context] _, f in\n"
-        "                        f(.default)\n"
+        "                    }, action: { [weak context] action in\n"
+        "                        action.dismissWithResult(.default)\n"
         "                        guard let context = context else { return }\n"
         "                        let _ = context.account.postbox.transaction { transaction -> Void in\n"
         "                            transaction.updateMessage(aorusMid, update: { current in\n"
@@ -1755,8 +1758,8 @@ def patch_chat_context_menu_translate_transcribe(tg: Path) -> None:
         "                } else if !aorusBody.isEmpty && !aorusIsTranscribed {\n"
         "                    actions.append(.action(ContextMenuActionItem(text: \"AorusGram Перевод\", icon: { theme in\n"
         "                        return generateTintedImage(image: UIImage(bundleImageName: \"Chat/Context Menu/Translate\"), color: theme.actionSheet.primaryTextColor)\n"
-        "                    }, action: { [weak context] _, f in\n"
-        "                        f(.default)\n"
+        "                    }, action: { [weak context] action in\n"
+        "                        action.dismissWithResult(.default)\n"
         "                        guard let context = context else { return }\n"
         "                        let aorusOriginal = aorusBody\n"
         "                        let aorusTarget = Locale.current.languageCode ?? \"en\"\n"
@@ -1788,8 +1791,8 @@ def patch_chat_context_menu_translate_transcribe(tg: Path) -> None:
         "                if aorusIsTranscribed, let aorusOrig = aorusSavedText {\n"
         "                    actions.append(.action(ContextMenuActionItem(text: \"AorusGram Скрыть транскрипцию\", icon: { theme in\n"
         "                        return generateTintedImage(image: UIImage(bundleImageName: \"Chat/Context Menu/Translate\"), color: theme.actionSheet.primaryTextColor)\n"
-        "                    }, action: { [weak context] _, f in\n"
-        "                        f(.default)\n"
+        "                    }, action: { [weak context] action in\n"
+        "                        action.dismissWithResult(.default)\n"
         "                        guard let context = context else { return }\n"
         "                        let _ = context.account.postbox.transaction { transaction -> Void in\n"
         "                            transaction.updateMessage(aorusMid, update: { current in\n"
@@ -1803,8 +1806,8 @@ def patch_chat_context_menu_translate_transcribe(tg: Path) -> None:
         "                } else if !aorusIsTranslated {\n"
         "                    actions.append(.action(ContextMenuActionItem(text: \"AorusGram Транскрипция\", icon: { theme in\n"
         "                        return generateTintedImage(image: UIImage(bundleImageName: \"Chat/Context Menu/Translate\"), color: theme.actionSheet.primaryTextColor)\n"
-        "                    }, action: { [weak context] _, f in\n"
-        "                        f(.default)\n"
+        "                    }, action: { [weak context] action in\n"
+        "                        action.dismissWithResult(.default)\n"
         "                        guard let context = context else { return }\n"
         "                        let aorusResource = aorusVoiceFile.resource\n"
         "                        let aorusOriginal = aorusBody\n"
@@ -1884,8 +1887,8 @@ def patch_chat_context_menu_edit_locally(tg: Path) -> None:
         "            if let aorusEditOrig = aorusEditOrig {\n"
         "                actions.append(.action(ContextMenuActionItem(text: aorusEditRu ? \"Оригинал\" : \"Original\", icon: { theme in\n"
         "                    return generateTintedImage(image: UIImage(bundleImageName: \"Chat/Context Menu/Edit\"), color: theme.actionSheet.primaryTextColor)\n"
-        "                }, action: { [weak context] _, f in\n"
-        "                    f(.default)\n"
+        "                }, action: { [weak context] action in\n"
+        "                    action.dismissWithResult(.default)\n"
         "                    guard let context = context else { return }\n"
         "                    let _ = context.account.postbox.transaction { transaction -> Void in\n"
         "                        transaction.updateMessage(aorusEditMid, update: { current in\n"
@@ -1898,8 +1901,8 @@ def patch_chat_context_menu_edit_locally(tg: Path) -> None:
         "            } else {\n"
         "            actions.append(.action(ContextMenuActionItem(text: aorusEditRu ? \"Изменить локально\" : \"Edit Locally\", icon: { theme in\n"
         "                return generateTintedImage(image: UIImage(bundleImageName: \"Chat/Context Menu/Edit\"), color: theme.actionSheet.primaryTextColor)\n"
-        "            }, action: { [weak context] _, f in\n"
-        "                f(.default)\n"
+        "            }, action: { [weak context] action in\n"
+        "                action.dismissWithResult(.default)\n"
         "                guard let context = context else { return }\n"
         "                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {\n"
         "                    var aorusWindow: UIWindow?\n"
@@ -2052,10 +2055,10 @@ def patch_chat_context_menu_hide_name_forward(tg: Path) -> None:
         "            let aorusFwdRu = UserDefaults.standard.string(forKey: \"aorusgram_lang\") == \"ru\"\n"
         "            actions.append(.action(ContextMenuActionItem(text: aorusFwdRu ? \"Скрыть имя\" : \"Hide Name\", icon: { theme in\n"
         "                return generateTintedImage(image: UIImage(bundleImageName: \"Chat/Context Menu/Forward\"), color: theme.actionSheet.primaryTextColor)\n"
-        "            }, action: { _, f in\n"
+        "            }, action: { action in\n"
         "                UserDefaults.standard.set(true, forKey: \"aorusgram_force_hide_fwd\")\n"
         "                interfaceInteraction.forwardMessages(selectAll ? messages : [messages[0]])\n"
-        "                f(.dismissWithoutContent)\n"
+        "                action.dismissWithResult(.dismissWithoutContent)\n"
         "            })))\n"
         "        }\n"
         "\n"
