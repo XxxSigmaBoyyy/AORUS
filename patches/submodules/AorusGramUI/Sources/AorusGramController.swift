@@ -12,8 +12,14 @@ import AccountContext
 
 // MARK: - Interval slider
 
-// Discrete snap points (minutes) for the RAM cleanup interval.
-private let _aorusIntervalPresets = [15, 30, 60, 120, 240]
+// Discrete snap points (hours) for the cache cleanup interval: 6 h, 24 h, 72 h, 7 d.
+private let _aorusIntervalPresets = [6, 24, 72, 168]
+
+// Format an hours value for the slider's trailing label.
+private func _aorusIntervalText(_ hours: Int, isRu: Bool) -> String {
+    if hours % 24 == 0 { let d = hours / 24; return isRu ? "\(d) дн" : "\(d) d" }
+    return isRu ? "\(hours) ч" : "\(hours) h"
+}
 
 /// A settings row that embeds a UISlider for selecting from `_aorusIntervalPresets`.
 private final class AorusIntervalSliderItem: ListViewItem, ItemListItem {
@@ -101,6 +107,20 @@ private final class AorusIntervalSliderItemNode: ListViewItemNode {
         addSubnode(maskNode)
     }
 
+    // Symmetric fade: the row appears AND disappears with the same animation
+    // when Auto-Clean Cache is toggled (previously the removal was instant).
+    override func animateInsertion(_ currentTimestamp: Double, duration: Double, options: ListViewItemAnimationOptions) {
+        self.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.3)
+    }
+
+    override func animateAdded(_ currentTimestamp: Double, duration: Double) {
+        self.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.3)
+    }
+
+    override func animateRemoved(_ currentTimestamp: Double, duration: Double) {
+        self.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.3, removeOnCompletion: false)
+    }
+
     override func didLoad() {
         super.didLoad()
 
@@ -131,11 +151,10 @@ private final class AorusIntervalSliderItemNode: ListViewItemNode {
 
     private func applyItem(_ item: AorusIntervalSliderItem) {
         let isRu = UserDefaults.standard.string(forKey: "aorusgram_lang") == "ru"
-        let idx = _aorusIntervalPresets.firstIndex(of: item.value) ?? 2
+        let idx = _aorusIntervalPresets.firstIndex(of: item.value) ?? 1
         titleLabel?.text = item.title
         titleLabel?.textColor = item.theme.list.itemPrimaryTextColor
-        valueLabel?.text = isRu ? "\(_aorusIntervalPresets[idx]) мин"
-                                : "\(_aorusIntervalPresets[idx]) min"
+        valueLabel?.text = _aorusIntervalText(_aorusIntervalPresets[idx], isRu: isRu)
         valueLabel?.textColor = item.theme.list.itemSecondaryTextColor
         sliderView?.value = Float(idx)
         sliderView?.tintColor = item.theme.list.itemAccentColor
@@ -155,8 +174,7 @@ private final class AorusIntervalSliderItemNode: ListViewItemNode {
         let idx = max(0, min(Int(sender.value.rounded()), _aorusIntervalPresets.count - 1))
         sender.value = Float(idx)
         let isRu = UserDefaults.standard.string(forKey: "aorusgram_lang") == "ru"
-        valueLabel?.text = isRu ? "\(_aorusIntervalPresets[idx]) мин"
-                                : "\(_aorusIntervalPresets[idx]) min"
+        valueLabel?.text = _aorusIntervalText(_aorusIntervalPresets[idx], isRu: isRu)
     }
 
     @objc private func sliderEnded(_ sender: UISlider) {
@@ -253,9 +271,8 @@ private struct AorusState: Equatable {
     var autoReply: Bool
     var downloadAccel: Bool
     var antiSpamEnabled: Bool
-    var ramShow: Bool
-    var ramAutoClean: Bool
-    var ramInterval: Int
+    var cacheAutoClean: Bool
+    var cacheCleanInterval: Int
     var editLocally: Bool
     var doubleTapCopy: Bool
     var tripleTapDelete: Bool
@@ -278,20 +295,20 @@ private final class AorusArguments {
     let clearCache: () -> Void
     let openAccountBackup: () -> Void
     let openDeviceSpoof: () -> Void
-    let setRamInterval: (Int) -> Void
+    let setCacheInterval: (Int) -> Void
 
     init(set: @escaping (WritableKeyPath<AorusState, Bool>, Bool) -> Void,
          openChannel: @escaping () -> Void,
          clearCache: @escaping () -> Void,
          openAccountBackup: @escaping () -> Void,
          openDeviceSpoof: @escaping () -> Void,
-         setRamInterval: @escaping (Int) -> Void) {
+         setCacheInterval: @escaping (Int) -> Void) {
         self.set = set
         self.openChannel = openChannel
         self.clearCache = clearCache
         self.openAccountBackup = openAccountBackup
         self.openDeviceSpoof = openDeviceSpoof
-        self.setRamInterval = setRamInterval
+        self.setCacheInterval = setCacheInterval
     }
 }
 
@@ -313,9 +330,8 @@ private enum AorusEntry: ItemListNodeEntry {
     case perfHeader(PresentationTheme, String)
     case downloadAccel(PresentationTheme, String, Bool)
     case antiSpam(PresentationTheme, String, Bool)
-    case ramShow(PresentationTheme, String, Bool)
-    case ramAutoClean(PresentationTheme, String, Bool)
-    case ramInterval(PresentationTheme, String, Int)
+    case cacheAutoClean(PresentationTheme, String, Bool)
+    case cacheInterval(PresentationTheme, String, Int)
 
     case uiHeader(PresentationTheme, String)
     case glassUI(PresentationTheme, String, Bool)
@@ -352,7 +368,7 @@ private enum AorusEntry: ItemListNodeEntry {
             return AorusSection.privacy.rawValue
         case .aiHeader, .voiceTranscription, .chatSummary, .translator, .autoReply:
             return AorusSection.ai.rawValue
-        case .perfHeader, .downloadAccel, .antiSpam, .ramShow, .ramAutoClean, .ramInterval:
+        case .perfHeader, .downloadAccel, .antiSpam, .cacheAutoClean, .cacheInterval:
             return AorusSection.performance.rawValue
         case .uiHeader, .glassUI, .siriShortcuts:
             return AorusSection.ui.rawValue
@@ -388,9 +404,8 @@ private enum AorusEntry: ItemListNodeEntry {
         case .perfHeader:           return 20
         case .downloadAccel:        return 21
         case .antiSpam:             return 22
-        case .ramShow:              return 23
-        case .ramAutoClean:         return 24
-        case .ramInterval:          return 25
+        case .cacheAutoClean:       return 24
+        case .cacheInterval:        return 25
         case .uiHeader:             return 30
         case .glassUI:              return 31
         case .siriShortcuts:        return 32
@@ -447,12 +462,10 @@ private enum AorusEntry: ItemListNodeEntry {
             if case let .downloadAccel(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
         case let .antiSpam(lt, ls, lv):
             if case let .antiSpam(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
-        case let .ramShow(lt, ls, lv):
-            if case let .ramShow(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
-        case let .ramAutoClean(lt, ls, lv):
-            if case let .ramAutoClean(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
-        case let .ramInterval(lt, ls, lv):
-            if case let .ramInterval(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }  // Int ==
+        case let .cacheAutoClean(lt, ls, lv):
+            if case let .cacheAutoClean(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
+        case let .cacheInterval(lt, ls, lv):
+            if case let .cacheInterval(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }  // Int ==
         case let .uiHeader(lt, ls):
             if case let .uiHeader(rt, rs) = rhs { return lt === rt && ls == rs }
         case let .glassUI(lt, ls, lv):
@@ -528,13 +541,11 @@ private enum AorusEntry: ItemListNodeEntry {
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.downloadAccel, $0) })
         case let .antiSpam(_, title, value):
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.antiSpamEnabled, $0) })
-        case let .ramShow(_, title, value):
-            return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.ramShow, $0) })
-        case let .ramAutoClean(_, title, value):
-            return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.ramAutoClean, $0) })
-        case let .ramInterval(theme, title, value):
+        case let .cacheAutoClean(_, title, value):
+            return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.cacheAutoClean, $0) })
+        case let .cacheInterval(theme, title, value):
             return AorusIntervalSliderItem(theme: theme, title: title, value: value,
-                                           sectionId: section, updated: args.setRamInterval)
+                                           sectionId: section, updated: args.setCacheInterval)
         case let .uiHeader(_, text):
             return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: section)
         case let .glassUI(_, title, value):
@@ -609,9 +620,8 @@ private func aorusEntries(state: AorusState, theme: PresentationTheme, l10n: Aor
         .perfHeader(theme, l10n.perfHeader),
         .downloadAccel(theme, l10n.downloadAccel, state.downloadAccel),
         .antiSpam(theme, l10n.antiSpam, state.antiSpamEnabled),
-        .ramShow(theme, l10n.ramShow, state.ramShow),
-        .ramAutoClean(theme, l10n.ramAutoClean, state.ramAutoClean),
-        // .ramInterval is appended below, only when auto-clean is enabled.
+        .cacheAutoClean(theme, l10n.cacheAutoClean, state.cacheAutoClean),
+        // .cacheInterval is appended below, only when auto-clean is enabled.
 
         .uiHeader(theme, l10n.uiHeader),
         .glassUI(theme, l10n.glassUI, state.glassUI),
@@ -644,10 +654,10 @@ private func aorusEntries(state: AorusState, theme: PresentationTheme, l10n: Aor
     ]
 
     // The cleanup-interval slider only appears once auto-clean is switched on.
-    if state.ramAutoClean, let idx = entries.firstIndex(where: {
-        if case .ramAutoClean = $0 { return true }; return false
+    if state.cacheAutoClean, let idx = entries.firstIndex(where: {
+        if case .cacheAutoClean = $0 { return true }; return false
     }) {
-        entries.insert(.ramInterval(theme, l10n.ramInterval, state.ramInterval), at: idx + 1)
+        entries.insert(.cacheInterval(theme, l10n.cacheInterval, state.cacheCleanInterval), at: idx + 1)
     }
 
     return entries
@@ -672,9 +682,8 @@ public func aorusGramController(context: AccountContext) -> ViewController {
         autoReply:          mgr.autoReply,
         downloadAccel:      mgr.downloadAccel,
         antiSpamEnabled:    mgr.antiSpamEnabled,
-        ramShow:            mgr.ramShow,
-        ramAutoClean:       mgr.ramAutoClean,
-        ramInterval:        mgr.ramInterval,
+        cacheAutoClean:     mgr.cacheAutoClean,
+        cacheCleanInterval: mgr.cacheCleanInterval,
         editLocally:        mgr.editLocally,
         doubleTapCopy:      mgr.doubleTapCopy,
         tripleTapDelete:    mgr.tripleTapDelete,
@@ -718,9 +727,8 @@ public func aorusGramController(context: AccountContext) -> ViewController {
             mgr.autoReply           = s.autoReply
             mgr.downloadAccel       = s.downloadAccel
             mgr.antiSpamEnabled     = s.antiSpamEnabled
-            mgr.ramShow             = s.ramShow
-            mgr.ramAutoClean        = s.ramAutoClean
-            mgr.ramInterval         = s.ramInterval
+            mgr.cacheAutoClean      = s.cacheAutoClean
+            mgr.cacheCleanInterval  = s.cacheCleanInterval
             mgr.editLocally         = s.editLocally
             mgr.doubleTapCopy       = s.doubleTapCopy
             mgr.tripleTapDelete     = s.tripleTapDelete
@@ -881,9 +889,9 @@ public func aorusGramController(context: AccountContext) -> ViewController {
             anchorPopover(alert)
             controller.present(alert, animated: true)
         },
-        setRamInterval: { minutes in
-            AorusGramManager.shared.ramInterval = minutes
-            updateState { s in var n = s; n.ramInterval = minutes; return n }
+        setCacheInterval: { hours in
+            AorusGramManager.shared.cacheCleanInterval = hours
+            updateState { s in var n = s; n.cacheCleanInterval = hours; return n }
         }
     )
 

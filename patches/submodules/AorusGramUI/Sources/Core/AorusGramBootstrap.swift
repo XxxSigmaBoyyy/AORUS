@@ -58,10 +58,8 @@ public final class AorusGramBootstrap {
         // Secret pin
         SecretPinManager.shared.load()
 
-        // RAM management — floating usage label + periodic cache cleanup
-        DispatchQueue.main.async {
-            AorusRAMManager.shared.refresh()
-        }
+        // Cache auto-cleaning — periodic wipe of deleted-messages + URL caches
+        AorusCacheManager.shared.refresh()
 
         // Auto-reply
         AutoReplyManager.shared.load()
@@ -170,7 +168,7 @@ public final class AorusGramBootstrap {
 
     @objc private func appDidBecomeActive() {
         DeletedMessagesCache.shared.scheduleBackgroundSync()
-        AorusRAMManager.shared.refresh()
+        AorusCacheManager.shared.refresh()
     }
 
     @objc private func appDidEnterBackground() {

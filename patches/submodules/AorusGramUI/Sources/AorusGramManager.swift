@@ -35,10 +35,10 @@ public final class AorusGramManager {
     public var doubleTapCopy: Bool     = false { didSet { save() } }
     public var tripleTapDelete: Bool   = false { didSet { save() } }
 
-    // RAM management (replaces the former Streak feature in the Performance section).
-    public var ramShow: Bool           = false { didSet { save() } }
-    public var ramAutoClean: Bool      = false { didSet { save() } }
-    public var ramInterval: Int        = 60    { didSet { save() } }   // minutes
+    // Cache auto-cleaning (Performance section). On the chosen interval (in
+    // hours) it wipes the deleted-messages cache and URL/media caches.
+    public var cacheAutoClean: Bool    = false { didSet { save() } }
+    public var cacheCleanInterval: Int = 24    { didSet { save() } }   // hours
 
     private let key = "aorusgram_settings_v1"
 
@@ -70,9 +70,8 @@ public final class AorusGramManager {
         editLocally         = d["editLocally"]         as? Bool ?? false
         doubleTapCopy       = d["doubleTapCopy"]       as? Bool ?? false
         tripleTapDelete     = d["tripleTapDelete"]     as? Bool ?? false
-        ramShow             = d["ramShow"]             as? Bool ?? false
-        ramAutoClean        = d["ramAutoClean"]        as? Bool ?? false
-        ramInterval         = d["ramInterval"]         as? Int  ?? 60
+        cacheAutoClean      = d["cacheAutoClean"]      as? Bool ?? false
+        cacheCleanInterval  = d["cacheCleanInterval"]  as? Int  ?? 24
     }
 
     private func save() {
@@ -94,9 +93,8 @@ public final class AorusGramManager {
             "editLocally":         editLocally,
             "doubleTapCopy":       doubleTapCopy,
             "tripleTapDelete":     tripleTapDelete,
-            "ramShow":             ramShow,
-            "ramAutoClean":        ramAutoClean,
-            "ramInterval":         ramInterval,
+            "cacheAutoClean":      cacheAutoClean,
+            "cacheCleanInterval":  cacheCleanInterval,
         ], forKey: key)
 
         let ud = UserDefaults.standard
