@@ -81,7 +81,7 @@ public final class AorusVoiceTwin {
     // Resolve the active preset to (pitch ratio, ring-mod frequency in Hz).
     private func params() -> (ratio: Float, ringHz: Float) {
         let preset = UserDefaults.standard.string(forKey: "aorusgram_voice_twin_preset") ?? "anonymous"
-        var semis: Float = -5.0   // anonymous (deep, masked) by default
+        var semis: Float = -7.0   // anonymous: deep, masked, identity-hiding (formants preserved)
         var ringHz: Float = 0
         switch preset {
         case "male":   semis = -3.0

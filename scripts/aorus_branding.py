@@ -4135,25 +4135,32 @@ def patch_view_once_capture(tg: Path) -> None:
     gc = tg / "submodules/GalleryUI/Sources/GalleryController.swift"
     if gc.is_file():
         t = gc.read_text(encoding="utf-8")
-        old = (
-            "            let captureProtected = message.isCopyProtected() || message.containsSecretMedia "
-            "|| message.minAutoremoveOrClearTimeout == viewOnceTimeout || message.paidContent != nil || peerIsCopyProtected"
-        )
-        new = (
-            "            let captureProtected = message.isCopyProtected() "
-            f"|| (message.containsSecretMedia && !UserDefaults.standard.bool(forKey: \"{once}\")) "
-            f"|| (message.minAutoremoveOrClearTimeout == viewOnceTimeout && !UserDefaults.standard.bool(forKey: \"{once}\")) "
-            f"|| (message.paidContent != nil && !UserDefaults.standard.bool(forKey: \"{paid}\")) "
-            f"|| peerIsCopyProtected  {SENTINEL}"
-        )
         if SENTINEL in t:
             print("ViewOnceCapture: GalleryController already patched")
-        elif old in t:
-            n = t.count(old)
-            gc.write_text(t.replace(old, new), encoding="utf-8")
-            print(f"ViewOnceCapture: patched GalleryController captureProtected ({n} site(s))")
         else:
-            print("ViewOnceCapture: WARNING — GalleryController captureProtected anchor not found")
+            # The captureProtected OR-chain feeds NativeVideoContent.captureProtected
+            # (the ONLY place a view-once VIDEO/GIF is screen-protected — photos have
+            # a separate node-level flag below). Matching the whole line literally is
+            # brittle: a single new upstream term (e.g. age restriction) silently
+            # breaks it, leaving video protected while photos still work. Match the
+            # OR-chain robustly on its stable isCopyProtected() prefix and rewrite it
+            # to gate the view-once / paid sources.
+            pat = re.compile(r'^([ \t]*)let captureProtected = message\.isCopyProtected\(\).*$', re.MULTILINE)
+
+            def _cap_repl(m: "re.Match[str]") -> str:
+                ind = m.group(1)
+                return (ind + "let captureProtected = message.isCopyProtected() "
+                        f"|| (message.containsSecretMedia && !UserDefaults.standard.bool(forKey: \"{once}\")) "
+                        f"|| (message.minAutoremoveOrClearTimeout == viewOnceTimeout && !UserDefaults.standard.bool(forKey: \"{once}\")) "
+                        f"|| (message.paidContent != nil && !UserDefaults.standard.bool(forKey: \"{paid}\")) "
+                        f"|| peerIsCopyProtected  {SENTINEL}")
+
+            new_t, n = pat.subn(_cap_repl, t)
+            if n > 0:
+                gc.write_text(new_t, encoding="utf-8")
+                print(f"ViewOnceCapture: patched GalleryController captureProtected ({n} site(s))")
+            else:
+                print("ViewOnceCapture: WARNING — GalleryController captureProtected anchor not found")
     else:
         print("ViewOnceCapture: GalleryController.swift not found")
 
@@ -4411,7 +4418,7 @@ def patch_view_once_direct_save_button(tg: Path) -> None:
         "        _agDim.autoresizingMask = [.flexibleWidth, .flexibleHeight]\n"
         "        _agDim.backgroundColor = UIColor(white: 0, alpha: 0.22)\n"
         "        _agDim.isUserInteractionEnabled = false\n"
-        "        let _agSymCfg = UIImage.SymbolConfiguration(pointSize: 21, weight: .regular)\n"
+        "        let _agSymCfg = UIImage.SymbolConfiguration(pointSize: 21, weight: .light)\n"
         "        let _agIcon = UIImageView(image: UIImage(systemName: \"square.and.arrow.down\", withConfiguration: _agSymCfg))\n"
         "        _agIcon.tintColor = .white\n"
         "        _agIcon.contentMode = .center\n"
@@ -4622,15 +4629,34 @@ def patch_session_platform_icon(tg: Path) -> None:
     if sentinel in t:
         print("SessionIcon: already patched")
         return
+
+    # (a) Android icon: honour systemVersion / deviceModel (the Android branch
+    #     otherwise keys ONLY off the server-derived `platform`, which we can't set).
     old = 'if platform.contains("android") {'
     new = ('if platform.contains("android") || systemVersion.contains("android") '
            '|| device.contains("android") ' + sentinel + ' {')
     if old in t:
         t = t.replace(old, new, 1)
-        path.write_text(t, encoding="utf-8")
         print("SessionIcon: Android icon now also keys off systemVersion/device")
     else:
         print("SessionIcon: WARNING — android branch anchor not found")
+
+    # (b) Apple branch fires on platform=="ios" BEFORE the windows/linux/ubuntu
+    #     branches, so a Windows/Linux spoof (platform still "ios") wrongly shows
+    #     the Apple icon. Exclude non-Apple OSes (detected via systemVersion) from
+    #     the Apple branch so those spoofs fall through to the correct branch.
+    apple_old = 'if platform.contains("ios") || platform.contains("macos") || systemVersion.contains("macos") {'
+    apple_new = ('if (platform.contains("ios") || platform.contains("macos") || systemVersion.contains("macos")) '
+                 '&& !systemVersion.contains("windows") && !systemVersion.contains("linux") '
+                 '&& !systemVersion.contains("ubuntu") && !systemVersion.contains("android") '
+                 '/* AorusGram: non-apple sysver exclusion */ {')
+    if apple_old in t:
+        t = t.replace(apple_old, apple_new, 1)
+        print("SessionIcon: Apple branch now excludes non-Apple systemVersions")
+    else:
+        print("SessionIcon: WARNING — apple branch anchor not found")
+
+    path.write_text(t, encoding="utf-8")
 
 
 def patch_ghost_mode_stealth_stories(tg: Path) -> None:
