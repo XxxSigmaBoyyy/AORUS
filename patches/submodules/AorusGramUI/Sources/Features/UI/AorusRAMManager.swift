@@ -4,19 +4,17 @@ import Darwin
 
 // MARK: - AorusRAMManager
 //
-// Floating "RAM: N MB" label + periodic cache cleanup.
-//
-// The label is a passthrough subview added directly to the current key window
-// (more reliable than a separate UIWindow, which on iOS starts with a zero
-// frame and frequently fails to render). A 2s timer refreshes the value and
-// re-attaches the pill if the key window changed (modal, gallery, etc.).
+// "RAM: N MB" pill rendered in a dedicated passthrough UIWindow at
+// windowLevel .statusBar + 100 — guaranteed above ALL app content,
+// alerts, and Telegram's own overlays without interfering with touches
+// or status-bar appearance (window is visible but never key).
 
 public final class AorusRAMManager {
     public static let shared = AorusRAMManager()
     private init() {}
 
-    private var pill: UIView?
-    private weak var ramLabel: UILabel?
+    private var overlayWindow: UIWindow?
+    private var pillLabel: UILabel?
     private var displayTimer: Timer?
     private var cleanTimer: Timer?
     private var observing = false
@@ -24,22 +22,36 @@ public final class AorusRAMManager {
     // MARK: - Public entry point
 
     public func refresh() {
+        DispatchQueue.main.async { [weak self] in self?._doRefresh() }
+    }
+
+    private func _doRefresh() {
         if !observing {
             observing = true
             NotificationCenter.default.addObserver(
-                self, selector: #selector(onSettingsChanged),
+                self, selector: #selector(_onSettings),
                 name: .aorusSettingsChanged, object: nil)
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(_onActive),
+                name: UIApplication.didBecomeActiveNotification, object: nil)
         }
         let mgr = AorusGramManager.shared
-        applyOverlay(enabled: mgr.ramShow)
-        applyAutoClean(enabled: mgr.ramAutoClean, intervalMinutes: mgr.ramInterval)
+        _applyOverlay(enabled: mgr.ramShow)
+        _applyAutoClean(enabled: mgr.ramAutoClean, intervalMinutes: mgr.ramInterval)
     }
 
-    @objc private func onSettingsChanged() {
-        DispatchQueue.main.async { [weak self] in self?.refresh() }
+    @objc private func _onSettings() {
+        DispatchQueue.main.async { [weak self] in self?._doRefresh() }
     }
 
-    // MARK: - Memory reading
+    @objc private func _onActive() {
+        DispatchQueue.main.async { [weak self] in
+            guard AorusGramManager.shared.ramShow else { return }
+            self?._ensureWindow()
+        }
+    }
+
+    // MARK: - Memory footprint
 
     public func footprintMB() -> Int {
         var info = task_vm_info_data_t()
@@ -54,103 +66,115 @@ public final class AorusRAMManager {
         return Int(info.phys_footprint) / (1024 * 1024)
     }
 
-    // MARK: - Floating overlay
+    // MARK: - Overlay lifecycle
 
-    private func applyOverlay(enabled: Bool) {
+    private func _applyOverlay(enabled: Bool) {
         if enabled {
-            buildPillIfNeeded()
-            attachAndLayout()
-            updateLabel()
-            if pill?.superview == nil {
-                // Key window not ready yet (early bootstrap) — retry shortly.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                    guard AorusGramManager.shared.ramShow else { return }
-                    self?.applyOverlay(enabled: true)
-                }
-            }
+            _ensureWindow()
             if displayTimer == nil {
                 let t = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-                    guard let self = self else { return }
-                    self.attachAndLayout()   // re-home if key window changed
-                    self.updateLabel()
+                    self?._updateLabel()
                 }
                 displayTimer = t
                 RunLoop.main.add(t, forMode: .common)
             }
         } else {
             displayTimer?.invalidate(); displayTimer = nil
-            pill?.removeFromSuperview()
-            pill = nil
-            ramLabel = nil
+            overlayWindow?.isHidden = true
+            overlayWindow = nil
+            pillLabel = nil
         }
     }
 
-    private func buildPillIfNeeded() {
-        guard pill == nil else { return }
+    private func _ensureWindow() {
+        guard let scene = _activeScene() else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard AorusGramManager.shared.ramShow else { return }
+                self?._ensureWindow()
+            }
+            return
+        }
 
+        if overlayWindow == nil {
+            _buildWindow(scene: scene)
+        } else {
+            overlayWindow?.isHidden = false
+        }
+        _updateLabel()
+    }
+
+    private func _buildWindow(scene: UIWindowScene) {
+        let w = UIWindow(windowScene: scene)
+        // Above statusBar → renders on top of every Telegram view and alert window.
+        // Never calling makeKeyAndVisible() keeps Telegram as key window owner.
+        w.windowLevel = UIWindow.Level.statusBar + 100
+        w.backgroundColor = .clear
+        w.isUserInteractionEnabled = false
+        w.frame = scene.screen.bounds
+
+        let vc = _AorusOverlayVC()
+        w.rootViewController = vc
+        w.isHidden = false
+        overlayWindow = w
+
+        // Pill — Auto Layout relative to safe area so it sits right below the
+        // status bar on all device sizes and orientations.
         let pill = UIView()
+        pill.translatesAutoresizingMaskIntoConstraints = false
         pill.isUserInteractionEnabled = false
-        pill.backgroundColor = UIColor(white: 0.06, alpha: 0.72)
+        pill.backgroundColor = UIColor(white: 0.07, alpha: 0.78)
         pill.layer.cornerRadius = 12
         pill.layer.masksToBounds = true
-        pill.layer.borderColor = UIColor.white.withAlphaComponent(0.12).cgColor
+        pill.layer.borderColor = UIColor.white.withAlphaComponent(0.18).cgColor
         pill.layer.borderWidth = 0.5
-        pill.layer.zPosition = 100_000   // stay above app content
 
         let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
         label.textColor = .white
         label.textAlignment = .center
-        // SF Rounded bold — clean, modern, monospaced-feel digits.
-        if let descriptor = UIFontDescriptor.preferredFontDescriptor(withTextStyle: .caption1)
+        if let d = UIFontDescriptor
+            .preferredFontDescriptor(withTextStyle: .caption1)
             .withDesign(.rounded) {
-            let bold = descriptor.withSymbolicTraits(.traitBold) ?? descriptor
-            label.font = UIFont(descriptor: bold, size: 13)
+            label.font = UIFont(descriptor: d.withSymbolicTraits(.traitBold) ?? d, size: 13)
         } else {
             label.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
         }
+
         pill.addSubview(label)
-        self.ramLabel = label
-        self.pill = pill
+        vc.view.addSubview(pill)
+
+        NSLayoutConstraint.activate([
+            pill.trailingAnchor.constraint(
+                equalTo: vc.view.safeAreaLayoutGuide.trailingAnchor, constant: -14),
+            pill.topAnchor.constraint(
+                equalTo: vc.view.safeAreaLayoutGuide.topAnchor, constant: 6),
+            pill.widthAnchor.constraint(equalToConstant: 98),
+            pill.heightAnchor.constraint(equalToConstant: 26),
+            label.leadingAnchor.constraint(equalTo: pill.leadingAnchor, constant: 8),
+            label.trailingAnchor.constraint(equalTo: pill.trailingAnchor, constant: -8),
+            label.centerYAnchor.constraint(equalTo: pill.centerYAnchor),
+        ])
+
+        pillLabel = label
+        _updateLabel()
     }
 
-    // Attach the pill to the current key window (re-homing if it changed) and
-    // position it top-right, comfortably inset from the edge.
-    private func attachAndLayout() {
-        guard let pill = pill, let label = ramLabel else { return }
-        guard let host = keyWindow() else { return }
-
-        if pill.superview !== host {
-            pill.removeFromSuperview()
-            host.addSubview(pill)
-        }
-        host.bringSubviewToFront(pill)
-
-        let safeTop = host.safeAreaInsets.top > 0 ? host.safeAreaInsets.top : 44
-        let w: CGFloat = 98
-        let h: CGFloat = 26
-        // 14pt gap from the trailing edge — not flush against the side.
-        pill.frame = CGRect(x: host.bounds.width - w - 14, y: safeTop + 6, width: w, height: h)
-        pill.autoresizingMask = [.flexibleLeftMargin, .flexibleBottomMargin]
-        label.frame = CGRect(x: 8, y: 3, width: w - 16, height: h - 6)
+    private func _activeScene() -> UIWindowScene? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first(where: {
+                $0.activationState == .foregroundActive ||
+                $0.activationState == .foregroundInactive
+            })
     }
 
-    private func updateLabel() {
-        ramLabel?.text = "RAM: \(footprintMB()) MB"
-    }
-
-    private func keyWindow() -> UIWindow? {
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        let active = scenes.first(where: { $0.activationState == .foregroundActive })
-            ?? scenes.first(where: { $0.activationState == .foregroundInactive })
-            ?? scenes.first
-        guard let scene = active else { return nil }
-        return scene.windows.first(where: { $0.isKeyWindow })
-            ?? scene.windows.last(where: { !$0.isHidden && $0.bounds.width > 0 })
+    private func _updateLabel() {
+        pillLabel?.text = "RAM: \(footprintMB()) MB"
     }
 
     // MARK: - Auto cleanup
 
-    private func applyAutoClean(enabled: Bool, intervalMinutes: Int) {
+    private func _applyAutoClean(enabled: Bool, intervalMinutes: Int) {
         cleanTimer?.invalidate(); cleanTimer = nil
         guard enabled else { return }
         let minutes = max(5, intervalMinutes)
@@ -163,6 +187,16 @@ public final class AorusRAMManager {
     public func performCleanup() {
         URLCache.shared.removeAllCachedResponses()
         URLSession.shared.configuration.urlCache?.removeAllCachedResponses()
-        autoreleasepool { }
+        autoreleasepool {}
+    }
+}
+
+// Transparent passthrough root VC for the overlay window.
+// Never key → Telegram retains full status-bar control.
+private final class _AorusOverlayVC: UIViewController {
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear
+        view.isUserInteractionEnabled = false
     }
 }
