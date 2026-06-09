@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import AudioToolbox
+import CoreMedia
 
 // MARK: - AorusVoiceTwin
 //
@@ -93,30 +94,73 @@ public final class AorusVoiceTwin {
         return (powf(2.0, semis / 12.0), ringHz)
     }
 
-    // Process one captured buffer in place. Called on the recorder's queue.
+    // Voice-message path: process the recorder's Int16 mono 48 kHz buffer in place.
     public func processBuffer(_ buffer: AudioBuffer) {
         guard isEnabled, let raw = buffer.mData else { return }
         let count = Int(buffer.mDataByteSize) / 2
         guard count > 0 else { return }
-        let p = raw.assumingMemoryBound(to: Int16.self)
-
         let (ratio, ringHz) = params()
+        guard ratio != 1.0 || ringHz > 0 else { return }
+        let p = raw.assumingMemoryBound(to: Int16.self)
         let ringStep: Float = ringHz > 0 ? (2.0 * Float.pi * ringHz / sampleRate) : 0
-
         for i in 0 ..< count {
-            let x0 = Float(p[i]) / 32768.0
-            var y: Float = (ratio == 1.0) ? x0 : formantStep(x0, ratio)
-
-            if ringStep > 0 {
-                y *= cosf(ringModPhase)
-                ringModPhase += ringStep
-                if ringModPhase > 2.0 * Float.pi { ringModPhase -= 2.0 * Float.pi }
-            }
-
-            if y > 1.0 { y = 1.0 }
-            if y < -1.0 { y = -1.0 }
+            let y = transformSample(Float(p[i]) / 32768.0, ratio: ratio, ringStep: ringStep)
             p[i] = Int16(y * 32767.0)
         }
+    }
+
+    // Video-note / camera path: transform a captured audio CMSampleBuffer in place.
+    // Handles mono Linear-PCM Int16 or Float32; ANY other layout is a safe no-op, so
+    // it can never corrupt the recording or crash the camera pipeline.
+    public func processSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
+        guard isEnabled else { return }
+        let (ratio, ringHz) = params()
+        guard ratio != 1.0 || ringHz > 0 else { return }
+        guard let fmt = CMSampleBufferGetFormatDescription(sampleBuffer),
+              let asbdPtr = CMAudioFormatDescriptionGetStreamBasicDescription(fmt) else { return }
+        let asbd = asbdPtr.pointee
+        guard asbd.mFormatID == kAudioFormatLinearPCM, asbd.mChannelsPerFrame == 1 else { return }
+        guard let block = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
+        var lenAt = 0
+        var total = 0
+        var dp: UnsafeMutablePointer<CChar>?
+        guard CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: &lenAt,
+                                          totalLengthOut: &total, dataPointerOut: &dp) == noErr,
+              let base = dp, lenAt == total, total > 0 else { return }
+        let sr = Float(asbd.mSampleRate > 0 ? asbd.mSampleRate : 48000)
+        let ringStep: Float = ringHz > 0 ? (2.0 * Float.pi * ringHz / sr) : 0
+        let isFloat = (asbd.mFormatFlags & kAudioFormatFlagIsFloat) != 0
+        let isSint = (asbd.mFormatFlags & kAudioFormatFlagIsSignedInteger) != 0
+
+        if isSint && asbd.mBitsPerChannel == 16 {
+            let count = total / 2
+            base.withMemoryRebound(to: Int16.self, capacity: count) { p in
+                for i in 0 ..< count {
+                    let y = transformSample(Float(p[i]) / 32768.0, ratio: ratio, ringStep: ringStep)
+                    p[i] = Int16(y * 32767.0)
+                }
+            }
+        } else if isFloat && asbd.mBitsPerChannel == 32 {
+            let count = total / 4
+            base.withMemoryRebound(to: Float.self, capacity: count) { p in
+                for i in 0 ..< count {
+                    p[i] = transformSample(p[i], ratio: ratio, ringStep: ringStep)
+                }
+            }
+        }
+    }
+
+    // Shared per-sample core: input/output in [-1, 1].
+    private func transformSample(_ x0: Float, ratio: Float, ringStep: Float) -> Float {
+        var y: Float = (ratio == 1.0) ? x0 : formantStep(x0, ratio)
+        if ringStep > 0 {
+            y *= cosf(ringModPhase)
+            ringModPhase += ringStep
+            if ringModPhase > 2.0 * Float.pi { ringModPhase -= 2.0 * Float.pi }
+        }
+        if y > 1.0 { y = 1.0 }
+        if y < -1.0 { y = -1.0 }
+        return y
     }
 
     // MARK: - Formant-preserving pitch shift (one sample)

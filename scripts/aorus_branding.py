@@ -4740,6 +4740,72 @@ def patch_voice_twin_recorder(tg: Path) -> None:
     print("VoiceTwin: injected processBuffer call into recorder")
 
 
+def patch_voice_twin_video_notes(tg: Path) -> None:
+    """Apply Voice Twin to video notes (round videos) / camera audio.
+
+    The recorded audio CMSampleBuffer is appended to the writer in
+    CameraOutput.processVideoRecording via `videoRecorder.appendSampleBuffer(...)`.
+    We transform it in place just before that append, gated on the audio media
+    type (`type` is in scope there). AorusVoiceTwin reads the buffer's format and
+    transforms mono Int16/Float32 PCM only — anything else is a safe no-op, so it
+    can never corrupt the recording or crash the camera pipeline.
+
+    Requires the Camera module to link the AorusGram core module. AorusGram depends
+    only on Display, so Camera -> AorusGram introduces no dependency cycle.
+    """
+    out = tg / "submodules/Camera/Sources/CameraOutput.swift"
+    if not out.is_file():
+        print("VoiceTwinVideo: CameraOutput.swift not found, skip")
+        return
+    t = out.read_text(encoding="utf-8")
+    sentinel = "// AorusGram: voice twin video"
+    if sentinel in t:
+        print("VoiceTwinVideo: already injected")
+        return
+    anchor = "videoRecorder.appendSampleBuffer(sampleBuffer)"
+    if anchor not in t:
+        print("VoiceTwinVideo: appendSampleBuffer anchor not found — skipped")
+        return
+
+    # 1) ensure `import AorusGram`
+    if "import AorusGram" not in t:
+        pos = t.find("import Foundation")
+        if pos != -1:
+            le = t.find("\n", pos)
+            t = t[:le + 1] + "import AorusGram\n" + t[le + 1:]
+            print("VoiceTwinVideo: added import AorusGram to CameraOutput")
+        else:
+            t = "import AorusGram\n" + t
+
+    # 2) transform audio buffers in place immediately before they are appended
+    inject = (
+        "if type == kCMMediaType_Audio { AorusVoiceTwin.shared.processSampleBuffer(sampleBuffer) }  "
+        + sentinel + "\n"
+        "            " + anchor
+    )
+    t = t.replace(anchor, inject, 1)
+    out.write_text(t, encoding="utf-8")
+    print("VoiceTwinVideo: hooked CameraOutput audio append")
+
+    # 3) Camera BUILD must link AorusGram core
+    build = tg / "submodules/Camera/BUILD"
+    if build.is_file():
+        bt = build.read_text(encoding="utf-8")
+        if "//submodules/AorusGram:AorusGram" in bt:
+            print("VoiceTwinVideo: Camera BUILD dep already present")
+        else:
+            idx = bt.find("deps = [")
+            if idx != -1:
+                insert_at = bt.find("\n", idx) + 1
+                bt = bt[:insert_at] + '        "//submodules/AorusGram:AorusGram",\n' + bt[insert_at:]
+                build.write_text(bt, encoding="utf-8")
+                print("VoiceTwinVideo: added AorusGram dep to Camera BUILD")
+            else:
+                print("VoiceTwinVideo: WARNING — Camera BUILD deps anchor not found")
+    else:
+        print("VoiceTwinVideo: Camera BUILD not found")
+
+
 def patch_aorus_controller_keys(tg: Path) -> None:
     """Replace semantic 'aorusgram_*' UserDefaults keys in AorusGramController with opaque UUIDs.
 
@@ -5001,6 +5067,7 @@ def main() -> None:
     patch_ghost_mode_block_read(tg)
     patch_ghost_mode_stealth_stories(tg)
     patch_voice_twin_recorder(tg)
+    patch_voice_twin_video_notes(tg)
     patch_aorus_code_encode(tg)
     patch_chat_context_menu_translate_transcribe(tg)
     patch_incoming_message_hook(tg)

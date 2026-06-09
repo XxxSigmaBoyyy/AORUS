@@ -255,7 +255,6 @@ private enum AorusSection: Int32 {
     case aorusCode
     case channel
     case editLocal
-    case voiceTwin
 }
 
 // MARK: - State
@@ -372,10 +371,8 @@ private enum AorusEntry: ItemListNodeEntry {
         switch self {
         case .privacyHeader, .ghostMode, .saveDeletedMessages, .clearDeletedCache, .antiScreenshot:
             return AorusSection.privacy.rawValue
-        case .aiHeader, .voiceTranscription, .chatSummary, .translator, .autoReply:
+        case .aiHeader, .voiceTranscription, .chatSummary, .translator, .autoReply, .voiceTwin:
             return AorusSection.ai.rawValue
-        case .voiceTwin:
-            return AorusSection.voiceTwin.rawValue
         case .perfHeader, .downloadAccel, .antiSpam, .cacheAutoClean, .cacheInterval:
             return AorusSection.performance.rawValue
         case .uiHeader, .glassUI, .siriShortcuts:
@@ -409,7 +406,7 @@ private enum AorusEntry: ItemListNodeEntry {
         case .chatSummary:          return 13
         case .translator:           return 14
         case .autoReply:            return 16
-        case .voiceTwin:            return 18
+        case .voiceTwin:            return 17
         case .perfHeader:           return 20
         case .downloadAccel:        return 21
         case .antiSpam:             return 22
@@ -629,7 +626,6 @@ private func aorusEntries(state: AorusState, theme: PresentationTheme, l10n: Aor
         .chatSummary(theme, l10n.chatSummary, state.chatSummary),
         .translator(theme, l10n.translator, state.translator),
         .autoReply(theme, l10n.autoReply, state.autoReply),
-
         .voiceTwin(theme, l10n.voiceTwin),
 
         .perfHeader(theme, l10n.perfHeader),
