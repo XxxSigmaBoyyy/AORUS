@@ -1011,7 +1011,7 @@ def patch_client_spoof_app_version(tg: Path) -> None:
         tg / "submodules/BuildConfig/Sources/BuildConfig.swift",
         tg / "Telegram/Telegram-iOS/BuildConfig.swift",
     ]
-    official_version = "11.5.3"
+    official_version = "12.8"
 
     for vpath in version_candidates:
         if not vpath.is_file():

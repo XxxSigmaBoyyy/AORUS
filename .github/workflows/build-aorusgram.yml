@@ -30,12 +30,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: telegram-ios
-          key: tg-ios-src-v46-uuid-keys
+          key: tg-ios-src-v47-release-12.8
 
       - name: Clone Telegram iOS
         if: steps.tg-cache.outputs.cache-hit != 'true'
         run: |
-          git clone --depth=1 \
+          git clone --depth=1 --branch release-12.8 \
             https://github.com/TelegramMessenger/Telegram-iOS.git telegram-ios
           cd telegram-ios
           git submodule update --init --depth=1 --jobs=4 || true
