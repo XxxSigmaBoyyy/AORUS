@@ -40,6 +40,11 @@ public final class AorusGramManager {
     public var cacheAutoClean: Bool    = false { didSet { save() } }
     public var cacheCleanInterval: Int = 24    { didSet { save() } }   // hours
 
+    // Voice Twin — pitch/character transform applied to OUTGOING voice messages.
+    // preset ∈ {"anonymous","male","female","robot","high"}.
+    public var voiceTwinEnabled: Bool  = false        { didSet { save() } }
+    public var voiceTwinPreset: String = "anonymous"  { didSet { save() } }
+
     private let key = "aorusgram_settings_v1"
 
     private func load() {
@@ -72,6 +77,8 @@ public final class AorusGramManager {
         tripleTapDelete     = d["tripleTapDelete"]     as? Bool ?? false
         cacheAutoClean      = d["cacheAutoClean"]      as? Bool ?? false
         cacheCleanInterval  = d["cacheCleanInterval"]  as? Int  ?? 24
+        voiceTwinEnabled    = d["voiceTwinEnabled"]    as? Bool   ?? false
+        voiceTwinPreset     = d["voiceTwinPreset"]     as? String ?? "anonymous"
     }
 
     private func save() {
@@ -95,6 +102,8 @@ public final class AorusGramManager {
             "tripleTapDelete":     tripleTapDelete,
             "cacheAutoClean":      cacheAutoClean,
             "cacheCleanInterval":  cacheCleanInterval,
+            "voiceTwinEnabled":    voiceTwinEnabled,
+            "voiceTwinPreset":     voiceTwinPreset,
         ], forKey: key)
 
         let ud = UserDefaults.standard
@@ -113,6 +122,8 @@ public final class AorusGramManager {
         ud.set(editLocally,         forKey: "aorusgram_feature_edit_locally")
         ud.set(doubleTapCopy,       forKey: "aorusgram_feature_double_copy")
         ud.set(tripleTapDelete,     forKey: "aorusgram_feature_triple_delete")
+        ud.set(voiceTwinEnabled,    forKey: "aorusgram_voice_twin_enabled")
+        ud.set(voiceTwinPreset,     forKey: "aorusgram_voice_twin_preset")
 
         if antiScreenshot {
             AntiScreenshotManager.shared.enable()

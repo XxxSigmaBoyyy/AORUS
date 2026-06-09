@@ -106,6 +106,16 @@ public struct AorusL10n {
     public var editLocally: String { t("Изменить локально", "Edit Locally") }
     public var editLocallyFooter: String { t("Изменяет текст сообщения только у вас на устройстве. Собеседник изменений не видит.", "Edits a message's text only on your device. Other people don't see the change.") }
 
+    // MARK: Voice Twin
+    public var voiceTwin: String { t("Голосовой двойник", "Voice Twin") }
+    public var voiceTwinFooter: String { t("Изменяет ваш голос в исходящих голосовых сообщениях на выбранный.", "Changes your voice in outgoing voice messages to the selected one.") }
+    public var voiceTwinVoiceHeader: String { t("ГОЛОС", "VOICE") }
+    public var voiceAnonymous: String { t("Аноним", "Anonymous") }
+    public var voiceMale: String { t("Мужской", "Male") }
+    public var voiceFemale: String { t("Женский", "Female") }
+    public var voiceRobot: String { t("Робот", "Robot") }
+    public var voiceHigh: String { t("Высокий", "High") }
+
     // MARK: Device Spoof
     public var deviceSpoofHeader: String { t("ДЕВАЙС-СПУФ", "DEVICE SPOOF") }
     public var deviceSpoof: String { t("Устройство", "Device") }

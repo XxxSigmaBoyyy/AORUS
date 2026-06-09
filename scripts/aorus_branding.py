@@ -4411,7 +4411,7 @@ def patch_view_once_direct_save_button(tg: Path) -> None:
         "        _agDim.autoresizingMask = [.flexibleWidth, .flexibleHeight]\n"
         "        _agDim.backgroundColor = UIColor(white: 0, alpha: 0.22)\n"
         "        _agDim.isUserInteractionEnabled = false\n"
-        "        let _agSymCfg = UIImage.SymbolConfiguration(pointSize: 21, weight: .medium)\n"
+        "        let _agSymCfg = UIImage.SymbolConfiguration(pointSize: 21, weight: .regular)\n"
         "        let _agIcon = UIImageView(image: UIImage(systemName: \"square.and.arrow.down\", withConfiguration: _agSymCfg))\n"
         "        _agIcon.tintColor = .white\n"
         "        _agIcon.contentMode = .center\n"
@@ -4665,6 +4665,53 @@ def patch_ghost_mode_stealth_stories(tg: Path) -> None:
     t = t.replace(anchor, inject, 1)
     path.write_text(t, encoding="utf-8")
     print("StealthStories: injected ghost-mode stealth story view")
+
+
+def patch_voice_twin_recorder(tg: Path) -> None:
+    """Apply the Voice Twin transform to OUTGOING voice messages.
+
+    Captured microphone PCM (Int16, mono, 48 kHz) passes through
+    ManagedAudioRecorder.processAndDisposeAudioBuffer just before Opus encoding.
+    We call AorusVoiceTwin (AorusGram core module, which the main TelegramUI
+    module already links against) to mutate the samples in place when the
+    feature is enabled — no re-encoding, identical sample count, so the
+    recorder's packet accounting is untouched.
+    """
+    path = tg / "submodules/TelegramUI/Sources/ManagedAudioRecorder.swift"
+    if not path.is_file():
+        print("VoiceTwin: ManagedAudioRecorder.swift not found, skip")
+        return
+    t = path.read_text(encoding="utf-8")
+    sentinel = "// AorusGram: voice twin"
+    if sentinel in t:
+        print("VoiceTwin: already injected")
+        return
+    anchor = "func processAndDisposeAudioBuffer(_ buffer: AudioBuffer) {"
+    if anchor not in t:
+        print("VoiceTwin: processAndDisposeAudioBuffer anchor not found — skipped")
+        return
+
+    # 1) ensure `import AorusGram` (core module is a TelegramUI dep)
+    if "import AorusGram" not in t:
+        needle = "import Foundation"
+        pos = t.find(needle)
+        if pos != -1:
+            le = t.find("\n", pos)
+            if le != -1:
+                t = t[:le + 1] + "import AorusGram\n" + t[le + 1:]
+                print("VoiceTwin: added import AorusGram")
+        else:
+            t = "import AorusGram\n" + t
+            print("VoiceTwin: prepended import AorusGram (no import Foundation anchor)")
+
+    # 2) inject the in-place transform at the very top of the buffer handler
+    inject = anchor + "\n" + (
+        "        " + sentinel + "\n"
+        "        AorusVoiceTwin.shared.processBuffer(buffer)"
+    )
+    t = t.replace(anchor, inject, 1)
+    path.write_text(t, encoding="utf-8")
+    print("VoiceTwin: injected processBuffer call into recorder")
 
 
 def patch_aorus_controller_keys(tg: Path) -> None:
@@ -4927,6 +4974,7 @@ def main() -> None:
     patch_ghost_mode_proactive_offline(tg)
     patch_ghost_mode_block_read(tg)
     patch_ghost_mode_stealth_stories(tg)
+    patch_voice_twin_recorder(tg)
     patch_aorus_code_encode(tg)
     patch_chat_context_menu_translate_transcribe(tg)
     patch_incoming_message_hook(tg)

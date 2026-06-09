@@ -255,6 +255,7 @@ private enum AorusSection: Int32 {
     case aorusCode
     case channel
     case editLocal
+    case voiceTwin
 }
 
 // MARK: - State
@@ -295,6 +296,7 @@ private final class AorusArguments {
     let clearCache: () -> Void
     let openAccountBackup: () -> Void
     let openDeviceSpoof: () -> Void
+    let openVoiceTwin: () -> Void
     let setCacheInterval: (Int) -> Void
 
     init(set: @escaping (WritableKeyPath<AorusState, Bool>, Bool) -> Void,
@@ -302,12 +304,14 @@ private final class AorusArguments {
          clearCache: @escaping () -> Void,
          openAccountBackup: @escaping () -> Void,
          openDeviceSpoof: @escaping () -> Void,
+         openVoiceTwin: @escaping () -> Void,
          setCacheInterval: @escaping (Int) -> Void) {
         self.set = set
         self.openChannel = openChannel
         self.clearCache = clearCache
         self.openAccountBackup = openAccountBackup
         self.openDeviceSpoof = openDeviceSpoof
+        self.openVoiceTwin = openVoiceTwin
         self.setCacheInterval = setCacheInterval
     }
 }
@@ -326,6 +330,8 @@ private enum AorusEntry: ItemListNodeEntry {
     case chatSummary(PresentationTheme, String, Bool)
     case translator(PresentationTheme, String, Bool)
     case autoReply(PresentationTheme, String, Bool)
+
+    case voiceTwin(PresentationTheme, String)
 
     case perfHeader(PresentationTheme, String)
     case downloadAccel(PresentationTheme, String, Bool)
@@ -368,6 +374,8 @@ private enum AorusEntry: ItemListNodeEntry {
             return AorusSection.privacy.rawValue
         case .aiHeader, .voiceTranscription, .chatSummary, .translator, .autoReply:
             return AorusSection.ai.rawValue
+        case .voiceTwin:
+            return AorusSection.voiceTwin.rawValue
         case .perfHeader, .downloadAccel, .antiSpam, .cacheAutoClean, .cacheInterval:
             return AorusSection.performance.rawValue
         case .uiHeader, .glassUI, .siriShortcuts:
@@ -401,6 +409,7 @@ private enum AorusEntry: ItemListNodeEntry {
         case .chatSummary:          return 13
         case .translator:           return 14
         case .autoReply:            return 16
+        case .voiceTwin:            return 18
         case .perfHeader:           return 20
         case .downloadAccel:        return 21
         case .antiSpam:             return 22
@@ -456,6 +465,8 @@ private enum AorusEntry: ItemListNodeEntry {
             if case let .translator(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
         case let .autoReply(lt, ls, lv):
             if case let .autoReply(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
+        case let .voiceTwin(lt, ls):
+            if case let .voiceTwin(rt, rs) = rhs { return lt === rt && ls == rs }
         case let .perfHeader(lt, ls):
             if case let .perfHeader(rt, rs) = rhs { return lt === rt && ls == rs }
         case let .downloadAccel(lt, ls, lv):
@@ -535,6 +546,8 @@ private enum AorusEntry: ItemListNodeEntry {
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.translator, $0) })
         case let .autoReply(_, title, value):
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.autoReply, $0) })
+        case let .voiceTwin(_, title):
+            return ItemListDisclosureItem(presentationData: presentationData, title: title, label: "", sectionId: section, style: .blocks, action: args.openVoiceTwin)
         case let .perfHeader(_, text):
             return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: section)
         case let .downloadAccel(_, title, value):
@@ -616,6 +629,8 @@ private func aorusEntries(state: AorusState, theme: PresentationTheme, l10n: Aor
         .chatSummary(theme, l10n.chatSummary, state.chatSummary),
         .translator(theme, l10n.translator, state.translator),
         .autoReply(theme, l10n.autoReply, state.autoReply),
+
+        .voiceTwin(theme, l10n.voiceTwin),
 
         .perfHeader(theme, l10n.perfHeader),
         .downloadAccel(theme, l10n.downloadAccel, state.downloadAccel),
@@ -888,6 +903,13 @@ public func aorusGramController(context: AccountContext) -> ViewController {
             alert.addAction(UIAlertAction(title: isRu ? "Отмена" : "Cancel", style: .cancel))
             anchorPopover(alert)
             controller.present(alert, animated: true)
+        },
+        openVoiceTwin: {
+            guard let controller = weakController,
+                  let navigationController = controller.navigationController as? NavigationController else {
+                return
+            }
+            navigationController.pushViewController(voiceTwinController(context: context))
         },
         setCacheInterval: { hours in
             AorusGramManager.shared.cacheCleanInterval = hours
