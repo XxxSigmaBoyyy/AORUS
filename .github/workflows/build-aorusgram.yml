@@ -30,7 +30,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: telegram-ios
-          key: tg-ios-src-v47-release-12.8
+          key: tg-ios-src-v48-release-12.8
 
       - name: Clone Telegram iOS
         if: steps.tg-cache.outputs.cache-hit != 'true'
@@ -329,8 +329,37 @@ jobs:
           #    removed WebSearchUI, which broke analysis when our copy still listed it.)
           python3 -c "import base64; exec(base64.b64decode('aW1wb3J0IHJlCnAgPSAndGVsZWdyYW0taW9zL3N1Ym1vZHVsZXMvVGVsZWdyYW1VSS9Db21wb25lbnRzL1BlZXJJbmZvL1BlZXJJbmZvU2NyZWVuL0JVSUxEJwp0ID0gb3BlbihwKS5yZWFkKCkKaWYgJy8vc3VibW9kdWxlcy9Bb3J1c0dyYW1VSScgaW4gdDoKICAgIHByaW50KCdQZWVySW5mb1NjcmVlbiBCVUlMRDogQW9ydXNHcmFtVUkgZGVwIGFscmVhZHkgcHJlc2VudCcpCmVsc2U6CiAgICBpID0gdC5maW5kKCdkZXBzID0gWycpCiAgICBpZiBpID09IC0xOgogICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoJ1BlZXJJbmZvU2NyZWVuIEJVSUxEOiBkZXBzIGFuY2hvciBub3QgZm91bmQnKQogICAgbmwgPSB0LmZpbmQoJ1xuJywgaSkgKyAxCiAgICB0ID0gdFs6bmxdICsgJyAgICAgICAgIi8vc3VibW9kdWxlcy9Bb3J1c0dyYW1VSSIsXG4nICsgdFtubDpdCiAgICBvcGVuKHAsICd3Jykud3JpdGUodCkKICAgIHByaW50KCdQZWVySW5mb1NjcmVlbiBCVUlMRDogYWRkZWQgQW9ydXNHcmFtVUkgZGVwJykK').decode())"
 
-          # 3. Replace PeerInfoSettingsItems.swift (adds aorusGram menu item)
-          cp $PATCHES/submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoSettingsItems.swift $PEER/Sources/
+          # 3. Add the AorusGram Settings disclosure item to the REAL upstream
+          #    PeerInfoSettingsItems.swift in place. (Do NOT overwrite with a stale
+          #    full copy — upstream drifts: 12.8 changed RenderedPeer -> EngineRenderedPeer
+          #    in this file, which broke our snapshot copy. In-place patching tracks upstream.)
+          python3 << 'PY'
+          import sys
+          from pathlib import Path
+          p = Path("telegram-ios/submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoSettingsItems.swift")
+          if not p.is_file():
+              sys.exit("PeerInfoSettingsItems.swift not found")
+          t = p.read_text(encoding="utf-8")
+          if "interaction.openSettings(.aorusGram)" in t:
+              print("PeerInfoSettingsItems: AorusGram item already present")
+              sys.exit(0)
+          anchor = "items[.support]!.append(PeerInfoScreenDisclosureItem(id: 0, text: presentationData.strings.Settings_Support,"
+          idx = t.find(anchor)
+          if idx == -1:
+              sys.exit("PeerInfoSettingsItems: Settings_Support anchor not found")
+          line_start = t.rfind("\n", 0, idx) + 1
+          indent = t[line_start:idx]
+          block = (
+              indent + "let aorusIsRu = presentationData.strings.baseLanguageCode == \"ru\" || presentationData.strings.baseLanguageCode.hasPrefix(\"ru\")\n"
+              + indent + "let aorusSettingsTitle = aorusIsRu ? \"Настройки AorusGram\" : \"AorusGram Settings\"\n"
+              + indent + "items[.support]!.append(PeerInfoScreenDisclosureItem(id: 99, text: aorusSettingsTitle, icon: PresentationResourcesSettings.security, action: {\n"
+              + indent + "    interaction.openSettings(.aorusGram)\n"
+              + indent + "}))\n"
+          )
+          t = t[:line_start] + block + t[line_start:]
+          p.write_text(t, encoding="utf-8")
+          print("PeerInfoSettingsItems: inserted AorusGram Settings item before Settings_Support")
+          PY
 
           # 4. Patch PeerInfoScreen.swift in-place (add case aorusGram to enum)
           # 5. Patch PeerInfoScreenSettingsActions.swift in-place (add import + case)
