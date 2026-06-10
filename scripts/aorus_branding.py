@@ -4090,6 +4090,11 @@ def patch_bypass_channel_copy_protection(tg: Path) -> None:
         if "// AorusGram: channel copy bypass (peer)" in t:
             print("ChannelCopyBypass: PeerUtils already patched")
         elif a_group in t and a_chan in t:
+            # Drop the type bindings too — once the bodies stop reading `group`/`channel`
+            # the `case let x as ...` bindings become unused, and this build treats
+            # `[#no-usage]` as an error. `case is ...` matches the type without binding.
+            t = t.replace("case let group as TelegramGroup:", "case is TelegramGroup:", 1)
+            t = t.replace("case let channel as TelegramChannel:", "case is TelegramChannel:", 1)
             t = t.replace(a_group, "return false // AorusGram: channel copy bypass (peer)", 1)
             t = t.replace(a_chan, "return false", 1)
             peer_utils.write_text(t, encoding="utf-8")
