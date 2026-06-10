@@ -4748,12 +4748,19 @@ def patch_voice_twin_recorder(tg: Path) -> None:
 def patch_voice_twin_video_notes(tg: Path) -> None:
     """Apply Voice Twin to video notes (round videos) / camera audio.
 
-    The recorded audio CMSampleBuffer is appended to the writer in
-    CameraOutput.processVideoRecording via `videoRecorder.appendSampleBuffer(...)`.
-    We transform it in place just before that append, gated on the audio media
-    type (`type` is in scope there). AorusVoiceTwin reads the buffer's format and
-    transforms mono Int16/Float32 PCM only — anything else is a safe no-op, so it
-    can never corrupt the recording or crash the camera pipeline.
+    CameraOutput.processVideoRecording computes `let type = CMFormatDescriptionGetMediaType(...)`
+    once, then branches: a round-video path (appends `processedSampleBuffer`) and an
+    else path that appends the raw `sampleBuffer` (this is where audio is written).
+    The literal `videoRecorder.appendSampleBuffer(sampleBuffer)` occurs more than once
+    (a video fallback inside the round-video branch AND the audio append), so anchoring
+    on it and replacing the first match hooked the VIDEO fallback — a no-op for audio,
+    which is why round-video voice was never transformed.
+
+    Instead we transform the audio in place ONCE right after `type` is computed, before
+    any branch. AorusVoiceTwin.processSampleBuffer mutates the CMSampleBuffer's PCM data
+    in place, so whichever append fires later writes the already-transformed audio. It
+    reads the buffer format and transforms mono Int16/Float32 PCM only — anything else
+    is a safe no-op, so it can never corrupt the recording or crash the camera pipeline.
 
     Requires the Camera module to link the AorusGram core module. AorusGram depends
     only on Display, so Camera -> AorusGram introduces no dependency cycle.
@@ -4767,9 +4774,9 @@ def patch_voice_twin_video_notes(tg: Path) -> None:
     if sentinel in t:
         print("VoiceTwinVideo: already injected")
         return
-    anchor = "videoRecorder.appendSampleBuffer(sampleBuffer)"
+    anchor = "let type = CMFormatDescriptionGetMediaType(formatDescriptor)"
     if anchor not in t:
-        print("VoiceTwinVideo: appendSampleBuffer anchor not found — skipped")
+        print("VoiceTwinVideo: media-type anchor not found — skipped")
         return
 
     # 1) ensure `import AorusGram`
@@ -4782,15 +4789,19 @@ def patch_voice_twin_video_notes(tg: Path) -> None:
         else:
             t = "import AorusGram\n" + t
 
-    # 2) transform audio buffers in place immediately before they are appended
+    # 2) transform audio buffers in place once, right after the media type is known,
+    #    so every downstream append (audio or round-video fallback) sees mutated PCM.
+    idx = t.find(anchor)
+    line_start = t.rfind("\n", 0, idx) + 1
+    indent = t[line_start:idx]
     inject = (
-        "if type == kCMMediaType_Audio { AorusVoiceTwin.shared.processSampleBuffer(sampleBuffer) }  "
-        + sentinel + "\n"
-        "            " + anchor
+        anchor + "\n"
+        + indent + "if type == kCMMediaType_Audio { AorusVoiceTwin.shared.processSampleBuffer(sampleBuffer) }  "
+        + sentinel
     )
     t = t.replace(anchor, inject, 1)
     out.write_text(t, encoding="utf-8")
-    print("VoiceTwinVideo: hooked CameraOutput audio append")
+    print("VoiceTwinVideo: hooked CameraOutput audio (transform-before-branch)")
 
     # 3) Camera BUILD must link AorusGram core
     build = tg / "submodules/Camera/BUILD"
