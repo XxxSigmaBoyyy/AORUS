@@ -4059,6 +4059,157 @@ def patch_bypass_copy_protection(tg: Path) -> None:
         print("CopyProtect: UniversalVideoGalleryItem.swift not found")
 
 
+def patch_bypass_channel_copy_protection(tg: Path) -> None:
+    """Always-on (stock, no settings entry) bypass of CHANNEL/GROUP content
+    protection (the `.copyProtectionEnabled` peer flag — "restrict saving content").
+
+    Scope is deliberately narrow: only the channel/group peer-flag path is
+    neutralised. Secret chats (SecretChat namespace / verification codes) and the
+    per-message `.CopyProtected` flag and view-once toggles are LEFT INTACT, so
+    this does not disturb any of those independent protections.
+
+    Enforcement of channel copy protection is purely client-side for everything
+    we touch here (screenshots, copy text, save media, action buttons). Forwarding
+    via the server forward RPC stays server-enforced and is out of scope.
+
+    Six source-of-truth / consumer points (each just drops the channel term;
+    no API surface changes, so build risk is nil; missing anchors skip gracefully):
+      A. Peer.isCopyProtectionEnabled (PeerUtils)        -> false  [kills peerIsCopyProtected]
+      B. Message.isCopyProtected() group/channel branch  -> false  [kills message-level]
+      C. context-menu  isCopyProtected = ... copyProtectionEnabled || ...  -> drop term
+      D. ChatControllerNode full-chat screenshot isSecret -> drop term
+      E. ChatController pinch-zoom screenshot isSecret     -> drop term (graceful)
+      F. ChatController gallery-open copyProtected param    -> drop term (graceful)
+    """
+    # --- A. Peer-level source of truth (PeerUtils.isCopyProtectionEnabled) -----
+    peer_utils = tg / "submodules/TelegramCore/Sources/Utils/PeerUtils.swift"
+    if peer_utils.is_file():
+        t = peer_utils.read_text(encoding="utf-8")
+        a_group = "return group.flags.contains(.copyProtectionEnabled)"
+        a_chan = "return channel.flags.contains(.copyProtectionEnabled)"
+        if "// AorusGram: channel copy bypass (peer)" in t:
+            print("ChannelCopyBypass: PeerUtils already patched")
+        elif a_group in t and a_chan in t:
+            t = t.replace(a_group, "return false // AorusGram: channel copy bypass (peer)", 1)
+            t = t.replace(a_chan, "return false", 1)
+            peer_utils.write_text(t, encoding="utf-8")
+            print("ChannelCopyBypass: PeerUtils.isCopyProtectionEnabled -> false")
+        else:
+            print("ChannelCopyBypass: WARNING — PeerUtils anchors not found")
+    else:
+        print("ChannelCopyBypass: PeerUtils.swift not found")
+
+    # --- B. Message.isCopyProtected() — neutralise group/channel branches -------
+    #     (keeps the `.CopyProtected` per-message flag branch and any paid toggle).
+    msg_utils = tg / "submodules/TelegramCore/Sources/Utils/MessageUtils.swift"
+    if msg_utils.is_file():
+        t = msg_utils.read_text(encoding="utf-8")
+        b_group_old = (
+            "        } else if let group = self.peers[self.id.peerId] as? TelegramGroup, "
+            "group.flags.contains(.copyProtectionEnabled) {\n"
+            "            return true\n"
+        )
+        b_group_new = (
+            "        } else if let group = self.peers[self.id.peerId] as? TelegramGroup, "
+            "group.flags.contains(.copyProtectionEnabled) {\n"
+            "            return false // AorusGram: channel copy bypass (msg group)\n"
+        )
+        b_chan_old = (
+            "        } else if let channel = self.peers[self.id.peerId] as? TelegramChannel, "
+            "channel.flags.contains(.copyProtectionEnabled) {\n"
+            "            return true\n"
+        )
+        b_chan_new = (
+            "        } else if let channel = self.peers[self.id.peerId] as? TelegramChannel, "
+            "channel.flags.contains(.copyProtectionEnabled) {\n"
+            "            return false // AorusGram: channel copy bypass (msg channel)\n"
+        )
+        if "channel copy bypass (msg channel)" in t:
+            print("ChannelCopyBypass: MessageUtils branches already patched")
+        else:
+            n = 0
+            if b_group_old in t:
+                t = t.replace(b_group_old, b_group_new, 1); n += 1
+            if b_chan_old in t:
+                t = t.replace(b_chan_old, b_chan_new, 1); n += 1
+            if n == 2:
+                msg_utils.write_text(t, encoding="utf-8")
+                print("ChannelCopyBypass: MessageUtils group/channel branches -> false")
+            else:
+                print(f"ChannelCopyBypass: WARNING — MessageUtils branches matched {n}/2")
+    else:
+        print("ChannelCopyBypass: MessageUtils.swift not found")
+
+    # --- C. Context-menu copy/forward gate (drop the chat-level term) -----------
+    ctx = tg / "submodules/TelegramUI/Sources/ChatInterfaceStateContextMenus.swift"
+    if ctx.is_file():
+        t = ctx.read_text(encoding="utf-8")
+        c_old = "let isCopyProtected = chatPresentationInterfaceState.copyProtectionEnabled || message.isCopyProtected()"
+        c_new = "let isCopyProtected = message.isCopyProtected()  // AorusGram: channel copy bypass (menu)"
+        if "channel copy bypass (menu)" in t:
+            print("ChannelCopyBypass: context menu already patched")
+        elif c_old in t:
+            ctx.write_text(t.replace(c_old, c_new, 1), encoding="utf-8")
+            print("ChannelCopyBypass: context-menu isCopyProtected -> message-only")
+        else:
+            print("ChannelCopyBypass: WARNING — context-menu anchor not found")
+    else:
+        print("ChannelCopyBypass: ChatInterfaceStateContextMenus.swift not found")
+
+    # --- D. Full-chat screenshot protection (drop the chat-level term) ----------
+    node = tg / "submodules/TelegramUI/Sources/ChatControllerNode.swift"
+    if node.is_file():
+        t = node.read_text(encoding="utf-8")
+        d_old = ("let isSecret = self.chatPresentationInterfaceState.copyProtectionEnabled "
+                 "|| self.chatLocation.peerId?.namespace == Namespaces.Peer.SecretChat "
+                 "|| self.chatLocation.peerId?.isVerificationCodes == true")
+        d_new = ("let isSecret = self.chatLocation.peerId?.namespace == Namespaces.Peer.SecretChat "
+                 "|| self.chatLocation.peerId?.isVerificationCodes == true  // AorusGram: channel copy bypass (screenshot)")
+        if "channel copy bypass (screenshot)" in t:
+            print("ChannelCopyBypass: ChatControllerNode already patched")
+        elif d_old in t:
+            node.write_text(t.replace(d_old, d_new, 1), encoding="utf-8")
+            print("ChannelCopyBypass: full-chat screenshot protection dropped for channels")
+        else:
+            print("ChannelCopyBypass: WARNING — ChatControllerNode anchor not found")
+    else:
+        print("ChannelCopyBypass: ChatControllerNode.swift not found")
+
+    # --- E/F. ChatController pinch-zoom + gallery-open (graceful) ---------------
+    chat_ctl = tg / "submodules/TelegramUI/Sources/ChatController.swift"
+    if chat_ctl.is_file():
+        t = chat_ctl.read_text(encoding="utf-8")
+        changed = False
+        # E. pinch-zoom screenshot
+        e_old = ("let isSecret = strongSelf.presentationInterfaceState.copyProtectionEnabled "
+                 "|| strongSelf.chatLocation.peerId?.namespace == Namespaces.Peer.SecretChat")
+        e_new = ("let isSecret = strongSelf.chatLocation.peerId?.namespace == Namespaces.Peer.SecretChat "
+                 "/* AorusGram: channel copy bypass (pinch) */")
+        if "channel copy bypass (pinch)" in t:
+            print("ChannelCopyBypass: ChatController pinch already patched")
+        elif e_old in t:
+            t = t.replace(e_old, e_new, 1); changed = True
+            print("ChannelCopyBypass: pinch-zoom screenshot dropped for channels")
+        else:
+            print("ChannelCopyBypass: NOTE — ChatController pinch anchor not found (skipped)")
+        # F. gallery-open copyProtected param
+        f_old = ("copyProtected: self.presentationInterfaceState.copyProtectionEnabled "
+                 "|| self.presentationInterfaceState.myCopyProtectionEnabled,")
+        f_new = ("copyProtected: self.presentationInterfaceState.myCopyProtectionEnabled,"
+                 "  /* AorusGram: channel copy bypass (gallery) */")
+        if "channel copy bypass (gallery)" in t:
+            print("ChannelCopyBypass: ChatController gallery-open already patched")
+        elif f_old in t:
+            t = t.replace(f_old, f_new, 1); changed = True
+            print("ChannelCopyBypass: gallery-open copyProtected dropped for channels")
+        else:
+            print("ChannelCopyBypass: NOTE — ChatController gallery-open anchor not found (skipped)")
+        if changed:
+            chat_ctl.write_text(t, encoding="utf-8")
+    else:
+        print("ChannelCopyBypass: ChatController.swift not found")
+
+
 def patch_bypass_story_download(tg: Path) -> None:
     """Gate story download bypass on opaque UUID UserDefaults key (_AG_K_BYPASS_STORY).
 
@@ -5106,6 +5257,7 @@ def main() -> None:
     patch_aorus_badges(tg)
     patch_local_premium(tg)
     patch_bypass_copy_protection(tg)
+    patch_bypass_channel_copy_protection(tg)
     patch_bypass_story_download(tg)
     patch_save_view_once(tg)
     patch_view_once_capture(tg)
