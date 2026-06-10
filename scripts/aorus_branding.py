@@ -4090,13 +4090,29 @@ def patch_bypass_channel_copy_protection(tg: Path) -> None:
         if "// AorusGram: channel copy bypass (peer)" in t:
             print("ChannelCopyBypass: PeerUtils already patched")
         elif a_group in t and a_chan in t:
-            # Drop the type bindings too — once the bodies stop reading `group`/`channel`
-            # the `case let x as ...` bindings become unused, and this build treats
-            # `[#no-usage]` as an error. `case is ...` matches the type without binding.
-            t = t.replace("case let group as TelegramGroup:", "case is TelegramGroup:", 1)
-            t = t.replace("case let channel as TelegramChannel:", "case is TelegramChannel:", 1)
-            t = t.replace(a_group, "return false // AorusGram: channel copy bypass (peer)", 1)
-            t = t.replace(a_chan, "return false", 1)
+            # PeerUtils has MULTIPLE `case let group as TelegramGroup:` patterns.
+            # replace(..., 1) hits the first one (displayTitle, uses group.title) not the
+            # isCopyProtectionEnabled one. Use each unique return statement to locate
+            # the immediately preceding case line and replace only that one.
+            for ret_anchor, case_old, case_new, ret_new in [
+                (a_group,
+                 "case let group as TelegramGroup:", "case is TelegramGroup:",
+                 "return false // AorusGram: channel copy bypass (peer)"),
+                (a_chan,
+                 "case let channel as TelegramChannel:", "case is TelegramChannel:",
+                 "return false"),
+            ]:
+                idx = t.find(ret_anchor)
+                if idx >= 0:
+                    ret_line_start = t.rfind("\n", 0, idx) + 1
+                    case_line_end = ret_line_start - 1
+                    case_line_start = t.rfind("\n", 0, case_line_end) + 1
+                    case_line = t[case_line_start:case_line_end]
+                    if case_old in case_line:
+                        t = (t[:case_line_start]
+                             + case_line.replace(case_old, case_new, 1)
+                             + t[case_line_end:])
+                    t = t.replace(ret_anchor, ret_new, 1)
             peer_utils.write_text(t, encoding="utf-8")
             print("ChannelCopyBypass: PeerUtils.isCopyProtectionEnabled -> false")
         else:
