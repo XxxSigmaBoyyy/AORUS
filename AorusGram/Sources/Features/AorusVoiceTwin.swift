@@ -5,11 +5,19 @@ import CoreMedia
 
 // MARK: - AorusVoiceTwin
 //
-// Real-time, in-place voice transform applied to OUTGOING voice messages.
-// The recorder hands us captured PCM (Int16, mono, 48 kHz) one buffer at a time
-// (see the patch on ManagedAudioRecorder.processAndDisposeAudioBuffer). We mutate
-// the samples in place BEFORE they are encoded to Opus — no re-encoding, identical
-// sample count, so the recorder's packet accounting is untouched.
+// Real-time, in-place voice transform applied to OUTGOING audio. This Swift core
+// drives two paths: voice messages (the recorder hands us captured PCM, Int16
+// mono 48 kHz, one buffer at a time — see the patch on
+// ManagedAudioRecorder.processAndDisposeAudioBuffer) and video notes / кружочки
+// (a captured audio CMSampleBuffer — see CameraOutput). In both cases we mutate
+// the samples in place BEFORE encoding — no re-encoding, identical sample count,
+// so the recorder's packet accounting is untouched.
+//
+// Voice/video CALLS run through the native WebRTC capture path, which never
+// reaches Swift, so calls are handled by a self-contained C++ port of this same
+// DSP injected into TgVoipWebrtc (AorusCallVoiceTwin.h, wired by
+// scripts/aorus_branding.py:patch_voice_twin_calls). Both implementations read
+// the same UserDefaults keys, so the settings screen drives all three paths.
 //
 // Lives in the AorusGram core module (which the main TelegramUI module links
 // against) and is configured purely through flat UserDefaults keys written by the

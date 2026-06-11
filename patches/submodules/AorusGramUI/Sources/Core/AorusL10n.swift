@@ -97,7 +97,7 @@ public struct AorusL10n {
     public var antiSpoofOnline: String { t("Анти-спуф онлайна", "Anti-Spoof Online") }
     public var accountBackup: String { t("Бэкап аккаунтов", "Account Backup") }
     public var aorusCode: String { t("AorusCode", "AorusCode") }
-    public var officialChannel: String { t("Официальный канал @aorusgram", "Official channel @aorusgram") }
+    public var officialChannel: String { t("Официальный канал", "Official channel") }
 
     // MARK: Messages section (tap gestures + local editing)
     public var messagesHeader: String { t("СООБЩЕНИЯ", "MESSAGES") }

@@ -4994,6 +4994,344 @@ def patch_voice_twin_video_notes(tg: Path) -> None:
         print("VoiceTwinVideo: Camera BUILD not found")
 
 
+# Self-contained C++ port of the validated Swift Voice Twin DSP
+# (AorusGram/Sources/Features/AorusVoiceTwin.swift). Runs on the WebRTC capture
+# thread; mutates the microphone PCM in place inside RecordedDataIsAvailable,
+# before the encoder. Pure C++ + an ObjC-only UserDefaults read — no module
+# dependencies, so it adds nothing to TgVoipWebrtc's link graph and cannot create
+# a dependency cycle. iOS delivers the mic as mono Int16 PCM after the hardware
+# voice-processing AEC/NS, so the transform applies to clean near-end voice only;
+# any other PCM layout is a safe no-op (original audio passes through untouched).
+_AORUS_CALL_VOICE_TWIN_HEADER = r"""#ifndef AorusCallVoiceTwin_h
+#define AorusCallVoiceTwin_h
+
+// AorusGram: voice twin (calls) — formant-preserving real-time voice transform.
+// Faithful C++ port of the Swift AorusVoiceTwin DSP. See the patch comment in
+// scripts/aorus_branding.py (patch_voice_twin_calls) for the rationale.
+
+#include <cstdint>
+#include <cstddef>
+#include <vector>
+#include <cmath>
+
+#ifdef __OBJC__
+#import <Foundation/Foundation.h>
+#endif
+
+class AorusCallVoiceTwin {
+public:
+    AorusCallVoiceTwin() {
+        xh.assign(kOrder, 0.0f);
+        yh.assign(kOrder, 0.0f);
+        pred.assign(kOrder, 0.0f);
+        autoc.assign(kOrder + 1, 0.0f);
+        win.assign(kFrame, 0.0f);
+        scratch.assign(kFrame, 0.0f);
+        ring.assign(kRingSize, 0.0f);
+        hann.assign(kFrame, 0.0f);
+        for (int i = 0; i < kFrame; i++) {
+            hann[i] = 0.5f - 0.5f * std::cos(2.0f * (float)M_PI * (float)i / (float)(kFrame - 1));
+        }
+    }
+
+    // Refresh enabled flag + preset from UserDefaults. Throttled by the caller so
+    // the real-time path does not hit the defaults store on every 10 ms frame.
+    void refreshParams() {
+#ifdef __OBJC__
+        NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+        _enabled = [d boolForKey:@"aorusgram_voice_twin_enabled"];
+        NSString *preset = [d stringForKey:@"aorusgram_voice_twin_preset"];
+        float semis = -7.0f;   // anonymous (default): deep, identity-masking
+        float ringHz = 0.0f;
+        if ([preset isEqualToString:@"male"]) { semis = -3.0f; }
+        else if ([preset isEqualToString:@"female"]) { semis = 3.5f; }
+        else if ([preset isEqualToString:@"robot"]) { semis = 0.0f; ringHz = 110.0f; }
+        else if ([preset isEqualToString:@"high"]) { semis = 7.0f; }
+        _ratio = std::pow(2.0f, semis / 12.0f);
+        _ringHz = ringHz;
+#endif
+    }
+
+    bool enabled() const { return _enabled; }
+
+    // Transform interleaved PCM in place. Only mono Int16 is processed; anything
+    // else is a safe no-op so the call audio can never be corrupted.
+    void process(void *samples, size_t nSamples, size_t nBytesPerSample, size_t nChannels, uint32_t sampleRate) {
+        if (!_enabled) { return; }
+        if (samples == nullptr || nSamples == 0 || nChannels != 1 || nBytesPerSample != 2) { return; }
+        if (_ratio == 1.0f && _ringHz <= 0.0f) { return; }
+        const float sr = sampleRate > 0 ? (float)sampleRate : 48000.0f;
+        const float ringStep = _ringHz > 0.0f ? (2.0f * (float)M_PI * _ringHz / sr) : 0.0f;
+        int16_t *p = (int16_t *)samples;
+        for (size_t i = 0; i < nSamples; i++) {
+            float y = transformSample((float)p[i] / 32768.0f, _ratio, ringStep);
+            float v = y * 32767.0f;
+            if (v > 32767.0f) { v = 32767.0f; }
+            if (v < -32768.0f) { v = -32768.0f; }
+            p[i] = (int16_t)v;
+        }
+    }
+
+private:
+    static constexpr int kOrder = 24;
+    static constexpr int kFrame = 1024;
+    static constexpr int kHop = 256;
+    static constexpr float kGamma = 0.995f;     // bandwidth expansion (pole damping)
+    static constexpr float kPreemph = 0.95f;    // analysis pre-emphasis / output de-emphasis
+    static constexpr int kRingSize = 8192;
+    static constexpr float kGrain = 1024.0f;
+
+    float transformSample(float x0, float ratio, float ringStep) {
+        float y = (ratio == 1.0f) ? x0 : formantStep(x0, ratio);
+        if (ringStep > 0.0f) {
+            y *= std::cos(ringModPhase);
+            ringModPhase += ringStep;
+            if (ringModPhase > 2.0f * (float)M_PI) { ringModPhase -= 2.0f * (float)M_PI; }
+        }
+        if (y > 1.0f) { y = 1.0f; }
+        if (y < -1.0f) { y = -1.0f; }
+        return y;
+    }
+
+    float formantStep(float x0, float ratio) {
+        const float xp = x0 - kPreemph * prevIn;
+        prevIn = x0;
+
+        win[wpos] = xp;
+        wpos++;
+        if (wpos >= kFrame) { wpos = 0; }
+        if (filled < kFrame) { filled++; }
+
+        if (cnt % kHop == 0 && filled >= kFrame) { updateLPC(); }
+        cnt++;
+
+        float e = xp;
+        for (int k = 0; k < kOrder; k++) { e -= pred[k] * xh[k]; }
+
+        const float es = granStep(e, ratio);
+
+        float y = es;
+        for (int k = 0; k < kOrder; k++) { y += pred[k] * yh[k]; }
+
+        if (!std::isfinite(y) || std::fabs(y) > 8.0f) {
+            for (int k = 0; k < kOrder; k++) { yh[k] = 0.0f; }
+            y = es;
+        }
+
+        int k = kOrder - 1;
+        while (k > 0) { xh[k] = xh[k - 1]; yh[k] = yh[k - 1]; k--; }
+        xh[0] = xp;
+        yh[0] = y;
+
+        deemph = y + kPreemph * deemph;
+        float yo = deemph;
+
+        inEnergy = 0.999f * inEnergy + 0.001f * x0 * x0;
+        outEnergy = 0.999f * outEnergy + 0.001f * yo * yo;
+        float gain = std::sqrt((inEnergy + 1e-9f) / (outEnergy + 1e-9f));
+        if (gain > 4.0f) { gain = 4.0f; }
+        yo *= gain;
+
+        if (yo > 1.0f) { yo = 1.0f; }
+        if (yo < -1.0f) { yo = -1.0f; }
+        return yo;
+    }
+
+    void updateLPC() {
+        for (int i = 0; i < kFrame; i++) { scratch[i] = win[(wpos + i) % kFrame] * hann[i]; }
+        for (int lag = 0; lag <= kOrder; lag++) {
+            float acc = 0.0f;
+            int i = lag;
+            while (i < kFrame) { acc += scratch[i] * scratch[i - lag]; i++; }
+            autoc[lag] = acc;
+        }
+        if (autoc[0] <= 1e-9f) { for (int k = 0; k < kOrder; k++) { pred[k] = 0.0f; } return; }
+        autoc[0] *= 1.0002f;   // white-noise floor regularisation
+
+        std::vector<float> p;
+        if (!levinson(autoc, kOrder, p)) { for (int k = 0; k < kOrder; k++) { pred[k] = 0.0f; } return; }
+        float g = 1.0f;
+        for (int k = 0; k < kOrder; k++) { g *= kGamma; pred[k] = p[k] * g; }
+    }
+
+    bool levinson(const std::vector<float> &r, int ord, std::vector<float> &out) {
+        std::vector<float> a(ord + 1, 0.0f);
+        float e = r[0];
+        if (e <= 0.0f) { return false; }
+        for (int i = 1; i <= ord; i++) {
+            float acc = r[i];
+            for (int j = 1; j < i; j++) { acc += a[j] * r[i - j]; }
+            const float k = -acc / e;
+            if (!std::isfinite(k) || std::fabs(k) >= 0.999f) { return false; }
+            std::vector<float> na = a;
+            for (int j = 1; j < i; j++) { na[j] = a[j] + k * a[i - j]; }
+            na[i] = k;
+            a = na;
+            e *= (1.0f - k * k);
+            if (e <= 0.0f) { return false; }
+        }
+        out.assign(ord, 0.0f);
+        for (int k = 1; k <= ord; k++) { out[k - 1] = -a[k]; }
+        return true;
+    }
+
+    float granStep(float x, float ratio) {
+        const int n = kRingSize;
+        const float g = kGrain;
+        const float half = g * 0.5f;
+        ring[writeIndex] = x;
+
+        float y;
+        if (ratio == 1.0f) {
+            y = x;
+        } else {
+            const float p1 = phase;
+            float p2 = phase + half;
+            if (p2 >= g) { p2 -= g; }
+            const float r1 = readRing((float)writeIndex - p1, n);
+            const float r2 = readRing((float)writeIndex - p2, n);
+            float w1 = std::fabs(half - p1) / half;
+            if (w1 < 0.0f) { w1 = 0.0f; }
+            if (w1 > 1.0f) { w1 = 1.0f; }
+            y = r1 * w1 + r2 * (1.0f - w1);
+        }
+
+        writeIndex++;
+        if (writeIndex >= n) { writeIndex = 0; }
+        phase += (1.0f - ratio);
+        while (phase >= g) { phase -= g; }
+        while (phase < 0.0f) { phase += g; }
+        return y;
+    }
+
+    float readRing(float pos, int n) {
+        float fp = pos;
+        const float nf = (float)n;
+        while (fp < 0.0f) { fp += nf; }
+        while (fp >= nf) { fp -= nf; }
+        const int i0 = (int)fp;
+        const float frac = fp - (float)i0;
+        const int i1 = (i0 + 1) % n;
+        return ring[i0] * (1.0f - frac) + ring[i1] * frac;
+    }
+
+    // Granular residual pitch-shifter state.
+    std::vector<float> ring;
+    int writeIndex = 0;
+    float phase = 0.0f;
+
+    // LPC analysis / filter state.
+    std::vector<float> win;
+    int wpos = 0;
+    int filled = 0;
+    std::vector<float> xh;       // inverse-filter input history
+    std::vector<float> yh;       // synthesis-filter output history
+    std::vector<float> pred;     // LPC predictor coefficients
+    std::vector<float> hann;
+    std::vector<float> scratch;
+    std::vector<float> autoc;
+    int cnt = 0;
+    float prevIn = 0.0f;
+    float deemph = 0.0f;
+    float inEnergy = 1e-6f;
+    float outEnergy = 1e-6f;
+
+    // Ring modulation phase (robot).
+    float ringModPhase = 0.0f;
+
+    // Active configuration (refreshed from UserDefaults).
+    bool _enabled = false;
+    float _ratio = 1.0f;
+    float _ringHz = 0.0f;
+};
+
+#endif /* AorusCallVoiceTwin_h */
+"""
+
+
+def patch_voice_twin_calls(tg: Path) -> None:
+    """Apply Voice Twin to OUTGOING audio/video CALL audio (tgcalls / WebRTC).
+
+    Telegram calls capture the microphone through the native iOS audio device
+    module. `WrappedAudioDeviceModuleIOS` registers itself as that module's audio
+    callback, so the captured PCM lands in `RecordedDataIsAvailable(...)` right
+    before it is forwarded to the WebRTC voice engine for encoding. We transform
+    the samples in place there — the encoder then transmits the modified voice.
+
+    The DSP is a self-contained C++ port of the Swift Voice Twin (written to a new
+    header alongside the .mm). It has no module dependencies, so TgVoipWebrtc gains
+    no new link edges and there is zero risk of a dependency cycle. UserDefaults is
+    read (throttled) on the ObjC side; the same flat keys the settings screen
+    writes (`aorusgram_voice_twin_enabled` / `aorusgram_voice_twin_preset`) drive
+    it, identical to the voice-message and video-note paths.
+
+    iOS delivers mono Int16 PCM after the hardware voice-processing AEC/NS, so the
+    transform sees clean near-end voice; any other layout is a safe no-op.
+    """
+    mm = tg / "submodules/TgVoipWebrtc/Sources/OngoingCallThreadLocalContext.mm"
+    if not mm.is_file():
+        print("VoiceTwinCalls: OngoingCallThreadLocalContext.mm not found, skip")
+        return
+    t = mm.read_text(encoding="utf-8")
+    sentinel = "// AorusGram: voice twin (calls)"
+    if sentinel in t:
+        print("VoiceTwinCalls: already injected")
+        return
+
+    # 1) Write the self-contained DSP header next to the .mm.
+    header = tg / "submodules/TgVoipWebrtc/Sources/AorusCallVoiceTwin.h"
+    header.write_text(_AORUS_CALL_VOICE_TWIN_HEADER, encoding="utf-8")
+    print("VoiceTwinCalls: wrote AorusCallVoiceTwin.h")
+
+    # 2) Include the header (before the class that holds the DSP instance).
+    inc_anchor = "#import <TdBinding/TdBinding.h>\n"
+    if inc_anchor in t:
+        t = t.replace(inc_anchor, inc_anchor + '#import "AorusCallVoiceTwin.h"\n', 1)
+    else:
+        print("VoiceTwinCalls: WARNING — include anchor not found")
+        return
+
+    # 3) Add the per-capture DSP instance + refresh counter to WrappedAudioDeviceModuleIOS.
+    mem_anchor = "    std::vector<int16_t> _mixAudioSamples;\n};"
+    if mem_anchor in t:
+        t = t.replace(
+            mem_anchor,
+            "    std::vector<int16_t> _mixAudioSamples;\n"
+            "    " + sentinel + " — per-capture DSP state\n"
+            "    AorusCallVoiceTwin _aorusVoiceTwin;\n"
+            "    int _aorusVoiceTwinRefresh = 0;\n};",
+            1,
+        )
+    else:
+        print("VoiceTwinCalls: WARNING — member anchor not found")
+        return
+
+    # 4) Transform the mic PCM in place at the top of both RecordedDataIsAvailable
+    #    overloads (only one is invoked by the ADM per build; patching both is safe).
+    inject = (
+        "    ) override {\n"
+        "        " + sentinel + "\n"
+        "        if ((_aorusVoiceTwinRefresh++ % 50) == 0) { _aorusVoiceTwin.refreshParams(); }\n"
+        "        if (_aorusVoiceTwin.enabled()) {\n"
+        "            _aorusVoiceTwin.process(const_cast<void *>(audioSamples), nSamples, nBytesPerSample, nChannels, samplesPerSec);\n"
+        "        }\n"
+        "        _mutex.Lock();"
+    )
+    anchor1 = "        uint32_t& newMicLevel\n    ) override {\n        _mutex.Lock();"
+    anchor2 = "        absl::optional<int64_t> estimatedCaptureTimeNS\n    ) override {\n        _mutex.Lock();"
+    n = 0
+    if anchor1 in t:
+        t = t.replace(anchor1, "        uint32_t& newMicLevel\n" + inject, 1); n += 1
+    if anchor2 in t:
+        t = t.replace(anchor2, "        absl::optional<int64_t> estimatedCaptureTimeNS\n" + inject, 1); n += 1
+    if n == 0:
+        print("VoiceTwinCalls: WARNING — no RecordedDataIsAvailable anchor matched")
+        return
+
+    mm.write_text(t, encoding="utf-8")
+    print(f"VoiceTwinCalls: hooked RecordedDataIsAvailable ({n}/2 overloads)")
+
+
 def patch_aorus_controller_keys(tg: Path) -> None:
     """Replace semantic 'aorusgram_*' UserDefaults keys in AorusGramController with opaque UUIDs.
 
@@ -5256,6 +5594,7 @@ def main() -> None:
     patch_ghost_mode_stealth_stories(tg)
     patch_voice_twin_recorder(tg)
     patch_voice_twin_video_notes(tg)
+    patch_voice_twin_calls(tg)
     patch_aorus_code_encode(tg)
     patch_chat_context_menu_translate_transcribe(tg)
     patch_incoming_message_hook(tg)
