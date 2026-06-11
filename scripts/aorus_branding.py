@@ -5141,39 +5141,34 @@ private:
         for (int i = 0; i < kFrame; i++) { scratch[i] = win[(wpos + i) % kFrame] * hann[i]; }
         for (int lag = 0; lag <= kOrder; lag++) {
             float acc = 0.0f;
-            int i = lag;
-            while (i < kFrame) { acc += scratch[i] * scratch[i - lag]; i++; }
+            for (int i = lag; i < kFrame; i++) { acc += scratch[i] * scratch[i - lag]; }
             autoc[lag] = acc;
         }
-        if (autoc[0] <= 1e-9f) { for (int k = 0; k < kOrder; k++) { pred[k] = 0.0f; } return; }
+        if (autoc[0] <= 1e-9f) { zeroPred(); return; }
         autoc[0] *= 1.0002f;   // white-noise floor regularisation
 
-        std::vector<float> p;
-        if (!levinson(autoc, kOrder, p)) { for (int k = 0; k < kOrder; k++) { pred[k] = 0.0f; } return; }
-        float g = 1.0f;
-        for (int k = 0; k < kOrder; k++) { g *= kGamma; pred[k] = p[k] * g; }
-    }
-
-    bool levinson(const std::vector<float> &r, int ord, std::vector<float> &out) {
-        std::vector<float> a(ord + 1, 0.0f);
-        float e = r[0];
-        if (e <= 0.0f) { return false; }
-        for (int i = 1; i <= ord; i++) {
-            float acc = r[i];
-            for (int j = 1; j < i; j++) { acc += a[j] * r[i - j]; }
+        // Levinson-Durbin on fixed-size stack arrays (kOrder is a compile-time
+        // constant) — no heap traffic on the real-time call-capture thread.
+        float a[kOrder + 1] = { 0.0f };
+        float e = autoc[0];
+        for (int i = 1; i <= kOrder; i++) {
+            float acc = autoc[i];
+            for (int j = 1; j < i; j++) { acc += a[j] * autoc[i - j]; }
             const float k = -acc / e;
-            if (!std::isfinite(k) || std::fabs(k) >= 0.999f) { return false; }
-            std::vector<float> na = a;
+            if (!std::isfinite(k) || std::fabs(k) >= 0.999f) { zeroPred(); return; }
+            float na[kOrder + 1];
             for (int j = 1; j < i; j++) { na[j] = a[j] + k * a[i - j]; }
             na[i] = k;
-            a = na;
+            for (int j = 1; j <= i; j++) { a[j] = na[j]; }
             e *= (1.0f - k * k);
-            if (e <= 0.0f) { return false; }
+            if (e <= 0.0f) { zeroPred(); return; }
         }
-        out.assign(ord, 0.0f);
-        for (int k = 1; k <= ord; k++) { out[k - 1] = -a[k]; }
-        return true;
+        // Predictor coefficients (-a[k+1]) with bandwidth expansion (pole damping).
+        float g = 1.0f;
+        for (int k = 0; k < kOrder; k++) { g *= kGamma; pred[k] = (-a[k + 1]) * g; }
     }
+
+    void zeroPred() { for (int k = 0; k < kOrder; k++) { pred[k] = 0.0f; } }
 
     float granStep(float x, float ratio) {
         const int n = kRingSize;
