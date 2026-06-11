@@ -5041,7 +5041,7 @@ public:
         NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
         _enabled = [d boolForKey:@"aorusgram_voice_twin_enabled"];
         NSString *preset = [d stringForKey:@"aorusgram_voice_twin_preset"];
-        float semis = -7.0f;   // anonymous (default): deep, identity-masking
+        float semis = -5.0f;   // anonymous (default): deep, identity-masking
         float ringHz = 0.0f;
         if ([preset isEqualToString:@"male"]) { semis = -3.0f; }
         else if ([preset isEqualToString:@"female"]) { semis = 3.5f; }
