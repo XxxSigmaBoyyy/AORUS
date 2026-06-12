@@ -5785,8 +5785,11 @@ private func aorusCodeRenderTransform(rawText: String, entities: [MessageTextEnt
         return nil
     }
     // Base-4 alphabet — must stay byte-for-byte identical to AorusStealthCodec.
-    let alphabet: [Character] = ["\u{200B}", "\u{200C}", "\u{2060}", "\u{FEFF}"]
-    let payload = Array(rawText[openRange.upperBound ..< closeRange.lowerBound])
+    // Unicode.Scalar (code points), NOT Character: U+200C is GCB=Extend and
+    // clusters with the previous code point under grapheme iteration, which
+    // corrupts the 4-symbol grouping for some payloads. Scalars are immune.
+    let alphabet: [Unicode.Scalar] = ["\u{200B}", "\u{200C}", "\u{2060}", "\u{FEFF}"]
+    let payload = Array(rawText[openRange.upperBound ..< closeRange.lowerBound].unicodeScalars)
     var bytes: [UInt8] = []
     var i = 0
     while i + 3 < payload.count {

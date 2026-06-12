@@ -26,12 +26,16 @@ public final class AorusStealthCodec {
         set { UserDefaults.standard.set(newValue, forKey: "aorusgram_aorus_code_enabled") }
     }
 
-    // Four data characters — all guaranteed zero-width / no-glyph on iOS.
+    // Four data code points — all guaranteed zero-width / no-glyph on iOS.
+    // NOTE: typed as Unicode.Scalar (code points), NOT Character (grapheme
+    // clusters): U+200C has Grapheme_Cluster_Break = Extend and would merge
+    // with the preceding code point under Character iteration, corrupting the
+    // 4-symbol grouping. Scalar iteration is immune to that.
     //   index 0 → ZERO WIDTH SPACE
     //   index 1 → ZERO WIDTH NON-JOINER
     //   index 2 → WORD JOINER
     //   index 3 → ZERO WIDTH NO-BREAK SPACE
-    private let alphabet: [Character] = ["\u{200B}", "\u{200C}", "\u{2060}", "\u{FEFF}"]
+    private let alphabet: [Unicode.Scalar] = ["\u{200B}", "\u{200C}", "\u{2060}", "\u{FEFF}"]
 
     // Magic markers — invisible math operators, distinct from the data alphabet.
     private let magicOpen:  String = "\u{2061}\u{2062}"   // FUNCTION APPLICATION + INVISIBLE TIMES
@@ -43,15 +47,16 @@ public final class AorusStealthCodec {
     /// Pass empty string for `cover` to send a purely invisible message.
     public func encode(cover: String, secret: String) -> String {
         guard !secret.isEmpty else { return cover }
-        var hidden = magicOpen
+        var hidden = String.UnicodeScalarView()
+        hidden.append(contentsOf: magicOpen.unicodeScalars)
         for byte in secret.utf8 {
             hidden.append(alphabet[Int((byte >> 6) & 0x3)])
             hidden.append(alphabet[Int((byte >> 4) & 0x3)])
             hidden.append(alphabet[Int((byte >> 2) & 0x3)])
             hidden.append(alphabet[Int(byte & 0x3)])
         }
-        hidden += magicClose
-        return cover + hidden
+        hidden.append(contentsOf: magicClose.unicodeScalars)
+        return cover + String(hidden)
     }
 
     // MARK: - Decode
@@ -62,7 +67,7 @@ public final class AorusStealthCodec {
               let closeRange = text.range(of: magicClose),
               openRange.upperBound <= closeRange.lowerBound else { return nil }
 
-        let payload = Array(text[openRange.upperBound..<closeRange.lowerBound])
+        let payload = Array(text[openRange.upperBound..<closeRange.lowerBound].unicodeScalars)
         var bytes: [UInt8] = []
         var i = 0
         while i + 3 < payload.count {
