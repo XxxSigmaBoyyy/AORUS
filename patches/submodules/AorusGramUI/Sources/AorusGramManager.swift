@@ -20,6 +20,9 @@ public final class AorusGramManager {
     public var antiSpamEnabled: Bool   = true  { didSet { save() } }
     public var downloadAccel: Bool     = true  { didSet { save() } }
     public var glassUI: Bool           = true  { didSet { save() } }
+    public var amoledMode: Bool        = false { didSet { save() } }
+    public var hideCallsTab: Bool      = false { didSet { save() } }
+    public var hideContactsTab: Bool   = false { didSet { save() } }
     public var voiceTranscription: Bool = false { didSet { save() } }
     public var chatSummary: Bool       = false { didSet { save() } }
     public var translator: Bool        = false { didSet { save() } }
@@ -65,6 +68,9 @@ public final class AorusGramManager {
         antiSpamEnabled     = d["antiSpamEnabled"]     as? Bool ?? true
         downloadAccel       = d["downloadAccel"]       as? Bool ?? true
         glassUI             = d["glassUI"]             as? Bool ?? true
+        amoledMode          = d["amoledMode"]          as? Bool ?? false
+        hideCallsTab        = d["hideCallsTab"]        as? Bool ?? false
+        hideContactsTab     = d["hideContactsTab"]     as? Bool ?? false
         voiceTranscription  = d["voiceTranscription"]  as? Bool ?? false
         chatSummary         = d["chatSummary"]         as? Bool ?? false
         translator          = d["translator"]          as? Bool ?? false
@@ -90,6 +96,9 @@ public final class AorusGramManager {
             "antiSpamEnabled":     antiSpamEnabled,
             "downloadAccel":       downloadAccel,
             "glassUI":             glassUI,
+            "amoledMode":          amoledMode,
+            "hideCallsTab":        hideCallsTab,
+            "hideContactsTab":     hideContactsTab,
             "voiceTranscription":  voiceTranscription,
             "chatSummary":         chatSummary,
             "translator":          translator,
@@ -117,6 +126,9 @@ public final class AorusGramManager {
         ud.set(antiSpamEnabled,     forKey: "aorusgram_feature_anti_spam")
         ud.set(downloadAccel,       forKey: "aorusgram_feature_download_accel")
         ud.set(glassUI,             forKey: "aorusgram_feature_glass_ui")
+        ud.set(amoledMode,          forKey: "aorusgram_amoled")
+        ud.set(hideCallsTab,        forKey: "aorusgram_hide_calls_tab")
+        ud.set(hideContactsTab,     forKey: "aorusgram_hide_contacts_tab")
         ud.set(streaks,             forKey: "aorusgram_feature_streaks")
         ud.set(siriShortcuts,       forKey: "aorusgram_feature_siri_shortcuts")
         ud.set(editLocally,         forKey: "aorusgram_feature_edit_locally")

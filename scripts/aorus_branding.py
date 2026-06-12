@@ -5327,6 +5327,257 @@ def patch_voice_twin_calls(tg: Path) -> None:
     print(f"VoiceTwinCalls: hooked RecordedDataIsAvailable ({n}/2 overloads)")
 
 
+def patch_bypass_story_screenshot(tg: Path) -> None:
+    """Always-on (stock, no UI entry) bypass of story screenshot protection.
+
+    A protected story (`isForwardingDisabled`) feeds `captureProtected:` /
+    `isCaptureProtected:` into the story media views. Those flags both blank the
+    frame under a secure-text-entry layer (so screenshots come out black) and
+    overlay the "Screenshot Blocked" banner. Forcing them to false at every story
+    render site removes the black capture and the banner. The forward/download
+    button logic reads `isForwardingDisabled` separately and is left untouched.
+    """
+    f = tg / "submodules/TelegramUI/Components/Stories/StoryContainerScreen/Sources/StoryItemContentComponent.swift"
+    if not f.is_file():
+        print("StoryScreenshot: StoryItemContentComponent.swift not found, skip")
+        return
+    t = f.read_text(encoding="utf-8")
+    if "AorusGram: story screenshot bypass" in t:
+        print("StoryScreenshot: already patched")
+        return
+    n = 0
+    for key in ("captureProtected: component.item.isForwardingDisabled,",
+                "isCaptureProtected: component.item.isForwardingDisabled,"):
+        cnt = t.count(key)
+        if cnt:
+            repl = key.split(":", 1)[0] + ": false, // AorusGram: story screenshot bypass"
+            t = t.replace(key, repl)
+            n += cnt
+    if n:
+        f.write_text(t, encoding="utf-8")
+        print(f"StoryScreenshot: neutralised capture protection at {n} story render site(s)")
+    else:
+        print("StoryScreenshot: WARNING — no capture-protection anchors found")
+
+
+# AMOLED helper injected into TelegramPresentationData. Forces true-black surfaces
+# on dark themes only; light themes and the chat wallpaper on light themes are
+# left untouched. Reads the flat key the settings screen writes.
+_AORUS_AMOLED_HELPER = (
+    "// AorusGram: AMOLED dark mode — force true-black surfaces on dark themes only.\n"
+    "private func aorusAmoledEnabled() -> Bool {\n"
+    "    return UserDefaults.standard.bool(forKey: \"aorusgram_amoled\")\n"
+    "}\n"
+    "\n"
+    "func aorusApplyAmoledTheme(_ theme: PresentationTheme) -> PresentationTheme {\n"
+    "    guard aorusAmoledEnabled(), theme.overallDarkAppearance else { return theme }\n"
+    "    let black = UIColor(rgb: 0x000000)\n"
+    "    let navigationBar = theme.rootController.navigationBar.withUpdated(blurredBackgroundColor: black, opaqueBackgroundColor: black)\n"
+    "    let tabBar = theme.rootController.tabBar.withUpdated(backgroundColor: black)\n"
+    "    let navigationSearchBar = theme.rootController.navigationSearchBar.withUpdated(backgroundColor: black)\n"
+    "    let rootController = theme.rootController.withUpdated(tabBar: tabBar, navigationBar: navigationBar, navigationSearchBar: navigationSearchBar)\n"
+    "    let list = theme.list.withUpdated(blocksBackgroundColor: black, modalBlocksBackgroundColor: black, plainBackgroundColor: black, modalPlainBackgroundColor: black, itemBlocksBackgroundColor: black, itemModalBlocksBackgroundColor: black)\n"
+    "    let chatList = theme.chatList.withUpdated(backgroundColor: black, itemBackgroundColor: black, pinnedItemBackgroundColor: black)\n"
+    "    let inputPanel = theme.chat.inputPanel.withUpdated(panelBackgroundColor: black, panelBackgroundColorNoWallpaper: black)\n"
+    "    let chat = theme.chat.withUpdated(defaultWallpaper: .color(0x000000), inputPanel: inputPanel)\n"
+    "    return PresentationTheme(name: theme.name, index: theme.index, referenceTheme: theme.referenceTheme, overallDarkAppearance: theme.overallDarkAppearance, intro: theme.intro, passcode: theme.passcode, rootController: rootController, list: list, chatList: chatList, chat: chat, actionSheet: theme.actionSheet, contextMenu: theme.contextMenu, inAppNotification: theme.inAppNotification, chart: theme.chart, preview: theme.preview)\n"
+    "}\n"
+    "\n"
+    "func aorusAmoledWallpaper(_ wallpaper: TelegramWallpaper, dark: Bool) -> TelegramWallpaper {\n"
+    "    if aorusAmoledEnabled() && dark {\n"
+    "        return .color(0x000000)\n"
+    "    }\n"
+    "    return wallpaper\n"
+    "}\n"
+    "\n"
+)
+
+
+def patch_amoled_theme(tg: Path) -> None:
+    """AMOLED dark mode — toggled in AorusGram → Interface.
+
+    Injects a self-contained transform into TelegramPresentationData and applies
+    it at the two points where the final PresentationData is built (the initial
+    snapshot and the live signal). When the flag is on and the resolved theme is
+    dark, every elevated surface (nav bar, tab bar, search bar, list blocks/items,
+    chat-list rows, input panel) and the chat wallpaper are forced to pure black;
+    the built-in Night theme already uses black for the plain backgrounds. Light
+    themes are returned unchanged. Live updates are driven by the settings-change
+    observer (patch_settings_live_refresh), which re-commits the theme settings.
+    """
+    f = tg / "submodules/TelegramPresentationData/Sources/PresentationData.swift"
+    if not f.is_file():
+        print("Amoled: PresentationData.swift not found, skip")
+        return
+    t = f.read_text(encoding="utf-8")
+    if "aorusApplyAmoledTheme" in t:
+        print("Amoled: already patched")
+        return
+
+    helper_anchor = "public func currentPresentationDataAndSettings("
+    if helper_anchor not in t:
+        print("Amoled: WARNING — helper anchor not found")
+        return
+    t = t.replace(helper_anchor, _AORUS_AMOLED_HELPER + helper_anchor, 1)
+
+    # Apply to the initial snapshot (currentPresentationDataAndSettings).
+    init_old = "theme: theme, autoNightModeTriggered: autoNightModeTriggered, chatWallpaper: effectiveChatWallpaper,"
+    init_new = ("theme: aorusApplyAmoledTheme(theme), autoNightModeTriggered: autoNightModeTriggered, "
+                "chatWallpaper: aorusAmoledWallpaper(effectiveChatWallpaper, dark: theme.overallDarkAppearance),")
+    # Apply to the live signal (updatedPresentationData).
+    live_old = "theme: themeValue, autoNightModeTriggered: autoNightModeTriggered, chatWallpaper: effectiveChatWallpaper,"
+    live_new = ("theme: aorusApplyAmoledTheme(themeValue), autoNightModeTriggered: autoNightModeTriggered, "
+                "chatWallpaper: aorusAmoledWallpaper(effectiveChatWallpaper, dark: themeValue.overallDarkAppearance),")
+    n = 0
+    if init_old in t:
+        t = t.replace(init_old, init_new, 1); n += 1
+    if live_old in t:
+        t = t.replace(live_old, live_new, 1); n += 1
+    if n == 2:
+        f.write_text(t, encoding="utf-8")
+        print("Amoled: injected helper and applied at initial + live PresentationData")
+    else:
+        print(f"Amoled: WARNING — applied {n}/2 PresentationData sites")
+
+
+def patch_hide_tabs(tg: Path) -> None:
+    """Hide the Contacts / Calls tabs in the bottom tab bar (AorusGram → Interface).
+
+    `TelegramRootController` builds the tab list in addRootControllers (initial)
+    and updateRootControllers (rebuild). Gate the Contacts and Calls appends on the
+    flat keys the settings screen writes. The chats tab stays at `count - 2` and
+    settings at `count - 1` regardless of which optional tabs are present, so the
+    selected-index arithmetic is unaffected. The live observer rebuilds the bar
+    when either flag changes.
+    """
+    f = tg / "submodules/TelegramUI/Sources/TelegramRootController.swift"
+    if not f.is_file():
+        print("HideTabs: TelegramRootController.swift not found, skip")
+        return
+    t = f.read_text(encoding="utf-8")
+    if "AorusGram: hide contacts tab" in t:
+        print("HideTabs: already patched")
+        return
+
+    edits = [
+        # addRootControllers — Contacts
+        ("        controllers.append(contactsController)\n",
+         "        if !UserDefaults.standard.bool(forKey: \"aorusgram_hide_contacts_tab\") { // AorusGram: hide contacts tab\n"
+         "            controllers.append(contactsController)\n"
+         "        }\n"),
+        # addRootControllers — Calls
+        ("        if showCallsTab {\n            controllers.append(callListController)\n        }",
+         "        if showCallsTab && !UserDefaults.standard.bool(forKey: \"aorusgram_hide_calls_tab\") { // AorusGram: hide calls tab\n"
+         "            controllers.append(callListController)\n        }"),
+        # updateRootControllers — Contacts
+        ("        controllers.append(self.contactsController!)\n",
+         "        if !UserDefaults.standard.bool(forKey: \"aorusgram_hide_contacts_tab\") { // AorusGram: hide contacts tab\n"
+         "            controllers.append(self.contactsController!)\n"
+         "        }\n"),
+        # updateRootControllers — Calls
+        ("        if showCallsTab {\n            controllers.append(self.callListController!)\n        }",
+         "        if showCallsTab && !UserDefaults.standard.bool(forKey: \"aorusgram_hide_calls_tab\") { // AorusGram: hide calls tab\n"
+         "            controllers.append(self.callListController!)\n        }"),
+    ]
+    n = 0
+    for old, new in edits:
+        if old in t:
+            t = t.replace(old, new, 1); n += 1
+    if n == len(edits):
+        f.write_text(t, encoding="utf-8")
+        print(f"HideTabs: gated Contacts/Calls appends ({n} sites)")
+    else:
+        print(f"HideTabs: WARNING — matched {n}/{len(edits)} anchors")
+
+
+def patch_settings_live_refresh(tg: Path) -> None:
+    """Apply tab-visibility + AMOLED changes live, without an app restart.
+
+    AorusGramManager posts `aorusgram_settings_changed` on every save. Observe it
+    in AuthorizedApplicationContext and, only when a relevant flag actually
+    changed (tracked against cached values to avoid disturbing the UI on unrelated
+    toggles), rebuild the tab bar and/or re-commit the theme settings (which makes
+    the presentation-data signal re-emit, re-running the AMOLED transform).
+    """
+    f = tg / "submodules/TelegramUI/Sources/ApplicationContext.swift"
+    if not f.is_file():
+        print("SettingsLiveRefresh: ApplicationContext.swift not found, skip")
+        return
+    t = f.read_text(encoding="utf-8")
+    if "AorusGram: live-apply" in t:
+        print("SettingsLiveRefresh: already patched")
+        return
+
+    # 1) Stored properties (observer token + cached flag values).
+    prop_anchor = "    private var showCallsTabDisposable: Disposable?\n"
+    if prop_anchor not in t:
+        print("SettingsLiveRefresh: WARNING — property anchor not found")
+        return
+    t = t.replace(
+        prop_anchor,
+        prop_anchor
+        + "    private var aorusSettingsObserver: NSObjectProtocol?\n"
+        + "    private var aorusLastHideCalls = UserDefaults.standard.bool(forKey: \"aorusgram_hide_calls_tab\")\n"
+        + "    private var aorusLastHideContacts = UserDefaults.standard.bool(forKey: \"aorusgram_hide_contacts_tab\")\n"
+        + "    private var aorusLastAmoled = UserDefaults.standard.bool(forKey: \"aorusgram_amoled\")\n",
+        1,
+    )
+
+    # 2) Register the observer right after the showCallsTab disposable is set up.
+    init_anchor = (
+        "        self.showCallsTabDisposable = (showCallsTabSignal |> deliverOnMainQueue).start(next: { [weak self] value in\n"
+        "            if let strongSelf = self {\n"
+        "                if strongSelf.showCallsTab != value {\n"
+        "                    strongSelf.showCallsTab = value\n"
+        "                    strongSelf.rootController.updateRootControllers(showCallsTab: value)\n"
+        "                }\n"
+        "            }\n"
+        "        })\n"
+    )
+    if init_anchor not in t:
+        print("SettingsLiveRefresh: WARNING — init anchor not found")
+        return
+    observer = (
+        "        // AorusGram: live-apply tab visibility + AMOLED when our settings change.\n"
+        "        self.aorusSettingsObserver = NotificationCenter.default.addObserver(forName: Notification.Name(\"aorusgram_settings_changed\"), object: nil, queue: OperationQueue.main) { [weak self] _ in\n"
+        "            guard let strongSelf = self else {\n"
+        "                return\n"
+        "            }\n"
+        "            let hideCalls = UserDefaults.standard.bool(forKey: \"aorusgram_hide_calls_tab\")\n"
+        "            let hideContacts = UserDefaults.standard.bool(forKey: \"aorusgram_hide_contacts_tab\")\n"
+        "            let amoled = UserDefaults.standard.bool(forKey: \"aorusgram_amoled\")\n"
+        "            if hideCalls != strongSelf.aorusLastHideCalls || hideContacts != strongSelf.aorusLastHideContacts {\n"
+        "                strongSelf.aorusLastHideCalls = hideCalls\n"
+        "                strongSelf.aorusLastHideContacts = hideContacts\n"
+        "                strongSelf.rootController.updateRootControllers(showCallsTab: strongSelf.showCallsTab)\n"
+        "            }\n"
+        "            if amoled != strongSelf.aorusLastAmoled {\n"
+        "                strongSelf.aorusLastAmoled = amoled\n"
+        "                let _ = updatePresentationThemeSettingsInteractively(accountManager: strongSelf.context.sharedContext.accountManager, { $0 }).start()\n"
+        "            }\n"
+        "        }\n"
+    )
+    t = t.replace(init_anchor, init_anchor + observer, 1)
+
+    # 3) Remove the observer in deinit.
+    deinit_anchor = "        self.enablePostboxTransactionsDiposable?.dispose()\n"
+    if deinit_anchor in t:
+        t = t.replace(
+            deinit_anchor,
+            deinit_anchor
+            + "        if let aorusSettingsObserver = self.aorusSettingsObserver { // AorusGram\n"
+            + "            NotificationCenter.default.removeObserver(aorusSettingsObserver)\n"
+            + "        }\n",
+            1,
+        )
+    else:
+        print("SettingsLiveRefresh: WARNING — deinit anchor not found")
+        return
+
+    f.write_text(t, encoding="utf-8")
+    print("SettingsLiveRefresh: observer wired (tabs + AMOLED live refresh)")
+
+
 def patch_aorus_controller_keys(tg: Path) -> None:
     """Replace semantic 'aorusgram_*' UserDefaults keys in AorusGramController with opaque UUIDs.
 
@@ -5614,6 +5865,10 @@ def main() -> None:
     patch_bypass_copy_protection(tg)
     patch_bypass_channel_copy_protection(tg)
     patch_bypass_story_download(tg)
+    patch_bypass_story_screenshot(tg)
+    patch_amoled_theme(tg)
+    patch_hide_tabs(tg)
+    patch_settings_live_refresh(tg)
     patch_save_view_once(tg)
     patch_view_once_capture(tg)
     patch_view_once_save_button(tg)

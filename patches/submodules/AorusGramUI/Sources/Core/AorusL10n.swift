@@ -93,6 +93,9 @@ public struct AorusL10n {
     }
     public var glassUI: String { t("Glass UI", "Glass UI") }
     public var siriShortcuts: String { t("Siri Shortcuts", "Siri Shortcuts") }
+    public var amoledMode: String { t("AMOLED интерфейс", "AMOLED Interface") }
+    public var hideCallsTab: String { t("Скрыть «Звонки»", "Hide \"Calls\"") }
+    public var hideContactsTab: String { t("Скрыть «Контакты»", "Hide \"Contacts\"") }
     public var antiSpoofDeleted: String { t("Анти-спуф удалёнок", "Anti-Spoof Deletions") }
     public var antiSpoofOnline: String { t("Анти-спуф онлайна", "Anti-Spoof Online") }
     public var accountBackup: String { t("Бэкап аккаунтов", "Account Backup") }

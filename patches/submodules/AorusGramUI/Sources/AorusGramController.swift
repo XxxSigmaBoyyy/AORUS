@@ -277,6 +277,9 @@ private struct AorusState: Equatable {
     var doubleTapCopy: Bool
     var tripleTapDelete: Bool
     var glassUI: Bool
+    var amoledMode: Bool
+    var hideCallsTab: Bool
+    var hideContactsTab: Bool
     var siriShortcuts: Bool
     var antiSpoofDeleted: Bool
     var antiSpoofOnline: Bool
@@ -340,6 +343,9 @@ private enum AorusEntry: ItemListNodeEntry {
 
     case uiHeader(PresentationTheme, String)
     case glassUI(PresentationTheme, String, Bool)
+    case amoledMode(PresentationTheme, String, Bool)
+    case hideCallsTab(PresentationTheme, String, Bool)
+    case hideContactsTab(PresentationTheme, String, Bool)
     case siriShortcuts(PresentationTheme, String, Bool)
 
     case editLocalHeader(PresentationTheme, String)
@@ -375,7 +381,7 @@ private enum AorusEntry: ItemListNodeEntry {
             return AorusSection.ai.rawValue
         case .perfHeader, .downloadAccel, .antiSpam, .cacheAutoClean, .cacheInterval:
             return AorusSection.performance.rawValue
-        case .uiHeader, .glassUI, .siriShortcuts:
+        case .uiHeader, .glassUI, .amoledMode, .hideCallsTab, .hideContactsTab, .siriShortcuts:
             return AorusSection.ui.rawValue
         case .editLocalHeader, .messagesDoubleCopy, .messagesTripleDelete, .editLocalEnabled:
             return AorusSection.editLocal.rawValue
@@ -414,25 +420,28 @@ private enum AorusEntry: ItemListNodeEntry {
         case .cacheInterval:        return 25
         case .uiHeader:             return 30
         case .glassUI:              return 31
-        case .siriShortcuts:        return 32
-        case .editLocalHeader:      return 33
-        case .messagesDoubleCopy:   return 34
-        case .messagesTripleDelete: return 35
-        case .editLocalEnabled:     return 36
-        case .deviceSpoofHeader:    return 37
-        case .deviceSpoof:          return 38
-        case .bypassHeader:         return 40
-        case .bypassSavePaid:       return 41
-        case .bypassSaveViewOnce:   return 42
-        case .bypassStoryDownload:  return 43
-        case .antiSpoofHeader:      return 50
-        case .antiSpoofDeleted:     return 51
-        case .antiSpoofOnline:      return 52
-        case .accountBackupHeader:  return 55
-        case .accountBackup:        return 56
-        case .aorusCodeHeader:      return 60
-        case .aorusCodeEnabled:     return 61
-        case .officialChannel:      return 70
+        case .amoledMode:           return 32
+        case .hideCallsTab:         return 33
+        case .hideContactsTab:      return 34
+        case .siriShortcuts:        return 35
+        case .editLocalHeader:      return 43
+        case .messagesDoubleCopy:   return 44
+        case .messagesTripleDelete: return 45
+        case .editLocalEnabled:     return 46
+        case .deviceSpoofHeader:    return 47
+        case .deviceSpoof:          return 48
+        case .bypassHeader:         return 50
+        case .bypassSavePaid:       return 51
+        case .bypassSaveViewOnce:   return 52
+        case .bypassStoryDownload:  return 53
+        case .antiSpoofHeader:      return 60
+        case .antiSpoofDeleted:     return 61
+        case .antiSpoofOnline:      return 62
+        case .accountBackupHeader:  return 65
+        case .accountBackup:        return 66
+        case .aorusCodeHeader:      return 70
+        case .aorusCodeEnabled:     return 71
+        case .officialChannel:      return 80
         }
     }
 
@@ -478,6 +487,12 @@ private enum AorusEntry: ItemListNodeEntry {
             if case let .uiHeader(rt, rs) = rhs { return lt === rt && ls == rs }
         case let .glassUI(lt, ls, lv):
             if case let .glassUI(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
+        case let .amoledMode(lt, ls, lv):
+            if case let .amoledMode(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
+        case let .hideCallsTab(lt, ls, lv):
+            if case let .hideCallsTab(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
+        case let .hideContactsTab(lt, ls, lv):
+            if case let .hideContactsTab(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
         case let .siriShortcuts(lt, ls, lv):
             if case let .siriShortcuts(rt, rs, rv) = rhs { return lt === rt && ls == rs && lv == rv }
         case let .editLocalHeader(lt, ls):
@@ -560,6 +575,12 @@ private enum AorusEntry: ItemListNodeEntry {
             return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: section)
         case let .glassUI(_, title, value):
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.glassUI, $0) })
+        case let .amoledMode(_, title, value):
+            return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.amoledMode, $0) })
+        case let .hideCallsTab(_, title, value):
+            return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.hideCallsTab, $0) })
+        case let .hideContactsTab(_, title, value):
+            return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.hideContactsTab, $0) })
         case let .siriShortcuts(_, title, value):
             return ItemListSwitchItem(presentationData: presentationData, title: title, value: value, sectionId: section, style: .blocks, updated: { args.set(\.siriShortcuts, $0) })
         case let .editLocalHeader(_, text):
@@ -636,6 +657,9 @@ private func aorusEntries(state: AorusState, theme: PresentationTheme, l10n: Aor
 
         .uiHeader(theme, l10n.uiHeader),
         .glassUI(theme, l10n.glassUI, state.glassUI),
+        .amoledMode(theme, l10n.amoledMode, state.amoledMode),
+        .hideCallsTab(theme, l10n.hideCallsTab, state.hideCallsTab),
+        .hideContactsTab(theme, l10n.hideContactsTab, state.hideContactsTab),
         .siriShortcuts(theme, l10n.siriShortcuts, state.siriShortcuts),
 
         .editLocalHeader(theme, l10n.messagesHeader),
@@ -699,6 +723,9 @@ public func aorusGramController(context: AccountContext) -> ViewController {
         doubleTapCopy:      mgr.doubleTapCopy,
         tripleTapDelete:    mgr.tripleTapDelete,
         glassUI:            mgr.glassUI,
+        amoledMode:         mgr.amoledMode,
+        hideCallsTab:       mgr.hideCallsTab,
+        hideContactsTab:    mgr.hideContactsTab,
         siriShortcuts:      mgr.siriShortcuts,
         antiSpoofDeleted:   spoof.antiSpoofDeleted,
         antiSpoofOnline:    spoof.antiSpoofOnline,
@@ -744,6 +771,9 @@ public func aorusGramController(context: AccountContext) -> ViewController {
             mgr.doubleTapCopy       = s.doubleTapCopy
             mgr.tripleTapDelete     = s.tripleTapDelete
             mgr.glassUI             = s.glassUI
+            mgr.amoledMode          = s.amoledMode
+            mgr.hideCallsTab        = s.hideCallsTab
+            mgr.hideContactsTab     = s.hideContactsTab
             mgr.siriShortcuts       = s.siriShortcuts
             spoof.antiSpoofDeleted  = s.antiSpoofDeleted
             spoof.antiSpoofOnline   = s.antiSpoofOnline
