@@ -22,7 +22,6 @@ public final class AorusCodeComposeViewController: UIViewController {
 
     // MARK: - Views
 
-    private let handleBar = UIView()
     private let titleLabel = UILabel()
     private let cancelButton = UIButton(type: .system)
     private let scrollView = UIScrollView()
@@ -34,7 +33,7 @@ public final class AorusCodeComposeViewController: UIViewController {
     private let secretHeaderLabel = UILabel()
     private let secretTextView = UITextView()
     private let hintLabel = UILabel()
-    private let sendButton = UIButton(type: .system)
+    private let sendButton = UIButton(type: .custom)
 
     private var scrollViewBottomConstraint: NSLayoutConstraint!
     private var coverIsEmpty = true
@@ -74,11 +73,6 @@ public final class AorusCodeComposeViewController: UIViewController {
     private func buildUI() {
         view.backgroundColor = .systemBackground
 
-        // Grab handle
-        handleBar.backgroundColor = UIColor.separator
-        handleBar.layer.cornerRadius = 2.5
-        view.addSubview(handleBar)
-
         // Title
         titleLabel.text = "AorusCode"
         titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
@@ -106,6 +100,7 @@ public final class AorusCodeComposeViewController: UIViewController {
         coverCard.backgroundColor = .secondarySystemBackground
         coverCard.layer.cornerRadius = 14
         coverCard.layer.cornerCurve = .continuous
+        coverCard.clipsToBounds = true
         contentView.addSubview(coverCard)
 
         coverHeaderLabel.text = isRu ? "Видимый текст" : "Visible Text"
@@ -123,6 +118,7 @@ public final class AorusCodeComposeViewController: UIViewController {
         secretCard.backgroundColor = .secondarySystemBackground
         secretCard.layer.cornerRadius = 14
         secretCard.layer.cornerCurve = .continuous
+        secretCard.clipsToBounds = true
         contentView.addSubview(secretCard)
 
         secretHeaderLabel.text = isRu ? "Скрытое сообщение" : "Hidden Message"
@@ -148,10 +144,10 @@ public final class AorusCodeComposeViewController: UIViewController {
         sendButton.setTitle(isRu ? "Отправить" : "Send", for: .normal)
         sendButton.titleLabel?.font = .systemFont(ofSize: 16, weight: .semibold)
         sendButton.setTitleColor(.white, for: .normal)
-        sendButton.setTitleColor(UIColor.white.withAlphaComponent(0.5), for: .disabled)
-        sendButton.backgroundColor = UIColor(red: 1.0, green: 0.43, blue: 0.0, alpha: 1.0)
+        sendButton.setTitleColor(.white, for: .disabled)
         sendButton.layer.cornerRadius = 14
         sendButton.layer.cornerCurve = .continuous
+        sendButton.clipsToBounds = true
         sendButton.addTarget(self, action: #selector(onSend), for: .touchUpInside)
         contentView.addSubview(sendButton)
 
@@ -171,7 +167,7 @@ public final class AorusCodeComposeViewController: UIViewController {
 
     private func installConstraints(separator: UIView) {
         let m: CGFloat = 16
-        let subviews: [UIView] = [handleBar, titleLabel, cancelButton, separator,
+        let subviews: [UIView] = [titleLabel, cancelButton, separator,
                                    scrollView, contentView, coverHeaderLabel, coverCard,
                                    coverTextView, secretHeaderLabel, secretCard,
                                    secretTextView, hintLabel, sendButton]
@@ -181,12 +177,7 @@ public final class AorusCodeComposeViewController: UIViewController {
             equalTo: view.safeAreaLayoutGuide.bottomAnchor)
 
         NSLayoutConstraint.activate([
-            handleBar.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
-            handleBar.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            handleBar.widthAnchor.constraint(equalToConstant: 36),
-            handleBar.heightAnchor.constraint(equalToConstant: 5),
-
-            titleLabel.topAnchor.constraint(equalTo: handleBar.bottomAnchor, constant: 14),
+            titleLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 27),
             titleLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
 
             cancelButton.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
@@ -275,9 +266,12 @@ public final class AorusCodeComposeViewController: UIViewController {
 
     // MARK: - Send state
 
+    private let sendActiveColor  = UIColor(red: 1.0,  green: 0.43, blue: 0.0,  alpha: 1.0)
+    private let sendInactiveColor = UIColor(red: 0.56, green: 0.56, blue: 0.58, alpha: 1.0)
+
     private func updateSendEnabled() {
         sendButton.isEnabled = !secretIsEmpty
-        sendButton.alpha = secretIsEmpty ? 0.5 : 1.0
+        sendButton.backgroundColor = secretIsEmpty ? sendInactiveColor : sendActiveColor
     }
 
     // MARK: - Actions
