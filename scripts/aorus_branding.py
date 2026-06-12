@@ -1580,75 +1580,6 @@ def patch_ghost_mode_block_read(tg: Path) -> None:
     print("BlockRead: injected non-completing guard in synchronizePeerReadState (v2)")
 
 
-def patch_aorus_code_encode(tg: Path) -> None:
-    """Encode outgoing message text with AorusCode steganography when enabled.
-
-    Patched file: submodules/TelegramCore/Sources/PendingMessages/EnqueueMessage.swift
-
-    When UserDefaults 'aorusgram_aorus_code_enabled' is true, outgoing `.message`
-    enum cases have their text encoded: the original text is preserved as the
-    visible cover, and the same text is hidden as invisible zero-width Unicode
-    appended after the cover. AorusGram recipients auto-decode and see a ✉ badge.
-    Non-AorusGram clients see the plain text unchanged.
-
-    The encoding is inlined here (not calling AorusStealthCodec) because
-    EnqueueMessage.swift is in TelegramCore which cannot import AorusGramUI.
-    The algorithm is identical to AorusStealthCodec.encode(cover:, secret:).
-    """
-    path = tg / "submodules/TelegramCore/Sources/PendingMessages/EnqueueMessage.swift"
-    if not path.is_file():
-        print("AorusCodeEncode: EnqueueMessage.swift not found, skip")
-        return
-
-    t = path.read_text(encoding="utf-8")
-    sentinel = "// AorusGram: AorusCode encoding"
-    if sentinel in t:
-        print("AorusCodeEncode: already injected")
-        return
-
-    anchor = "public func enqueueMessages(account: Account, peerId: PeerId, messages: [EnqueueMessage]) -> Signal<[MessageId?], NoError> {"
-    if anchor not in t:
-        print("AorusCodeEncode: enqueueMessages anchor not found — skipped")
-        return
-
-    encode_block = (
-        sentinel + "\n"
-        "    var messages = messages\n"
-        "    if UserDefaults.standard.bool(forKey: \"aorusgram_aorus_code_enabled\") {\n"
-        "        let aorusLo: [Character] = [\n"
-        "            \"\\u{200B}\",\"\\u{200C}\",\"\\u{200D}\",\"\\u{2060}\",\n"
-        "            \"\\u{2061}\",\"\\u{2062}\",\"\\u{2063}\",\"\\u{2064}\",\n"
-        "            \"\\u{206A}\",\"\\u{206B}\",\"\\u{206C}\",\"\\u{206D}\",\n"
-        "            \"\\u{206E}\",\"\\u{206F}\",\"\\u{FEFF}\",\"\\u{FFA0}\"\n"
-        "        ]\n"
-        "        let aorusHi: [Character] = [\n"
-        "            \"\\u{180B}\",\"\\u{180C}\",\"\\u{180D}\",\"\\u{180E}\",\n"
-        "            \"\\u{180F}\",\"\\u{FE00}\",\"\\u{FE01}\",\"\\u{FE02}\",\n"
-        "            \"\\u{FE03}\",\"\\u{FE04}\",\"\\u{FE05}\",\"\\u{FE06}\",\n"
-        "            \"\\u{FE07}\",\"\\u{FE08}\",\"\\u{FE09}\",\"\\u{FE0A}\"\n"
-        "        ]\n"
-        "        messages = messages.map { msg -> EnqueueMessage in\n"
-        "            guard case let .message(text, attrs, stickers, media, threadId, replyTo, replyToStory, groupKey, corrId, bubbles) = msg,\n"
-        "                  !text.isEmpty else { return msg }\n"
-        "            var hidden = \"\\u{2063}\\u{2064}\"\n"
-        "            for byte in Array(text.utf8) {\n"
-        "                hidden.append(aorusHi[Int(byte >> 4)])\n"
-        "                hidden.append(aorusLo[Int(byte & 0x0F)])\n"
-        "            }\n"
-        "            hidden += \"\\u{2064}\\u{2063}\"\n"
-        "            return .message(text: text + hidden, attributes: attrs, inlineStickers: stickers,\n"
-        "                mediaReference: media, threadId: threadId, replyToMessageId: replyTo,\n"
-        "                replyToStoryId: replyToStory, localGroupingKey: groupKey,\n"
-        "                correlationId: corrId, bubbleUpEmojiOrStickersets: bubbles)\n"
-        "        }\n"
-        "    }\n"
-        "    "
-    )
-    t = t.replace(anchor, anchor + "\n    " + encode_block, 1)
-    path.write_text(t, encoding="utf-8")
-    print("AorusCodeEncode: injected steganographic encoder in enqueueMessages")
-
-
 def patch_chat_context_menu_translate_transcribe(tg: Path) -> None:
     """Add native AorusGram Translate + Transcribe items to the long-press context menu.
 
@@ -5714,90 +5645,217 @@ def patch_decoy_keys(tg: Path) -> None:
         print("DecoyKeys: injected 20 decoy UUID lookups (fallback position)")
 
 
-def patch_aorus_code_keys(tg: Path) -> None:
-    """Upgrade AorusCodeManager HMAC secret from 2-array XOR to 3-array XOR.
+def patch_aorus_code_compose(tg: Path) -> None:
+    """Wire the AorusCode hidden-message compose button into the chat input panel.
 
-    Before: actual = secretXOR ^ xorMask  (secretXOR is ASCII of the plaintext seed)
-    After:  actual = _kA ^ _kB ^ _kC      (all three arrays are opaque SHA-256 digests
-                                            or derived noise; no plaintext seed present)
+    Adds a UILongPressGestureRecognizer to the existing attachmentButton in
+    ChatTextInputPanelNode. When the user holds the attachment button and
+    AorusCode is enabled (UserDefaults 'aorusgram_aorus_code_enabled'), a bottom
+    sheet appears with two text fields: visible cover text + hidden secret.
+    On send, AorusCodeComposeViewController encodes and enqueues the message via
+    enqueueMessages() — the standard TelegramCore send path, no input-field tricks.
 
-    _kA = SHA256("aorusgram::code::arm::k1::2025")
-    _kB = SHA256("aorusgram::code::arm::k2::2025")
-    _kC = _kA ^ _kB ^ actual_secret   (so _kA ^ _kB ^ _kC == actual_secret)
-
-    generate_code.py must use the same actual_secret (unchanged).
+    Also adds AorusGramUI to ChatTextInputPanelNode/BUILD deps so that
+    AorusCodeComposeViewController can be instantiated from the patch.
     """
-    code_mgr = tg / "submodules/AorusGramUI/Sources/Core/AorusCodeManager.swift"
-    if not code_mgr.is_file():
-        print("AorusCodeKeys: AorusCodeManager.swift not found — skipped")
-        return
-    t = code_mgr.read_text(encoding="utf-8")
-    SENTINEL = "// __aorus_3xor__"
-    if SENTINEL in t:
-        print("AorusCodeKeys: already upgraded to 3-array XOR")
-        return
-
-    # Compute actual_secret (same value as before — keeps generate_code.py compatible)
-    secret_xor = [
-        0x41,0x4F,0x52,0x55,0x53,0x47,0x52,0x41,
-        0x4D,0x5F,0x53,0x45,0x43,0x52,0x45,0x54,
-        0x5F,0x4B,0x45,0x59,0x5F,0x56,0x31,0x5F,
-        0x32,0x30,0x32,0x35,0x5F,0x41,0x4F,0x52,
-    ]
-    xor_mask = [
-        0x1A,0x2B,0x3C,0x4D,0x5E,0x6F,0x7A,0x1B,
-        0x2C,0x3D,0x4E,0x5F,0x60,0x71,0x82,0x13,
-        0x24,0x35,0x46,0x57,0x68,0x79,0x8A,0x1B,
-        0x2C,0x3D,0x4E,0x5F,0x60,0x71,0x82,0x93,
-    ]
-    actual = [a ^ b for a, b in zip(secret_xor, xor_mask)]
-
-    kA = list(hashlib.sha256(b"aorusgram::code::arm::k1::2025").digest())
-    kB = list(hashlib.sha256(b"aorusgram::code::arm::k2::2025").digest())
-    kC = [a ^ b ^ s for a, b, s in zip(kA, kB, actual)]
-
-    def fmt_array(name: str, values: list[int]) -> str:
-        hex_vals = ",".join(f"0x{v:02X}" for v in values)
-        return f"    private static let {name}: [UInt8] = [{hex_vals}]  {SENTINEL}\n"
-
-    new_arrays = (
-        fmt_array("_kA", kA) +
-        fmt_array("_kB", kB) +
-        fmt_array("_kC", kC)
+    swift_path = (
+        tg / "submodules/TelegramUI/Components/Chat/ChatTextInputPanelNode"
+             "/Sources/ChatTextInputPanelNode.swift"
     )
-    new_hmac = (
-        "    private func hmacSecret() -> SymmetricKey {\n"
-        "        SymmetricKey(data: Data(zip(zip(Self._kA, Self._kB).map { $0 ^ $1 }, Self._kC).map { $0 ^ $1 }))\n"
+    build_path = (
+        tg / "submodules/TelegramUI/Components/Chat/ChatTextInputPanelNode/BUILD"
+    )
+    if not swift_path.is_file():
+        print("AorusCodeCompose: ChatTextInputPanelNode.swift not found — skip")
+        return
+
+    # ── 1. BUILD dep ────────────────────────────────────────────────────────
+    if build_path.is_file():
+        bt = build_path.read_text(encoding="utf-8")
+        if "//submodules/AorusGramUI" not in bt:
+            needle = '        "//submodules/Display",\n'
+            if needle in bt:
+                bt = bt.replace(needle, needle + '        "//submodules/AorusGramUI",\n', 1)
+                build_path.write_text(bt, encoding="utf-8")
+                print("AorusCodeCompose: added AorusGramUI dep to ChatTextInputPanelNode BUILD")
+            else:
+                print("AorusCodeCompose: WARNING — ChatTextInputPanelNode BUILD needle not found")
+        else:
+            print("AorusCodeCompose: AorusGramUI dep already present in BUILD")
+
+    # ── 2. Swift file ────────────────────────────────────────────────────────
+    t = swift_path.read_text(encoding="utf-8")
+    if "aorusCodeLongPressed" in t:
+        print("AorusCodeCompose: already patched")
+        return
+
+    # 2a. Import
+    import_anchor = "import AccountContext\n"
+    if import_anchor not in t:
+        print("AorusCodeCompose: import anchor not found — skip")
+        return
+    t = t.replace(import_anchor, import_anchor + "import AorusGramUI\n", 1)
+
+    # 2b. Gesture recognizer — inject right after attachmentButton tap target setup
+    gesture_anchor = (
+        "        self.attachmentButton.addTarget(self, action: #selector(self.attachmentButtonPressed),"
+        " for: .touchUpInside)\n"
+    )
+    if gesture_anchor not in t:
+        print("AorusCodeCompose: attachmentButton.addTarget anchor not found — skip")
+        return
+    gesture_inject = (
+        gesture_anchor
+        + "        // AorusGram: long-press on attachment opens AorusCode compose sheet\n"
+        + "        let aorusLongPress = UILongPressGestureRecognizer(\n"
+        + "            target: self, action: #selector(self.aorusCodeLongPressed(_:)))\n"
+        + "        self.attachmentButton.addGestureRecognizer(aorusLongPress)\n"
+    )
+    t = t.replace(gesture_anchor, gesture_inject, 1)
+
+    # 2c. Handler method — inject just before @objc private func aiButtonPressed()
+    method_anchor = "    @objc private func aiButtonPressed() {\n"
+    if method_anchor not in t:
+        print("AorusCodeCompose: aiButtonPressed anchor not found — skip method inject")
+        swift_path.write_text(t, encoding="utf-8")
+        return
+
+    handler = (
+        "    @objc private func aorusCodeLongPressed(_ gesture: UILongPressGestureRecognizer) {\n"
+        "        guard gesture.state == .began,\n"
+        "              UserDefaults.standard.bool(forKey: \"aorusgram_aorus_code_enabled\"),\n"
+        "              let context = self.context,\n"
+        "              let chatLocation = self.presentationInterfaceState?.chatLocation,\n"
+        "              let peerId = chatLocation.peerId else { return }\n"
+        "        guard let parentVC = self.interfaceInteraction?.chatController() as? UIViewController else { return }\n"
+        "        UIImpactFeedbackGenerator(style: .medium).impactOccurred()\n"
+        "        let compose = AorusCodeComposeViewController(context: context, peerId: peerId)\n"
+        "        compose.modalPresentationStyle = .pageSheet\n"
+        "        if #available(iOS 15.0, *) {\n"
+        "            if let sheet = compose.sheetPresentationController {\n"
+        "                sheet.detents = [.medium(), .large()]\n"
+        "                sheet.prefersGrabberVisible = true\n"
+        "                sheet.preferredCornerRadius = 20\n"
+        "            }\n"
+        "        }\n"
+        "        parentVC.present(compose, animated: true)\n"
         "    }\n"
-    )
-
-    old_arrays = (
-        "    // Secret XOR-обфусцирован чтобы не торчал голым в бинарнике.\n"
-        "    // Те же константы ДОЛЖНЫ быть в tools/generate_code.py.\n"
-        "    private static let secretXOR: [UInt8] = [\n"
-        "        0x41,0x4F,0x52,0x55,0x53,0x47,0x52,0x41,\n"
-        "        0x4D,0x5F,0x53,0x45,0x43,0x52,0x45,0x54,\n"
-        "        0x5F,0x4B,0x45,0x59,0x5F,0x56,0x31,0x5F,\n"
-        "        0x32,0x30,0x32,0x35,0x5F,0x41,0x4F,0x52,\n"
-        "    ]\n"
-        "    private static let xorMask: [UInt8] = [\n"
-        "        0x1A,0x2B,0x3C,0x4D,0x5E,0x6F,0x7A,0x1B,\n"
-        "        0x2C,0x3D,0x4E,0x5F,0x60,0x71,0x82,0x13,\n"
-        "        0x24,0x35,0x46,0x57,0x68,0x79,0x8A,0x1B,\n"
-        "        0x2C,0x3D,0x4E,0x5F,0x60,0x71,0x82,0x93,\n"
-        "    ]\n"
         "\n"
-        "    private func hmacSecret() -> SymmetricKey {\n"
-        "        SymmetricKey(data: Data(zip(Self.secretXOR, Self.xorMask).map { $0 ^ $1 }))\n"
-        "    }\n"
     )
+    t = t.replace(method_anchor, handler + method_anchor, 1)
+    swift_path.write_text(t, encoding="utf-8")
+    print("AorusCodeCompose: injected long-press compose button on attachmentButton")
 
-    if old_arrays in t:
-        t = t.replace(old_arrays, new_arrays + "\n" + new_hmac, 1)
-        code_mgr.write_text(t, encoding="utf-8")
-        print("AorusCodeKeys: upgraded to 3-array XOR (secretXOR/xorMask → _kA/_kB/_kC)")
-    else:
-        print("AorusCodeKeys: WARNING — secretXOR/xorMask/hmacSecret anchor not found")
+
+def patch_aorus_code_reveal(tg: Path) -> None:
+    """Render received AorusCode hidden messages inside the chat bubble.
+
+    Wire format produced by the AorusCode composer:
+        <cover text> + U+2063U+2064 + <secret encoded as invisible nibbles> + U+2064U+2063
+    Non-AorusGram clients render only the visible cover (the payload is zero-width).
+    AorusGram decodes the secret and rebuilds the displayed text so the cover stays
+    visible and the secret is covered by a NATIVE Spoiler entity (tap to reveal),
+    prefixed by a bold "AorusCode" label.
+
+    Implementation: a file-scope transform function injected after the imports, plus
+    a call right before the `if let entities {` text-build branch in
+    ChatMessageTextBubbleContentNode. It rewrites the local `rawText`/`entities`
+    only — no postbox mutation, so it works uniformly for incoming AND outgoing
+    messages. Entity ranges are UTF-16 (NSString lengths). No new module deps:
+    MessageTextEntity (TelegramCore) + native spoiler rendering (TextFormat) are
+    already imported by this file.
+    """
+    path = tg / "submodules/TelegramUI/Components/Chat/ChatMessageTextBubbleContentNode/Sources/ChatMessageTextBubbleContentNode.swift"
+    if not path.is_file():
+        print("AorusCodeReveal: ChatMessageTextBubbleContentNode.swift not found — skip")
+        return
+    t = path.read_text(encoding="utf-8")
+    if "aorusCodeRenderTransform" in t:
+        print("AorusCodeReveal: already patched")
+        return
+
+    helper = r'''
+// AorusGram: AorusCode hidden-message decode + spoiler rendering.
+private func aorusCodeRenderTransform(rawText: String, entities: [MessageTextEntity]?) -> (text: String, entities: [MessageTextEntity])? {
+    let magicOpen = "\u{2063}\u{2064}"
+    let magicClose = "\u{2064}\u{2063}"
+    guard let openRange = rawText.range(of: magicOpen),
+          let closeRange = rawText.range(of: magicClose),
+          openRange.upperBound <= closeRange.lowerBound else {
+        return nil
+    }
+    let loNibble: [Character] = [
+        "\u{200B}", "\u{200C}", "\u{200D}", "\u{2060}",
+        "\u{2061}", "\u{2062}", "\u{2063}", "\u{2064}",
+        "\u{206A}", "\u{206B}", "\u{206C}", "\u{206D}",
+        "\u{206E}", "\u{206F}", "\u{FEFF}", "\u{FFA0}"
+    ]
+    let hiNibble: [Character] = [
+        "\u{180B}", "\u{180C}", "\u{180D}", "\u{180E}",
+        "\u{180F}", "\u{FE00}", "\u{FE01}", "\u{FE02}",
+        "\u{FE03}", "\u{FE04}", "\u{FE05}", "\u{FE06}",
+        "\u{FE07}", "\u{FE08}", "\u{FE09}", "\u{FE0A}"
+    ]
+    let payload = Array(rawText[openRange.upperBound ..< closeRange.lowerBound])
+    var bytes: [UInt8] = []
+    var i = 0
+    while i + 1 < payload.count {
+        guard let hi = hiNibble.firstIndex(of: payload[i]), let lo = loNibble.firstIndex(of: payload[i + 1]) else {
+            i += 1
+            continue
+        }
+        bytes.append(UInt8(hi << 4 | lo))
+        i += 2
+    }
+    guard !bytes.isEmpty, let secret = String(bytes: bytes, encoding: .utf8), !secret.isEmpty else {
+        return nil
+    }
+    let cover = String(rawText[rawText.startIndex ..< openRange.lowerBound])
+    let coverLength = (cover as NSString).length
+    let label = "AorusCode "
+    var display = ""
+    if !cover.isEmpty {
+        display = cover + "\n"
+    }
+    let labelLocation = (display as NSString).length
+    display += label
+    let secretLocation = (display as NSString).length
+    display += secret
+    let secretEnd = (display as NSString).length
+    var newEntities: [MessageTextEntity] = []
+    if let entities {
+        for entity in entities where entity.range.upperBound <= coverLength {
+            newEntities.append(entity)
+        }
+    }
+    newEntities.append(MessageTextEntity(range: labelLocation ..< (labelLocation + (label as NSString).length), type: .Bold))
+    newEntities.append(MessageTextEntity(range: secretLocation ..< secretEnd, type: .Spoiler))
+    return (display, newEntities)
+}
+'''
+    import_anchor = "import StreamingTextReveal\n"
+    if import_anchor not in t:
+        print("AorusCodeReveal: import anchor not found — skip")
+        return
+    t = t.replace(import_anchor, import_anchor + helper, 1)
+
+    call_anchor = "                if let entities {\n                    var underlineLinks = true\n"
+    if call_anchor not in t:
+        print("AorusCodeReveal: WARNING entities-branch anchor not found — skip call injection")
+        path.write_text(t, encoding="utf-8")
+        return
+    call_inject = (
+        "                // AorusGram: AorusCode hidden-message reveal (cover stays visible, secret under spoiler)\n"
+        "                if let aorusCodeRendered = aorusCodeRenderTransform(rawText: rawText, entities: entities) {\n"
+        "                    rawText = aorusCodeRendered.text\n"
+        "                    entities = aorusCodeRendered.entities\n"
+        "                }\n"
+        "                \n"
+        + call_anchor
+    )
+    t = t.replace(call_anchor, call_inject, 1)
+    path.write_text(t, encoding="utf-8")
+    print("AorusCodeReveal: injected decode + native spoiler transform")
 
 
 def patch_app_badge(tg: Path) -> None:
@@ -5875,7 +5933,8 @@ def main() -> None:
     patch_voice_twin_recorder(tg)
     patch_voice_twin_video_notes(tg)
     patch_voice_twin_calls(tg)
-    patch_aorus_code_encode(tg)
+    patch_aorus_code_compose(tg)
+    patch_aorus_code_reveal(tg)
     patch_chat_context_menu_translate_transcribe(tg)
     patch_incoming_message_hook(tg)
     patch_auto_reply_send_hook(tg)
@@ -5915,7 +5974,6 @@ def main() -> None:
     patch_session_platform_icon(tg)
     patch_aorus_controller_keys(tg)
     patch_decoy_keys(tg)
-    patch_aorus_code_keys(tg)
     patch_app_badge(tg)
     for name in ("Info.plist", "InfoBazel.plist"):
         patch_plist_icons_and_urls(tg / "Telegram/Telegram-iOS" / name)

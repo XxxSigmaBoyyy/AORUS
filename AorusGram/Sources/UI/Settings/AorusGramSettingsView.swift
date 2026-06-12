@@ -25,7 +25,6 @@ struct AorusGramSettingsView: View {
     @State private var showPinboard      = false
     @State private var showDeletedAll    = false
     @State private var showClearCacheConfirm = false
-    @State private var showAorusCode     = false
 
     @State private var deletedCount = 0
 
@@ -40,7 +39,6 @@ struct AorusGramSettingsView: View {
                     performanceSection
                     uiSection
                     extraSection
-                    aorusCodeButton
                     officialChannelButton
                     versionFooter
                 }
@@ -62,7 +60,6 @@ struct AorusGramSettingsView: View {
                 DeletedMessagesView(peerId: 0, peerName: "Все чаты")
             }
         }
-        .sheet(isPresented: $showAorusCode) { AorusCodeView() }
         .confirmationDialog(
             "Очистить кеш удалённых и изменённых сообщений?",
             isPresented: $showClearCacheConfirm,
@@ -418,53 +415,6 @@ struct AorusGramSettingsView: View {
     }
 
     // MARK: - AorusCode button
-
-    private var aorusCodeButton: some View {
-        Button { showAorusCode = true } label: {
-            GlassCard {
-                HStack(spacing: 14) {
-                    ZStack {
-                        LinearGradient(
-                            colors: [Color(hex: "#FF6D00"), Color(hex: "#c62828")],
-                            startPoint: .topLeading, endPoint: .bottomTrailing
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .frame(width: 44, height: 44)
-                        Image(systemName: "key.fill")
-                            .font(.system(size: 18))
-                            .foregroundColor(.white)
-                    }
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            Text("AorusCode")
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundColor(.primary)
-                            if let tier = AorusCodeManager.shared.currentTier {
-                                Text(tier.emoji + " " + tier.displayName)
-                                    .font(.system(size: 11, weight: .bold))
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Color(hex: "#FF6D00").opacity(0.15))
-                                    .clipShape(Capsule())
-                                    .foregroundColor(Color(hex: "#FF6D00"))
-                            }
-                        }
-                        Text(AorusCodeManager.shared.isActivated
-                             ? "Активирован · Управление"
-                             : "Активировать код доступа")
-                            .font(.system(size: 12))
-                            .foregroundColor(.secondary)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.secondary)
-                }
-                .padding(14)
-            }
-        }
-        .buttonStyle(.plain)
-    }
 
     // MARK: - Footer
 

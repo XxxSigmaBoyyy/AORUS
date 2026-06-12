@@ -11,8 +11,7 @@ import Foundation
 //   0x00–0x0F → U+200B (ZWSP) through U+200E / U+2060 / U+FEFF ...
 // A magic header (U+2063 U+2064) marks AorusCode messages.
 //
-// Renamed from AorusCodeManager to avoid clashing with Core/AorusCodeManager.swift
-// (activation codes) in the same Bazel target — both files map to one module.
+// Steganographic codec — encodes hidden payloads as zero-width Unicode characters.
 
 public final class AorusStealthCodec {
     public static let shared = AorusStealthCodec()
