@@ -5390,6 +5390,28 @@ _AORUS_AMOLED_HELPER = (
     "    return wallpaper\n"
     "}\n"
     "\n"
+    "// Re-emits whenever the AMOLED flag flips, so the presentation pipeline re-runs\n"
+    "// and the transform is applied/removed live. Account shared-data writes dedup\n"
+    "// identical values, so a settings re-commit cannot drive this — hence a direct\n"
+    "// NotificationCenter trigger, debounced to the AMOLED flag only (no spurious\n"
+    "// theme rebuilds when unrelated settings change).\n"
+    "func aorusAmoledTrigger() -> Signal<Void, NoError> {\n"
+    "    return Signal { subscriber in\n"
+    "        subscriber.putNext(Void())\n"
+    "        var lastValue = UserDefaults.standard.bool(forKey: \"aorusgram_amoled\")\n"
+    "        let observer = NotificationCenter.default.addObserver(forName: Notification.Name(\"aorusgram_settings_changed\"), object: nil, queue: OperationQueue.main) { _ in\n"
+    "            let newValue = UserDefaults.standard.bool(forKey: \"aorusgram_amoled\")\n"
+    "            if newValue != lastValue {\n"
+    "                lastValue = newValue\n"
+    "                subscriber.putNext(Void())\n"
+    "            }\n"
+    "        }\n"
+    "        return ActionDisposable {\n"
+    "            NotificationCenter.default.removeObserver(observer)\n"
+    "        }\n"
+    "    }\n"
+    "}\n"
+    "\n"
 )
 
 
@@ -5433,11 +5455,27 @@ def patch_amoled_theme(tg: Path) -> None:
         t = t.replace(init_old, init_new, 1); n += 1
     if live_old in t:
         t = t.replace(live_old, live_new, 1); n += 1
-    if n == 2:
+
+    # Merge the AMOLED trigger into the live theme pipeline so toggling re-emits.
+    trig_old = (
+        "                    return automaticThemeShouldSwitch(themeSettings.automaticThemeSwitchSetting, systemUserInterfaceStyle: systemUserInterfaceStyle)\n"
+        "                    |> distinctUntilChanged\n"
+        "                    |> map { autoNightModeTriggered in\n"
+    )
+    trig_new = (
+        "                    return combineLatest(automaticThemeShouldSwitch(themeSettings.automaticThemeSwitchSetting, systemUserInterfaceStyle: systemUserInterfaceStyle)\n"
+        "                    |> distinctUntilChanged, aorusAmoledTrigger())\n"
+        "                    |> map { autoNightModeTriggered, _ in\n"
+    )
+    trig = 0
+    if trig_old in t:
+        t = t.replace(trig_old, trig_new, 1); trig = 1
+
+    if n == 2 and trig == 1:
         f.write_text(t, encoding="utf-8")
-        print("Amoled: injected helper and applied at initial + live PresentationData")
+        print("Amoled: injected helper, applied at 2 PresentationData sites, wired live trigger")
     else:
-        print(f"Amoled: WARNING — applied {n}/2 PresentationData sites")
+        print(f"Amoled: WARNING — applied {n}/2 sites, trigger {trig}/1")
 
 
 def patch_hide_tabs(tg: Path) -> None:
@@ -5518,8 +5556,7 @@ def patch_settings_live_refresh(tg: Path) -> None:
         prop_anchor
         + "    private var aorusSettingsObserver: NSObjectProtocol?\n"
         + "    private var aorusLastHideCalls = UserDefaults.standard.bool(forKey: \"aorusgram_hide_calls_tab\")\n"
-        + "    private var aorusLastHideContacts = UserDefaults.standard.bool(forKey: \"aorusgram_hide_contacts_tab\")\n"
-        + "    private var aorusLastAmoled = UserDefaults.standard.bool(forKey: \"aorusgram_amoled\")\n",
+        + "    private var aorusLastHideContacts = UserDefaults.standard.bool(forKey: \"aorusgram_hide_contacts_tab\")\n",
         1,
     )
 
@@ -5538,22 +5575,19 @@ def patch_settings_live_refresh(tg: Path) -> None:
         print("SettingsLiveRefresh: WARNING — init anchor not found")
         return
     observer = (
-        "        // AorusGram: live-apply tab visibility + AMOLED when our settings change.\n"
+        "        // AorusGram: live-apply tab visibility when our settings change. (AMOLED\n"
+        "        // refresh is driven separately by aorusAmoledTrigger inside the presentation\n"
+        "        // pipeline, since account shared-data writes dedup identical values.)\n"
         "        self.aorusSettingsObserver = NotificationCenter.default.addObserver(forName: Notification.Name(\"aorusgram_settings_changed\"), object: nil, queue: OperationQueue.main) { [weak self] _ in\n"
         "            guard let strongSelf = self else {\n"
         "                return\n"
         "            }\n"
         "            let hideCalls = UserDefaults.standard.bool(forKey: \"aorusgram_hide_calls_tab\")\n"
         "            let hideContacts = UserDefaults.standard.bool(forKey: \"aorusgram_hide_contacts_tab\")\n"
-        "            let amoled = UserDefaults.standard.bool(forKey: \"aorusgram_amoled\")\n"
         "            if hideCalls != strongSelf.aorusLastHideCalls || hideContacts != strongSelf.aorusLastHideContacts {\n"
         "                strongSelf.aorusLastHideCalls = hideCalls\n"
         "                strongSelf.aorusLastHideContacts = hideContacts\n"
         "                strongSelf.rootController.updateRootControllers(showCallsTab: strongSelf.showCallsTab)\n"
-        "            }\n"
-        "            if amoled != strongSelf.aorusLastAmoled {\n"
-        "                strongSelf.aorusLastAmoled = amoled\n"
-        "                let _ = updatePresentationThemeSettingsInteractively(accountManager: strongSelf.context.sharedContext.accountManager, { $0 }).start()\n"
         "            }\n"
         "        }\n"
     )
