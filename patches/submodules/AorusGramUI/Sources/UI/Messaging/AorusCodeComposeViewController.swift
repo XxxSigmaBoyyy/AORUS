@@ -30,15 +30,15 @@ public final class AorusCodeComposeViewController: UIViewController {
     private let coverCard = UIView()
     private let coverHeaderLabel = UILabel()
     private let coverTextView = UITextView()
+    private let coverPlaceholder = UILabel()
     private let secretCard = UIView()
     private let secretHeaderLabel = UILabel()
     private let secretTextView = UITextView()
+    private let secretPlaceholder = UILabel()
     private let hintLabel = UILabel()
     private let sendButton = UIButton(type: .custom)
 
     private var scrollViewBottomConstraint: NSLayoutConstraint!
-    private var coverIsEmpty = true
-    private var secretIsEmpty = true
 
     // MARK: - Init
 
@@ -111,10 +111,12 @@ public final class AorusCodeComposeViewController: UIViewController {
         coverHeaderLabel.textAlignment = .left
         contentView.addSubview(coverHeaderLabel)
 
-        configureTextView(coverTextView,
-                          placeholder: isRu ? "Что увидят все..." : "What everyone sees...")
+        configureTextView(coverTextView)
         coverTextView.delegate = self
         contentView.addSubview(coverTextView)
+        configurePlaceholder(coverPlaceholder,
+                             text: isRu ? "Что увидят все..." : "What everyone sees...",
+                             in: coverCard)
 
         // Secret card
         secretCard.backgroundColor = .secondarySystemBackground
@@ -128,10 +130,12 @@ public final class AorusCodeComposeViewController: UIViewController {
         secretHeaderLabel.textColor = UIColor(red: 1.0, green: 0.43, blue: 0.0, alpha: 1.0)
         contentView.addSubview(secretHeaderLabel)
 
-        configureTextView(secretTextView,
-                          placeholder: isRu ? "Только для AorusGram..." : "AorusGram users only...")
+        configureTextView(secretTextView)
         secretTextView.delegate = self
         contentView.addSubview(secretTextView)
+        configurePlaceholder(secretPlaceholder,
+                             text: isRu ? "Только для AorusGram..." : "AorusGram users only...",
+                             in: secretCard)
 
         // Hint
         hintLabel.text = isRu
@@ -158,15 +162,32 @@ public final class AorusCodeComposeViewController: UIViewController {
         installConstraints(separator: sep)
     }
 
-    private func configureTextView(_ tv: UITextView, placeholder: String) {
+    private func configureTextView(_ tv: UITextView) {
         tv.font = .systemFont(ofSize: 16)
         tv.backgroundColor = .clear
+        tv.textColor = .label
         tv.textContainerInset = UIEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        tv.textContainer.lineFragmentPadding = 0
         tv.isScrollEnabled = false
-        tv.textColor = .placeholderText
-        tv.text = placeholder
         tv.layer.cornerRadius = 14
         tv.layer.cornerCurve = .continuous
+    }
+
+    // A real placeholder label that sits behind the (transparent) text view, so
+    // `textView.text` is always genuine user content — no placeholder/flag desync.
+    private func configurePlaceholder(_ label: UILabel, text: String, in card: UIView) {
+        label.text = text
+        label.font = .systemFont(ofSize: 16)
+        label.textColor = .placeholderText
+        label.numberOfLines = 0
+        label.isUserInteractionEnabled = false
+        label.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.topAnchor.constraint(equalTo: card.topAnchor, constant: 12),
+            label.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+            label.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
+        ])
     }
 
     private func installConstraints(separator: UIView) {
@@ -273,9 +294,14 @@ public final class AorusCodeComposeViewController: UIViewController {
     private let sendActiveColor  = UIColor(red: 1.0,  green: 0.43, blue: 0.0,  alpha: 1.0)
     private let sendInactiveColor = UIColor(red: 0.56, green: 0.56, blue: 0.58, alpha: 1.0)
 
+    private func trimmed(_ tv: UITextView) -> String {
+        (tv.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func updateSendEnabled() {
-        sendButton.isEnabled = !secretIsEmpty
-        sendButton.backgroundColor = secretIsEmpty ? sendInactiveColor : sendActiveColor
+        let hasSecret = !trimmed(secretTextView).isEmpty
+        sendButton.isEnabled = hasSecret
+        sendButton.backgroundColor = hasSecret ? sendActiveColor : sendInactiveColor
     }
 
     // MARK: - Actions
@@ -294,8 +320,8 @@ public final class AorusCodeComposeViewController: UIViewController {
     }
 
     @objc private func onSend() {
-        let cover = coverIsEmpty ? "" : (coverTextView.text ?? "")
-        let secret = secretIsEmpty ? "" : (secretTextView.text ?? "")
+        let cover = trimmed(coverTextView)
+        let secret = trimmed(secretTextView)
         guard !secret.isEmpty else { return }
 
         let encoded = AorusStealthCodec.shared.encode(cover: cover, secret: secret)
@@ -321,40 +347,9 @@ public final class AorusCodeComposeViewController: UIViewController {
 
 extension AorusCodeComposeViewController: UITextViewDelegate {
 
-    public func textViewDidBeginEditing(_ textView: UITextView) {
-        let isCover = textView === coverTextView
-        let isEmpty = isCover ? coverIsEmpty : secretIsEmpty
-        if isEmpty {
-            textView.text = nil
-            textView.textColor = .label
-        }
-    }
-
-    public func textViewDidEndEditing(_ textView: UITextView) {
-        let isCover = textView === coverTextView
-        if (textView.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let placeholder: String
-            if isCover {
-                placeholder = isRu ? "Что увидят все..." : "What everyone sees..."
-                coverIsEmpty = true
-            } else {
-                placeholder = isRu ? "Только для AorusGram..." : "AorusGram users only..."
-                secretIsEmpty = true
-            }
-            textView.text = placeholder
-            textView.textColor = .placeholderText
-        }
-        updateSendEnabled()
-    }
-
     public func textViewDidChange(_ textView: UITextView) {
-        let isCover = textView === coverTextView
-        let nowEmpty = (textView.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        if isCover {
-            coverIsEmpty = nowEmpty
-        } else {
-            secretIsEmpty = nowEmpty
-        }
+        coverPlaceholder.isHidden = !(coverTextView.text ?? "").isEmpty
+        secretPlaceholder.isHidden = !(secretTextView.text ?? "").isEmpty
         updateSendEnabled()
     }
 }
