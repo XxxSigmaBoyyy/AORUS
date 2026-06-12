@@ -5751,11 +5751,11 @@ def patch_aorus_code_reveal(tg: Path) -> None:
     """Render received AorusCode hidden messages inside the chat bubble.
 
     Wire format produced by the AorusCode composer:
-        <cover text> + U+2063U+2064 + <secret encoded as invisible nibbles> + U+2064U+2063
+        <cover text> + U+2061U+2062 + <secret as base-4 zero-width chars> + U+2062U+2061
     Non-AorusGram clients render only the visible cover (the payload is zero-width).
     AorusGram decodes the secret and rebuilds the displayed text so the cover stays
-    visible and the secret is covered by a NATIVE Spoiler entity (tap to reveal),
-    prefixed by a bold "AorusCode" label.
+    visible and the secret is wrapped in a NATIVE quote block (BlockQuote) titled
+    "AorusCode", with the secret itself under a Spoiler entity (tap to reveal).
 
     Implementation: a file-scope transform function injected after the imports, plus
     a call right before the `if let entities {` text-build branch in
@@ -5775,51 +5775,46 @@ def patch_aorus_code_reveal(tg: Path) -> None:
         return
 
     helper = r'''
-// AorusGram: AorusCode hidden-message decode + spoiler rendering.
+// AorusGram: AorusCode hidden-message decode + native quote rendering.
 private func aorusCodeRenderTransform(rawText: String, entities: [MessageTextEntity]?) -> (text: String, entities: [MessageTextEntity])? {
-    let magicOpen = "\u{2063}\u{2064}"
-    let magicClose = "\u{2064}\u{2063}"
+    let magicOpen = "\u{2061}\u{2062}"
+    let magicClose = "\u{2062}\u{2061}"
     guard let openRange = rawText.range(of: magicOpen),
           let closeRange = rawText.range(of: magicClose),
           openRange.upperBound <= closeRange.lowerBound else {
         return nil
     }
-    let loNibble: [Character] = [
-        "\u{200B}", "\u{200C}", "\u{200D}", "\u{2060}",
-        "\u{2061}", "\u{2062}", "\u{2063}", "\u{2064}",
-        "\u{206A}", "\u{206B}", "\u{206C}", "\u{206D}",
-        "\u{206E}", "\u{206F}", "\u{FEFF}", "\u{FFA0}"
-    ]
-    let hiNibble: [Character] = [
-        "\u{180B}", "\u{180C}", "\u{180D}", "\u{180E}",
-        "\u{180F}", "\u{FE00}", "\u{FE01}", "\u{FE02}",
-        "\u{FE03}", "\u{FE04}", "\u{FE05}", "\u{FE06}",
-        "\u{FE07}", "\u{FE08}", "\u{FE09}", "\u{FE0A}"
-    ]
+    // Base-4 alphabet — must stay byte-for-byte identical to AorusStealthCodec.
+    let alphabet: [Character] = ["\u{200B}", "\u{200C}", "\u{2060}", "\u{FEFF}"]
     let payload = Array(rawText[openRange.upperBound ..< closeRange.lowerBound])
     var bytes: [UInt8] = []
     var i = 0
-    while i + 1 < payload.count {
-        guard let hi = hiNibble.firstIndex(of: payload[i]), let lo = loNibble.firstIndex(of: payload[i + 1]) else {
+    while i + 3 < payload.count {
+        guard let d0 = alphabet.firstIndex(of: payload[i]),
+              let d1 = alphabet.firstIndex(of: payload[i + 1]),
+              let d2 = alphabet.firstIndex(of: payload[i + 2]),
+              let d3 = alphabet.firstIndex(of: payload[i + 3]) else {
             i += 1
             continue
         }
-        bytes.append(UInt8(hi << 4 | lo))
-        i += 2
+        bytes.append(UInt8((d0 << 6) | (d1 << 4) | (d2 << 2) | d3))
+        i += 4
     }
     guard !bytes.isEmpty, let secret = String(bytes: bytes, encoding: .utf8), !secret.isEmpty else {
         return nil
     }
     let cover = String(rawText[rawText.startIndex ..< openRange.lowerBound])
     let coverLength = (cover as NSString).length
-    let label = "AorusCode "
+    let title = "AorusCode"
     var display = ""
     if !cover.isEmpty {
         display = cover + "\n"
     }
-    let labelLocation = (display as NSString).length
-    display += label
-    let secretLocation = (display as NSString).length
+    let quoteStart = (display as NSString).length
+    display += title
+    let titleEnd = (display as NSString).length
+    display += "\n"
+    let secretStart = (display as NSString).length
     display += secret
     let secretEnd = (display as NSString).length
     var newEntities: [MessageTextEntity] = []
@@ -5828,8 +5823,12 @@ private func aorusCodeRenderTransform(rawText: String, entities: [MessageTextEnt
             newEntities.append(entity)
         }
     }
-    newEntities.append(MessageTextEntity(range: labelLocation ..< (labelLocation + (label as NSString).length), type: .Bold))
-    newEntities.append(MessageTextEntity(range: secretLocation ..< secretEnd, type: .Spoiler))
+    // Render as a native quote block: the accent bar + tinted, rounded
+    // background form the "AorusCode" container (bold title), and the secret
+    // itself sits under a native spoiler — tap to reveal.
+    newEntities.append(MessageTextEntity(range: quoteStart ..< secretEnd, type: .BlockQuote(isCollapsed: false)))
+    newEntities.append(MessageTextEntity(range: quoteStart ..< titleEnd, type: .Bold))
+    newEntities.append(MessageTextEntity(range: secretStart ..< secretEnd, type: .Spoiler))
     return (display, newEntities)
 }
 '''

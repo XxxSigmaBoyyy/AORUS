@@ -2,16 +2,20 @@ import Foundation
 
 // MARK: - AorusCode — Unicode Steganography
 //
-// Encodes a secret message into zero-width Unicode characters appended
-// to any cover text. Other Telegram clients see only the cover text;
-// AorusGram recipients automatically decode and display the real message.
+// Encodes a secret message into truly zero-width Unicode characters appended
+// to a cover text. Other Telegram clients see only the cover text; AorusGram
+// recipients automatically decode and reveal the real message.
 //
-// Encoding: each byte of the UTF-8 secret is split into two nibbles
-// (4 bits each) and mapped to a pair of invisible characters:
-//   0x00–0x0F → U+200B (ZWSP) through U+200E / U+2060 / U+FEFF ...
-// A magic header (U+2063 U+2064) marks AorusCode messages.
+// Alphabet rationale: every code point used here is a Unicode "Default
+// Ignorable" character that CoreText renders with NO glyph and ZERO advance
+// on iOS — so nothing ever shows up as a tofu box. We deliberately avoid
+// code points that look invisible on paper but render as boxes on iOS
+// (e.g. U+206A–U+206F, U+FFA0, the Mongolian U+180B–U+180F range).
 //
-// Steganographic codec — encodes hidden payloads as zero-width Unicode characters.
+// Encoding: the UTF-8 bytes of the secret are written in base-4. Each byte
+// becomes four base-4 digits (most-significant first); each digit maps to one
+// of four invisible characters. A magic header/footer (two further invisible
+// characters, distinct from the data alphabet) brackets the payload.
 
 public final class AorusStealthCodec {
     public static let shared = AorusStealthCodec()
@@ -22,23 +26,16 @@ public final class AorusStealthCodec {
         set { UserDefaults.standard.set(newValue, forKey: "aorusgram_aorus_code_enabled") }
     }
 
-    // Invisible characters for nibble encoding (16 values each)
-    private let loNibble: [Character] = [
-        "\u{200B}", "\u{200C}", "\u{200D}", "\u{2060}",
-        "\u{2061}", "\u{2062}", "\u{2063}", "\u{2064}",
-        "\u{206A}", "\u{206B}", "\u{206C}", "\u{206D}",
-        "\u{206E}", "\u{206F}", "\u{FEFF}", "\u{FFA0}"
-    ]
-    private let hiNibble: [Character] = [
-        "\u{180B}", "\u{180C}", "\u{180D}", "\u{180E}",
-        "\u{180F}", "\u{FE00}", "\u{FE01}", "\u{FE02}",
-        "\u{FE03}", "\u{FE04}", "\u{FE05}", "\u{FE06}",
-        "\u{FE07}", "\u{FE08}", "\u{FE09}", "\u{FE0A}"
-    ]
+    // Four data characters — all guaranteed zero-width / no-glyph on iOS.
+    //   index 0 → ZERO WIDTH SPACE
+    //   index 1 → ZERO WIDTH NON-JOINER
+    //   index 2 → WORD JOINER
+    //   index 3 → ZERO WIDTH NO-BREAK SPACE
+    private let alphabet: [Character] = ["\u{200B}", "\u{200C}", "\u{2060}", "\u{FEFF}"]
 
-    // Magic header — marks the start of hidden payload
-    private let magicOpen:  String = "\u{2063}\u{2064}"
-    private let magicClose: String = "\u{2064}\u{2063}"
+    // Magic markers — invisible math operators, distinct from the data alphabet.
+    private let magicOpen:  String = "\u{2061}\u{2062}"   // FUNCTION APPLICATION + INVISIBLE TIMES
+    private let magicClose: String = "\u{2062}\u{2061}"   // INVISIBLE TIMES + FUNCTION APPLICATION
 
     // MARK: - Encode
 
@@ -46,13 +43,12 @@ public final class AorusStealthCodec {
     /// Pass empty string for `cover` to send a purely invisible message.
     public func encode(cover: String, secret: String) -> String {
         guard !secret.isEmpty else { return cover }
-        let bytes = Array(secret.utf8)
         var hidden = magicOpen
-        for byte in bytes {
-            let hi = Int(byte >> 4)
-            let lo = Int(byte & 0x0F)
-            hidden.append(hiNibble[hi])
-            hidden.append(loNibble[lo])
+        for byte in secret.utf8 {
+            hidden.append(alphabet[Int((byte >> 6) & 0x3)])
+            hidden.append(alphabet[Int((byte >> 4) & 0x3)])
+            hidden.append(alphabet[Int((byte >> 2) & 0x3)])
+            hidden.append(alphabet[Int(byte & 0x3)])
         }
         hidden += magicClose
         return cover + hidden
@@ -60,21 +56,22 @@ public final class AorusStealthCodec {
 
     // MARK: - Decode
 
-    /// Returns the decoded secret if the text contains AorusCode payload, else nil.
+    /// Returns the decoded secret if the text contains an AorusCode payload, else nil.
     public func decode(_ text: String) -> String? {
         guard let openRange = text.range(of: magicOpen),
               let closeRange = text.range(of: magicClose),
               openRange.upperBound <= closeRange.lowerBound else { return nil }
 
-        let payload = String(text[openRange.upperBound..<closeRange.lowerBound])
+        let payload = Array(text[openRange.upperBound..<closeRange.lowerBound])
         var bytes: [UInt8] = []
-        let chars = Array(payload)
         var i = 0
-        while i + 1 < chars.count {
-            guard let hi = hiNibble.firstIndex(of: chars[i]),
-                  let lo = loNibble.firstIndex(of: chars[i + 1]) else { i += 1; continue }
-            bytes.append(UInt8(hi << 4 | lo))
-            i += 2
+        while i + 3 < payload.count {
+            guard let d0 = alphabet.firstIndex(of: payload[i]),
+                  let d1 = alphabet.firstIndex(of: payload[i + 1]),
+                  let d2 = alphabet.firstIndex(of: payload[i + 2]),
+                  let d3 = alphabet.firstIndex(of: payload[i + 3]) else { i += 1; continue }
+            bytes.append(UInt8((d0 << 6) | (d1 << 4) | (d2 << 2) | d3))
+            i += 4
         }
         return bytes.isEmpty ? nil : String(bytes: bytes, encoding: .utf8)
     }
@@ -86,7 +83,7 @@ public final class AorusStealthCodec {
         text.contains(magicOpen) && text.contains(magicClose)
     }
 
-    /// Strips all invisible AorusCode characters from text for display on non-AorusGram clients.
+    /// Strips the invisible AorusCode payload, leaving only the visible cover text.
     public func visibleText(_ text: String) -> String {
         guard let openRange = text.range(of: magicOpen) else { return text }
         return String(text[text.startIndex..<openRange.lowerBound])
