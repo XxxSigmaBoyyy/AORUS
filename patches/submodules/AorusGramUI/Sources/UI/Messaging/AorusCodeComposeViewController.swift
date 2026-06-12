@@ -62,6 +62,7 @@ public final class AorusCodeComposeViewController: UIViewController {
     public override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         updateSendEnabled()
+        coverTextView.becomeFirstResponder()
     }
 
     deinit {
@@ -148,7 +149,9 @@ public final class AorusCodeComposeViewController: UIViewController {
         sendButton.layer.cornerRadius = 14
         sendButton.layer.cornerCurve = .continuous
         sendButton.clipsToBounds = true
-        sendButton.addTarget(self, action: #selector(onSend), for: .touchUpInside)
+        sendButton.addTarget(self, action: #selector(onSend),        for: .touchUpInside)
+        sendButton.addTarget(self, action: #selector(sendHighlight), for: [.touchDown, .touchDragEnter])
+        sendButton.addTarget(self, action: #selector(sendNormal),    for: [.touchUpInside, .touchUpOutside, .touchDragExit, .touchCancel])
         contentView.addSubview(sendButton)
 
         installConstraints(separator: sep)
@@ -253,9 +256,9 @@ public final class AorusCodeComposeViewController: UIViewController {
               let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? TimeInterval,
               let curve = note.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt else { return }
 
-        let keyboardHeight = max(0, UIScreen.main.bounds.height - frame.minY)
-        let safeBottom = view.safeAreaInsets.bottom
-        scrollViewBottomConstraint.constant = -(max(0, keyboardHeight - safeBottom))
+        let kbInView = view.convert(frame, from: view.window)
+        let overlap = max(0, view.bounds.maxY - kbInView.minY)
+        scrollViewBottomConstraint.constant = -(max(0, overlap - view.safeAreaInsets.bottom))
 
         UIView.animate(withDuration: duration,
                        delay: 0,
@@ -275,6 +278,15 @@ public final class AorusCodeComposeViewController: UIViewController {
     }
 
     // MARK: - Actions
+
+    @objc private func sendHighlight() {
+        guard sendButton.isEnabled else { return }
+        UIView.animate(withDuration: 0.08) { self.sendButton.alpha = 0.72 }
+    }
+
+    @objc private func sendNormal() {
+        UIView.animate(withDuration: 0.2) { self.sendButton.alpha = 1.0 }
+    }
 
     @objc private func onCancel() {
         dismiss(animated: true)
