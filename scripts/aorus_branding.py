@@ -1606,9 +1606,9 @@ def patch_chat_context_menu_translate_transcribe(tg: Path) -> None:
         return
 
     t = path.read_text(encoding="utf-8")
-    sentinel = "// AorusGram: native translate/transcribe v5"
+    sentinel = "// AorusGram: native translate/transcribe v6"
     if sentinel in t:
-        print("ChatContextMenu: v5 already injected")
+        print("ChatContextMenu: v6 already injected")
         return
 
     # Strip any earlier v1/v2/v3 injection (recognisable by the common prefix).
@@ -1721,7 +1721,7 @@ def patch_chat_context_menu_translate_transcribe(tg: Path) -> None:
         "            // -- Transcribe / Hide Transcription (gated by voice transcription flag) --\n"
         "            if UserDefaults.standard.bool(forKey: \"aorusgram_feature_voice_transcription\"), let aorusVoiceFile = aorusVoiceFile {\n"
         "                if aorusIsTranscribed, let aorusOrig = aorusSavedText {\n"
-        "                    actions.append(.action(ContextMenuActionItem(text: \"AorusGram Скрыть транскрипцию\", icon: { theme in\n"
+        "                    actions.append(.action(ContextMenuActionItem(text: aorusUiRu ? \"Скрыть расшифровку\" : \"Hide Transcription\", icon: { theme in\n"
         "                        return generateTintedImage(image: UIImage(bundleImageName: \"Chat/Context Menu/Translate\"), color: theme.actionSheet.primaryTextColor)\n"
         "                    }, action: { [weak context] action in\n"
         "                        action.dismissWithResult(.default)\n"
@@ -1736,7 +1736,7 @@ def patch_chat_context_menu_translate_transcribe(tg: Path) -> None:
         "                        UserDefaults.standard.removeObject(forKey: aorusKeyType)\n"
         "                    })))\n"
         "                } else if !aorusIsTranslated {\n"
-        "                    actions.append(.action(ContextMenuActionItem(text: \"AorusGram Транскрипция\", icon: { theme in\n"
+        "                    actions.append(.action(ContextMenuActionItem(text: aorusUiRu ? \"Расшифровка\" : \"Voice to Text\", icon: { theme in\n"
         "                        return generateTintedImage(image: UIImage(bundleImageName: \"Chat/Context Menu/Translate\"), color: theme.actionSheet.primaryTextColor)\n"
         "                    }, action: { [weak context] action in\n"
         "                        action.dismissWithResult(.default)\n"
