@@ -6226,17 +6226,28 @@ def patch_disable_app_log_analytics(tg: Path) -> None:
     if sentinel in t:
         print("Analytics: already disabled")
         return
-    anchor = "func _internal_addAppLogEvent(postbox: Postbox, time: Double = Date().timeIntervalSince1970, type: String, peerId: PeerId? = nil, data: JSON = .dictionary([:])) {"
-    if anchor not in t:
-        print("Analytics: _internal_addAppLogEvent anchor not found — skip")
+    # Replace the entire function body so there is no dead code after return
+    # (which would generate a Swift compiler warning).
+    old_fn = (
+        "func _internal_addAppLogEvent(postbox: Postbox, time: Double = Date().timeIntervalSince1970, type: String, peerId: PeerId? = nil, data: JSON = .dictionary([:])) {\n"
+        "    let tag: PeerOperationLogTag = OperationLogTags.SynchronizeAppLogEvents\n"
+        "    let peerId = PeerId(0)\n"
+        "    let _ = (postbox.transaction { transaction in\n"
+        "        transaction.operationLogAddEntry(peerId: peerId, tag: tag, tagLocalIndex: .automatic, tagMergedIndex: .automatic, contents: SynchronizeAppLogEventsOperation(content: .add(time: time, type: type, peerId: peerId, data: data)))\n"
+        "    }).start()\n"
+        "}"
+    )
+    new_fn = (
+        "func _internal_addAppLogEvent(postbox: Postbox, time: Double = Date().timeIntervalSince1970, type: String, peerId: PeerId? = nil, data: JSON = .dictionary([:])) {\n"
+        "    " + sentinel + " — behaviour telemetry (help.saveAppLog) suppressed\n"
+        "}"
+    )
+    if old_fn not in t:
+        print("Analytics: full function body not found — skip")
         return
-    # Insert return on the very first line of the function body, making it a no-op.
-    t = t.replace(
-        anchor,
-        anchor + "\n    " + sentinel + "\n    return",
-        1)
+    t = t.replace(old_fn, new_fn, 1)
     path.write_text(t, encoding="utf-8")
-    print("Analytics: _internal_addAppLogEvent disabled (no-op)")
+    print("Analytics: _internal_addAppLogEvent replaced with empty body (no warning)")
 
 
 def patch_app_badge(tg: Path) -> None:
