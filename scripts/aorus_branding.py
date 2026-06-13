@@ -5770,11 +5770,23 @@ def patch_aorus_code_reveal(tg: Path) -> None:
         print("AorusCodeReveal: ChatMessageTextBubbleContentNode.swift not found — skip")
         return
     t = path.read_text(encoding="utf-8")
+
+    # Self-updating injection. The target file lives in the CACHED telegram-ios
+    # tree, so a plain "already patched -> skip" guard makes reveal changes
+    # silently no-op on cache hits (the old, stale transform stays). Instead we
+    # strip any prior sentinel-wrapped injection and re-apply the current one.
+    t = re.sub(r"\n// AORUSCODE-REVEAL-HELPER-BEGIN.*?// AORUSCODE-REVEAL-HELPER-END\n",
+               "", t, flags=re.DOTALL)
+    t = re.sub(r" *// AORUSCODE-REVEAL-CALL-BEGIN.*?// AORUSCODE-REVEAL-CALL-END\n",
+               "", t, flags=re.DOTALL)
     if "aorusCodeRenderTransform" in t:
-        print("AorusCodeReveal: already patched")
+        # A legacy (pre-sentinel) injection is present; splicing again would
+        # duplicate the symbol. A cache-key bump forces a clean tree.
+        print("AorusCodeReveal: legacy injection without sentinels — skip (bump cache key)")
         return
 
     helper = r'''
+// AORUSCODE-REVEAL-HELPER-BEGIN
 // AorusGram: AorusCode hidden-message decode + native quote rendering.
 private func aorusCodeRenderTransform(rawText: String, entities: [MessageTextEntity]?) -> (text: String, entities: [MessageTextEntity])? {
     let magicOpen = "\u{2061}\u{2062}"
@@ -5834,6 +5846,7 @@ private func aorusCodeRenderTransform(rawText: String, entities: [MessageTextEnt
     newEntities.append(MessageTextEntity(range: secretStart ..< secretEnd, type: .Spoiler))
     return (display, newEntities)
 }
+// AORUSCODE-REVEAL-HELPER-END
 '''
     import_anchor = "import StreamingTextReveal\n"
     if import_anchor not in t:
@@ -5847,12 +5860,12 @@ private func aorusCodeRenderTransform(rawText: String, entities: [MessageTextEnt
         path.write_text(t, encoding="utf-8")
         return
     call_inject = (
-        "                // AorusGram: AorusCode hidden-message reveal (cover stays visible, secret under spoiler)\n"
+        "                // AORUSCODE-REVEAL-CALL-BEGIN\n"
         "                if let aorusCodeRendered = aorusCodeRenderTransform(rawText: rawText, entities: entities) {\n"
         "                    rawText = aorusCodeRendered.text\n"
         "                    entities = aorusCodeRendered.entities\n"
         "                }\n"
-        "                \n"
+        "                // AORUSCODE-REVEAL-CALL-END\n"
         + call_anchor
     )
     t = t.replace(call_anchor, call_inject, 1)
