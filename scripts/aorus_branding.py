@@ -5996,6 +5996,27 @@ def patch_status_edit_delete_icons(tg: Path) -> None:
         return
     t = t.replace(old_edited, new_edited, 1)
 
+    # Keep the impression (views) count as a SEPARATE prefix instead of prepending
+    # it into updatedDateText. This lets the status icons sit AFTER the count (right
+    # next to the time) instead of before it — i.e. [eye][4][trash][pencil][time]
+    # rather than [eye][trash][pencil][4 time].
+    old_impression = (
+        "            if let impressionCount = arguments.impressionCount {\n"
+        "                updatedDateText = compactNumericCountString(impressionCount, decimalSeparator: arguments.presentationData.dateTimeFormat.decimalSeparator) + \" \" + updatedDateText\n"
+        "            }\n"
+    )
+    new_impression = (
+        "            // AorusGram: hold the views count separately so icons can follow it\n"
+        "            var aorusCountPrefix = \"\"\n"
+        "            if let impressionCount = arguments.impressionCount {\n"
+        "                aorusCountPrefix = compactNumericCountString(impressionCount, decimalSeparator: arguments.presentationData.dateTimeFormat.decimalSeparator) + \" \"\n"
+        "            }\n"
+    )
+    if old_impression not in t:
+        print("StatusIcons: impression-count anchor not found — skip")
+        return
+    t = t.replace(old_impression, new_impression, 1)
+
     # Build the date run with leading icons
     old_date = (
         "            let dateFont = Font.regular(floor(arguments.presentationData.fontSize.baseDisplaySize * 11.0 / 17.0))\n"
@@ -6013,10 +6034,11 @@ def patch_status_edit_delete_icons(tg: Path) -> None:
         "                let aorusImg = aorusRenderer.image { _ in aorusTinted.draw(at: CGPoint.zero) }.withRenderingMode(.alwaysOriginal)\n"
         "                let aorusSizePtr = UnsafeMutablePointer<CGSize>.allocate(capacity: 1)\n"
         "                aorusSizePtr.initialize(to: aorusImg.size)\n"
-        "                var aorusCallbacks = CTRunDelegateCallbacks(version: kCTRunDelegateCurrentVersion, dealloc: { aorusRef in aorusRef.assumingMemoryBound(to: CGSize.self).deinitialize(count: 1); aorusRef.deallocate() }, getAscent: { aorusRef in return aorusRef.assumingMemoryBound(to: CGSize.self).pointee.height * 0.82 }, getDescent: { aorusRef in return aorusRef.assumingMemoryBound(to: CGSize.self).pointee.height * 0.18 }, getWidth: { aorusRef in return aorusRef.assumingMemoryBound(to: CGSize.self).pointee.width + 3.0 })\n"
+        "                var aorusCallbacks = CTRunDelegateCallbacks(version: kCTRunDelegateCurrentVersion, dealloc: { aorusRef in aorusRef.assumingMemoryBound(to: CGSize.self).deinitialize(count: 1); aorusRef.deallocate() }, getAscent: { aorusRef in return aorusRef.assumingMemoryBound(to: CGSize.self).pointee.height * 0.85 }, getDescent: { aorusRef in return aorusRef.assumingMemoryBound(to: CGSize.self).pointee.height * 0.15 }, getWidth: { aorusRef in return aorusRef.assumingMemoryBound(to: CGSize.self).pointee.width + 3.0 })\n"
         "                guard let aorusDelegate = CTRunDelegateCreate(&aorusCallbacks, aorusSizePtr) else { aorusSizePtr.deinitialize(count: 1); aorusSizePtr.deallocate(); return }\n"
         "                aorusDateString.append(NSAttributedString(string: \"\\u{FFFC}\", attributes: [NSAttributedString.Key.attachment: aorusImg, NSAttributedString.Key.foregroundColor: dateColor, NSAttributedString.Key(kCTRunDelegateAttributeName as String): aorusDelegate]))\n"
         "            }\n"
+        "            if !aorusCountPrefix.isEmpty { aorusDateString.append(NSAttributedString(string: aorusCountPrefix, attributes: [NSAttributedString.Key.font: dateFont, NSAttributedString.Key.foregroundColor: dateColor])) }\n"
         "            if arguments.isDeleted { aorusAppendStatusIcon(\"trash\") }\n"
         "            if arguments.edited { aorusAppendStatusIcon(\"pencil\") }\n"
         "            aorusDateString.append(NSAttributedString(string: updatedDateText, attributes: [NSAttributedString.Key.font: dateFont, NSAttributedString.Key.foregroundColor: dateColor]))\n"
