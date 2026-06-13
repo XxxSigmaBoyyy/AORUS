@@ -865,9 +865,9 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "                let __aorusEditEnabled = (UserDefaults.standard.object(forKey: \"aorusgram_feature_deleted_messages\") as? Bool) ?? true\n"
                 "                if __aorusEditEnabled, let prev = aorusPrev, prev.flags.contains(.Incoming), prev.text != message.text, !prev.text.isEmpty {\n"
                 "                    transaction.updateMessage(id, update: { currentMessage -> PostboxUpdateMessage in\n"
-                "                        if currentMessage.text.contains(\"\\n\\n\\u{270F}\\u{FE0F} \") || currentMessage.text.contains(\"\\n\\nОригинал:\\n\") || currentMessage.text.contains(\"\\n\\nOriginal:\\n\") { return .skip }\n"
+                "                        if currentMessage.text.contains(\"\\n\\n\\u{270F}\\u{FE0F} \") || currentMessage.text.contains(\"\\nОригинал:\\n\") || currentMessage.text.contains(\"\\nOriginal:\\n\") { return .skip }\n"
                 "                        let aorusOriginalLabel = (UserDefaults.standard.string(forKey: \"aorusgram_lang\") == \"ru\") ? \"Оригинал:\" : \"Original:\"\n"
-                "                        let aorusBase = currentMessage.text + \"\\n\\n\"\n"
+                "                        let aorusBase = currentMessage.text + \"\\n\"\n"
                 "                        let aorusLabelLoc = (aorusBase as NSString).length\n"
                 "                        let aorusLabelLen = (aorusOriginalLabel as NSString).length\n"
                 "                        let aorusAfterLabel = aorusBase + aorusOriginalLabel + \"\\n\"\n"
@@ -6113,6 +6113,132 @@ def patch_status_edit_delete_icons(tg: Path) -> None:
             print("StatusIcons: bubble shadowNode anchor not found — skip")
 
 
+def patch_remove_appcenter(tg: Path) -> None:
+    """Remove Microsoft AppCenter crash-reporting SDK.
+
+    Three injection points — all idempotent:
+      1. AppDelegate.swift   — remove both #if canImport(AppCenter) blocks
+                               (import block + start-call block)
+      2. BuildConfig.m       — remove ivar declaration + initializer line +
+                               property accessor method
+      3. BuildConfig.h       — remove property declaration line
+    The BUILD.bazel AppCenter dep is resolved automatically because we never
+    link the module after removing the imports (Bazel build graph prunes it).
+    """
+    sentinel = "// AorusGram: AppCenter removed"
+
+    # --- AppDelegate.swift ---
+    ad_path = tg / "submodules/TelegramUI/Sources/AppDelegate.swift"
+    if ad_path.is_file():
+        t = ad_path.read_text(encoding="utf-8")
+        if sentinel in t:
+            print("AppCenter: AppDelegate already patched")
+        else:
+            # Block 1: import block
+            import_block = (
+                "\n#if canImport(AppCenter)\n"
+                "import AppCenter\n"
+                "import AppCenterCrashes\n"
+                "#endif\n"
+            )
+            # Block 2: AppCenter.start(...) call block
+            start_block = (
+                "\n        #if canImport(AppCenter)\n"
+                "        if !buildConfig.isAppStoreBuild, let appCenterId = buildConfig.appCenterId, !appCenterId.isEmpty {\n"
+                "            AppCenter.start(withAppSecret: buildConfig.appCenterId, services: [\n"
+                "                Crashes.self\n"
+                "            ])\n"
+                "        }\n"
+                "        #endif\n"
+            )
+            changed = False
+            if import_block in t:
+                t = t.replace(import_block, "\n" + sentinel + "\n", 1)
+                changed = True
+            else:
+                print("AppCenter: import block not found in AppDelegate")
+            if start_block in t:
+                t = t.replace(start_block, "\n", 1)
+                changed = True
+            else:
+                print("AppCenter: start block not found in AppDelegate")
+            if changed:
+                ad_path.write_text(t, encoding="utf-8")
+                print("AppCenter: removed from AppDelegate.swift")
+    else:
+        print("AppCenter: AppDelegate.swift not found — skip")
+
+    # --- BuildConfig.m ---
+    bcm_path = tg / "submodules/BuildConfig/Sources/BuildConfig.m"
+    if bcm_path.is_file():
+        t = bcm_path.read_text(encoding="utf-8")
+        if sentinel in t:
+            print("AppCenter: BuildConfig.m already patched")
+        else:
+            import re as _re
+            # Remove ivar declaration line
+            t = _re.sub(r"    NSString \* _Nullable _appCenterId;\n", "", t)
+            # Remove initializer assignment line
+            t = _re.sub(r"        _appCenterId = @\(APP_CONFIG_APP_CENTER_ID\);\n", "", t)
+            # Remove property accessor method (3 lines)
+            t = _re.sub(
+                r"- \(NSString \* _Nullable\)appCenterId \{\n    return _appCenterId;\n\}\n",
+                "", t)
+            t = t + "\n" + sentinel + "\n"
+            bcm_path.write_text(t, encoding="utf-8")
+            print("AppCenter: removed from BuildConfig.m")
+    else:
+        print("AppCenter: BuildConfig.m not found — skip")
+
+    # --- BuildConfig.h ---
+    bch_path = tg / "submodules/BuildConfig/PublicHeaders/BuildConfig/BuildConfig.h"
+    if bch_path.is_file():
+        t = bch_path.read_text(encoding="utf-8")
+        if sentinel in t:
+            print("AppCenter: BuildConfig.h already patched")
+        else:
+            import re as _re
+            t = _re.sub(
+                r"@property \(nonatomic, strong, readonly\) NSString \* _Nullable appCenterId;\n",
+                "", t)
+            t = t + "\n" + sentinel + "\n"
+            bch_path.write_text(t, encoding="utf-8")
+            print("AppCenter: removed from BuildConfig.h")
+    else:
+        print("AppCenter: BuildConfig.h not found — skip")
+
+
+def patch_disable_app_log_analytics(tg: Path) -> None:
+    """Disable Telegram's behavioural analytics (help.saveAppLog).
+
+    The single chokepoint is _internal_addAppLogEvent in
+    SynchronizeAppLogEventsOperation.swift.  Making it a no-op silences all
+    51 call sites across 13 files without touching any of them individually.
+    The saveAppLog RPC in Account.swift / ManagedSynchronizeAppLogEventsOperations
+    is never reached because nothing ever writes to the operation log.
+    """
+    sentinel = "// AorusGram: analytics disabled"
+    path = tg / "submodules/TelegramCore/Sources/State/SynchronizeAppLogEventsOperation.swift"
+    if not path.is_file():
+        print("Analytics: SynchronizeAppLogEventsOperation.swift not found — skip")
+        return
+    t = path.read_text(encoding="utf-8")
+    if sentinel in t:
+        print("Analytics: already disabled")
+        return
+    anchor = "func _internal_addAppLogEvent(postbox: Postbox, time: Double = Date().timeIntervalSince1970, type: String, peerId: PeerId? = nil, data: JSON = .dictionary([:])) {"
+    if anchor not in t:
+        print("Analytics: _internal_addAppLogEvent anchor not found — skip")
+        return
+    # Insert return on the very first line of the function body, making it a no-op.
+    t = t.replace(
+        anchor,
+        anchor + "\n    " + sentinel + "\n    return",
+        1)
+    path.write_text(t, encoding="utf-8")
+    print("Analytics: _internal_addAppLogEvent disabled (no-op)")
+
+
 def patch_app_badge(tg: Path) -> None:
     """Replace the stock Telegram 'TELEGRAM' pill badge with our AORUSGRAM one.
 
@@ -6230,6 +6356,8 @@ def main() -> None:
     patch_session_platform_icon(tg)
     patch_aorus_controller_keys(tg)
     patch_decoy_keys(tg)
+    patch_remove_appcenter(tg)
+    patch_disable_app_log_analytics(tg)
     patch_app_badge(tg)
     for name in ("Info.plist", "InfoBazel.plist"):
         patch_plist_icons_and_urls(tg / "Telegram/Telegram-iOS" / name)
