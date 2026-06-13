@@ -5902,6 +5902,89 @@ private func aorusCodeRenderTransform(rawText: String, entities: [MessageTextEnt
     print("AorusCodeReveal: injected decode + native spoiler transform")
 
 
+def patch_status_edit_delete_icons(tg: Path) -> None:
+    """Render the 'edited' state as a pencil icon (instead of the text label)
+    and deleted messages with a trash icon, inline in the date/status run.
+
+    The icons are appended to the date TextNode's attributed string via the
+    .attachment (UIImage) attribute that Display.TextNode renders, with a
+    CTRunDelegate reserving each icon's width so it never overlaps the time.
+    SF Symbols are rasterised into a bitmap (UIImage.cgImage is force-unwrapped
+    by TextNode when drawing). `isDeleted` is a new Arguments flag (default
+    false) set by the text bubble content node for preserved/deleted messages.
+    Order in the run: [trash] [pencil] [time].
+    """
+    path = tg / "submodules/TelegramUI/Components/Chat/ChatMessageDateAndStatusNode/Sources/ChatMessageDateAndStatusNode.swift"
+    if not path.is_file():
+        print("StatusIcons: ChatMessageDateAndStatusNode.swift not found — skip")
+        return
+    t = path.read_text(encoding="utf-8")
+    if "AorusGram: status icons" in t:
+        print("StatusIcons: already injected")
+        return
+
+    if "import CoreText" not in t:
+        t = t.replace("import Foundation\n", "import Foundation\nimport CoreText\n", 1)
+
+    # Arguments: new isDeleted flag (defaulted so existing call sites are unaffected)
+    t = t.replace("        var edited: Bool\n",
+                  "        var edited: Bool\n        var isDeleted: Bool\n", 1)
+    t = t.replace("            edited: Bool,\n",
+                  "            edited: Bool,\n            isDeleted: Bool = false,\n", 1)
+    t = t.replace("            self.edited = edited\n",
+                  "            self.edited = edited\n            self.isDeleted = isDeleted\n", 1)
+
+    # Drop the "edited" text prefix (the pencil icon represents it now)
+    old_edited = (
+        "            var updatedDateText = arguments.dateText\n"
+        "            if arguments.edited {\n"
+        "                updatedDateText = \"\\(arguments.presentationData.strings.Conversation_MessageEditedLabel) \\(updatedDateText)\"\n"
+        "            }\n"
+    )
+    new_edited = (
+        "            var updatedDateText = arguments.dateText\n"
+        "            // AorusGram: status icons — 'edited' is shown as a pencil icon below, not text\n"
+    )
+    if old_edited not in t:
+        print("StatusIcons: edited-text anchor not found — skip")
+        return
+    t = t.replace(old_edited, new_edited, 1)
+
+    # Build the date run with leading icons
+    old_date = (
+        "            let dateFont = Font.regular(floor(arguments.presentationData.fontSize.baseDisplaySize * 11.0 / 17.0))\n"
+        "            let (date, dateApply) = dateLayout(TextNodeLayoutArguments(attributedString: NSAttributedString(string: updatedDateText, font: dateFont, textColor: dateColor), backgroundColor: nil, maximumNumberOfLines: 1, truncationType: .middle, constrainedSize: arguments.constrainedSize, alignment: .natural, cutout: nil, insets: UIEdgeInsets()))\n"
+    )
+    new_date = (
+        "            let dateFont = Font.regular(floor(arguments.presentationData.fontSize.baseDisplaySize * 11.0 / 17.0))\n"
+        "            // AorusGram: status icons\n"
+        "            let aorusDateString = NSMutableAttributedString()\n"
+        "            func aorusAppendStatusIcon(_ aorusName: String) {\n"
+        "                let aorusCfg = UIImage.SymbolConfiguration(pointSize: dateFont.pointSize - 1.0, weight: .semibold)\n"
+        "                guard let aorusSym = UIImage(systemName: aorusName, withConfiguration: aorusCfg) else { return }\n"
+        "                let aorusTinted = aorusSym.withTintColor(dateColor, renderingMode: .alwaysOriginal)\n"
+        "                let aorusRenderer = UIGraphicsImageRenderer(size: aorusTinted.size)\n"
+        "                let aorusImg = aorusRenderer.image { _ in aorusTinted.draw(at: CGPoint.zero) }.withRenderingMode(.alwaysOriginal)\n"
+        "                let aorusSizePtr = UnsafeMutablePointer<CGSize>.allocate(capacity: 1)\n"
+        "                aorusSizePtr.initialize(to: aorusImg.size)\n"
+        "                var aorusCallbacks = CTRunDelegateCallbacks(version: kCTRunDelegateCurrentVersion, dealloc: { aorusRef in aorusRef.assumingMemoryBound(to: CGSize.self).deinitialize(count: 1); aorusRef.deallocate() }, getAscent: { aorusRef in return aorusRef.assumingMemoryBound(to: CGSize.self).pointee.height * 0.82 }, getDescent: { aorusRef in return aorusRef.assumingMemoryBound(to: CGSize.self).pointee.height * 0.18 }, getWidth: { aorusRef in return aorusRef.assumingMemoryBound(to: CGSize.self).pointee.width + 3.0 })\n"
+        "                guard let aorusDelegate = CTRunDelegateCreate(&aorusCallbacks, aorusSizePtr) else { aorusSizePtr.deinitialize(count: 1); aorusSizePtr.deallocate(); return }\n"
+        "                aorusDateString.append(NSAttributedString(string: \"\\u{FFFC}\", attributes: [NSAttributedString.Key.attachment: aorusImg, NSAttributedString.Key.foregroundColor: dateColor, NSAttributedString.Key(kCTRunDelegateAttributeName as String): aorusDelegate]))\n"
+        "            }\n"
+        "            if arguments.isDeleted { aorusAppendStatusIcon(\"trash\") }\n"
+        "            if arguments.edited { aorusAppendStatusIcon(\"pencil\") }\n"
+        "            aorusDateString.append(NSAttributedString(string: updatedDateText, attributes: [NSAttributedString.Key.font: dateFont, NSAttributedString.Key.foregroundColor: dateColor]))\n"
+        "            let (date, dateApply) = dateLayout(TextNodeLayoutArguments(attributedString: aorusDateString, backgroundColor: nil, maximumNumberOfLines: 1, truncationType: .middle, constrainedSize: arguments.constrainedSize, alignment: .natural, cutout: nil, insets: UIEdgeInsets()))\n"
+    )
+    if old_date not in t:
+        print("StatusIcons: date-layout anchor not found — skip")
+        return
+    t = t.replace(old_date, new_date, 1)
+
+    path.write_text(t, encoding="utf-8")
+    print("StatusIcons: injected edited->pencil + deleted->trash (isDeleted ready)")
+
+
 def patch_app_badge(tg: Path) -> None:
     """Replace the stock Telegram 'TELEGRAM' pill badge with our AORUSGRAM one.
 
@@ -5979,6 +6062,7 @@ def main() -> None:
     patch_voice_twin_calls(tg)
     patch_aorus_code_compose(tg)
     patch_aorus_code_reveal(tg)
+    patch_status_edit_delete_icons(tg)
     patch_chat_context_menu_translate_transcribe(tg)
     patch_incoming_message_hook(tg)
     patch_auto_reply_send_hook(tg)
