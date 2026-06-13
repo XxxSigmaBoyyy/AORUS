@@ -700,18 +700,10 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "            __aorusIdsToDelete.append(id)\n"
                 "            continue\n"
                 "        }\n"
-                "        if currentMessage.text.hasPrefix(\"\\u{1F5D1}\") { __aorusIdsToDelete.append(id); continue }\n"
+                "        if currentMessage.text.hasSuffix(\"\\u{2063}\\u{2064}\") { __aorusIdsToDelete.append(id); continue }\n"
                 "        transaction.updateMessage(id, update: { msg -> PostboxUpdateMessage in\n"
-                "            let aorusDeletedLabel = (UserDefaults.standard.string(forKey: \"aorusgram_lang\") == \"ru\") ? \"Удалено\" : \"Deleted\"\n"
-                "            let aorusPrefix = \"\\u{1F5D1} [\" + aorusDeletedLabel + \"]\\n\"\n"
-                "            let aorusShift = (aorusPrefix as NSString).length\n"
-                "            let newText = aorusPrefix + msg.text\n"
-                "            let aorusShiftedAttrs: [MessageAttribute] = msg.attributes.map { attr in\n"
-                "                if let te = attr as? TextEntitiesMessageAttribute {\n"
-                "                    return TextEntitiesMessageAttribute(entities: te.entities.map { MessageTextEntity(range: ($0.range.lowerBound + aorusShift) ..< ($0.range.upperBound + aorusShift), type: $0.type) })\n"
-                "                }\n"
-                "                return attr\n"
-                "            }\n"
+                "            // AorusGram: invisible deleted-marker suffix (keeps text + link entities intact)\n"
+                "            let newText = msg.text + \"\\u{2063}\\u{2064}\"\n"
                 "            return .update(StoreMessage(\n"
                 "                id: msg.id, customStableId: nil,\n"
                 "                globallyUniqueId: msg.globallyUniqueId,\n"
@@ -725,7 +717,7 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "                forwardInfo: msg.forwardInfo.flatMap(StoreMessageForwardInfo.init),\n"
                 "                authorId: msg.author?.id,\n"
                 "                text: newText,\n"
-                "                attributes: aorusShiftedAttrs,\n"
+                "                attributes: msg.attributes,\n"
                 "                media: msg.media))\n"
                 "        })\n"
                 "        var preservedList = (UserDefaults.standard.array(forKey: \"aorusgram_preserved_msgs\") as? [[String: Int64]]) ?? []\n"
@@ -904,18 +896,10 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "                            __aorusFilteredGlobalIds.append(gid)\n"
                 "                            continue\n"
                 "                        }\n"
-                "                        if !msg.text.hasPrefix(\"\\u{1F5D1}\") {\n"
+                "                        if !msg.text.hasSuffix(\"\\u{2063}\\u{2064}\") {\n"
                 "                            transaction.updateMessage(mid, update: { current -> PostboxUpdateMessage in\n"
-                "                                let aorusDeletedLabel = (UserDefaults.standard.string(forKey: \"aorusgram_lang\") == \"ru\") ? \"Удалено\" : \"Deleted\"\n"
-                "                                let aorusPrefix = \"\\u{1F5D1} [\" + aorusDeletedLabel + \"]\\n\"\n"
-                "                                let aorusShift = (aorusPrefix as NSString).length\n"
-                "                                let newText = aorusPrefix + current.text\n"
-                "                                let aorusShiftedAttrs: [MessageAttribute] = current.attributes.map { attr in\n"
-                "                                    if let te = attr as? TextEntitiesMessageAttribute {\n"
-                "                                        return TextEntitiesMessageAttribute(entities: te.entities.map { MessageTextEntity(range: ($0.range.lowerBound + aorusShift) ..< ($0.range.upperBound + aorusShift), type: $0.type) })\n"
-                "                                    }\n"
-                "                                    return attr\n"
-                "                                }\n"
+                "                                // AorusGram: invisible deleted-marker suffix\n"
+                "                                let newText = current.text + \"\\u{2063}\\u{2064}\"\n"
                 "                                return .update(StoreMessage(\n"
                 "                                    id: current.id, customStableId: nil,\n"
                 "                                    globallyUniqueId: current.globallyUniqueId,\n"
@@ -929,7 +913,7 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "                                    forwardInfo: current.forwardInfo.flatMap(StoreMessageForwardInfo.init),\n"
                 "                                    authorId: current.author?.id,\n"
                 "                                    text: newText,\n"
-                "                                    attributes: aorusShiftedAttrs,\n"
+                "                                    attributes: current.attributes,\n"
                 "                                    media: current.media))\n"
                 "                            })\n"
                 "                            var preservedList = (UserDefaults.standard.array(forKey: \"aorusgram_preserved_msgs\") as? [[String: Int64]]) ?? []\n"
@@ -5983,6 +5967,42 @@ def patch_status_edit_delete_icons(tg: Path) -> None:
 
     path.write_text(t, encoding="utf-8")
     print("StatusIcons: injected edited->pencil + deleted->trash (isDeleted ready)")
+
+    # --- Text bubble content node: pass isDeleted (invisible suffix marker) to the status node ---
+    tb_path = tg / "submodules/TelegramUI/Components/Chat/ChatMessageTextBubbleContentNode/Sources/ChatMessageTextBubbleContentNode.swift"
+    if tb_path.is_file():
+        tb = tb_path.read_text(encoding="utf-8")
+        tb_anchor = "                        edited: edited && !item.presentationData.isPreview,\n"
+        if "isDeleted: item.message.text.hasSuffix" in tb:
+            print("StatusIcons: text bubble isDeleted already present")
+        elif tb_anchor in tb:
+            tb = tb.replace(tb_anchor, tb_anchor + "                        isDeleted: item.message.text.hasSuffix(\"\\u{2063}\\u{2064}\"),\n", 1)
+            tb_path.write_text(tb, encoding="utf-8")
+            print("StatusIcons: text bubble passes isDeleted")
+        else:
+            print("StatusIcons: text bubble edited anchor not found — skip")
+
+    # --- Bubble item node: dim the bubble cloud (background) to 50% for deleted; text stays opaque ---
+    bi_path = tg / "submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/Sources/ChatMessageBubbleItemNode.swift"
+    if bi_path.is_file():
+        bi = bi_path.read_text(encoding="utf-8")
+        bi_anchor = "        strongSelf.shadowNode.setType(type: backgroundType, hasWallpaper: hasWallpaper, graphics: graphics)\n"
+        if "AorusGram: dim deleted cloud" in bi:
+            print("StatusIcons: bubble cloud dim already present")
+        elif bi_anchor in bi:
+            bi_inject = (
+                bi_anchor +
+                "        // AorusGram: dim deleted cloud (bubble background) to 50%, text stays opaque\n"
+                "        let aorusDeletedCloud = item.message.text.hasSuffix(\"\\u{2063}\\u{2064}\")\n"
+                "        strongSelf.backgroundNode.alpha = aorusDeletedCloud ? 0.5 : 1.0\n"
+                "        strongSelf.backgroundWallpaperNode.alpha = aorusDeletedCloud ? 0.5 : 1.0\n"
+                "        strongSelf.shadowNode.alpha = aorusDeletedCloud ? 0.5 : 1.0\n"
+            )
+            bi = bi.replace(bi_anchor, bi_inject, 1)
+            bi_path.write_text(bi, encoding="utf-8")
+            print("StatusIcons: bubble cloud dim injected")
+        else:
+            print("StatusIcons: bubble shadowNode anchor not found — skip")
 
 
 def patch_app_badge(tg: Path) -> None:
