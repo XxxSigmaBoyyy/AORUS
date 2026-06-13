@@ -696,7 +696,7 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "    let __aorusPreserve = (UserDefaults.standard.object(forKey: \"aorusgram_feature_deleted_messages\") as? Bool) ?? true\n"
                 "    var __aorusIdsToDelete: [MessageId] = []\n"
                 "    for id in ids {\n"
-                "        guard __aorusPreserve, let currentMessage = transaction.getMessage(id), currentMessage.flags.contains(.Incoming) else {\n"
+                "        guard __aorusPreserve, !aorusUserInitiatedDelete, let currentMessage = transaction.getMessage(id), currentMessage.flags.contains(.Incoming) else {\n"
                 "            __aorusIdsToDelete.append(id)\n"
                 "            continue\n"
                 "        }\n"
@@ -728,6 +728,21 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "    "
             )
             if anchor in t:
+                # Module-level flag — true ONLY while a user-initiated delete is in
+                # flight (interactive delete / engine deleteMessages). Server-pushed
+                # channel deletes (.DeleteMessages → _internal_deleteMessages in
+                # AccountStateManagementUtils) leave it false, so an incoming message
+                # the *other* person deleted is still preserved + marked. When the
+                # USER deletes someone else's message "for everyone", the flag is true
+                # so the delete happens immediately (no double-tap needed).
+                if "var aorusUserInitiatedDelete" not in t:
+                    t = t.replace(
+                        "import TelegramApi\n",
+                        "import TelegramApi\n\n"
+                        "// AorusGram: true only during a user-initiated delete; gates the\n"
+                        "// preserve-incoming behaviour so the user's own deletes run at once.\n"
+                        "var aorusUserInitiatedDelete = false\n",
+                        1)
                 # Inject hook AND swap the `ids` argument for our filtered list so
                 # only non-preserved (outgoing / unknown) messages actually delete.
                 new_call = "transaction.deleteMessages(__aorusIdsToDelete, forEachMedia: { _ in"
@@ -738,6 +753,51 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 print("DeleteMessages.swift: anchor not found — skipped")
     else:
         print("DeleteMessages.swift: file not found — skipped")
+
+    # --- 1a-bis. Mark USER-initiated deletes so they bypass preservation ---
+    # Bug: deleting someone else's message "for everyone" marked it as deleted on
+    # our side (preserve path) instead of actually deleting, so it took two taps.
+    # The two user entry points both funnel into _internal_deleteMessages; we raise
+    # the module flag around each so the hook above performs a real deletion.
+    dmi_path = tg / "submodules/TelegramCore/Sources/TelegramEngine/Messages/DeleteMessagesInteractively.swift"
+    if dmi_path.is_file():
+        d = dmi_path.read_text(encoding="utf-8")
+        dmi_anchor = "    _internal_deleteMessages(transaction: transaction, mediaBox: postbox.mediaBox, ids: messageIds.map(\\.messageId))\n"
+        if "aorusUserInitiatedDelete = true" in d:
+            print("DeleteMessagesInteractively.swift: user-flag already present")
+        elif dmi_anchor in d:
+            d = d.replace(
+                dmi_anchor,
+                "    aorusUserInitiatedDelete = true\n"
+                + dmi_anchor
+                + "    aorusUserInitiatedDelete = false\n",
+                1)
+            dmi_path.write_text(d, encoding="utf-8")
+            print("DeleteMessagesInteractively.swift: user-initiated flag set around delete")
+        else:
+            print("DeleteMessagesInteractively.swift: anchor not found — skipped")
+    else:
+        print("DeleteMessagesInteractively.swift: file not found — skipped")
+
+    tem_path = tg / "submodules/TelegramCore/Sources/TelegramEngine/Messages/TelegramEngineMessages.swift"
+    if tem_path.is_file():
+        e = tem_path.read_text(encoding="utf-8")
+        tem_anchor = "        public func deleteMessages(transaction: Transaction, ids: [MessageId]) {\n"
+        if "aorusUserInitiatedDelete = true" in e:
+            print("TelegramEngineMessages.swift: user-flag already present")
+        elif tem_anchor in e:
+            e = e.replace(
+                tem_anchor,
+                tem_anchor
+                + "            aorusUserInitiatedDelete = true\n"
+                + "            defer { aorusUserInitiatedDelete = false }\n",
+                1)
+            tem_path.write_text(e, encoding="utf-8")
+            print("TelegramEngineMessages.swift: user-initiated flag set in deleteMessages")
+        else:
+            print("TelegramEngineMessages.swift: anchor not found — skipped")
+    else:
+        print("TelegramEngineMessages.swift: file not found — skipped")
 
     # --- 1b. Edit-message capture + inline original display ---
     # Two injection points inside AccountStateManagementUtils.swift:
@@ -816,6 +876,9 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "                        let aorusOrigEnd = (newText as NSString).length\n"
                 "                        var aorusEntities: [MessageTextEntity] = []\n"
                 "                        for attr in currentMessage.attributes { if let te = attr as? TextEntitiesMessageAttribute { aorusEntities.append(contentsOf: te.entities) } }\n"
+                "                        // AorusGram: render the original inside a native quote block (accent bar + tinted\n"
+                "                        // rounded background) exactly like AorusCode — bold title, secret under a spoiler.\n"
+                "                        aorusEntities.append(MessageTextEntity(range: aorusLabelLoc ..< aorusOrigEnd, type: .BlockQuote(isCollapsed: false)))\n"
                 "                        aorusEntities.append(MessageTextEntity(range: aorusLabelLoc ..< (aorusLabelLoc + aorusLabelLen), type: .Bold))\n"
                 "                        aorusEntities.append(MessageTextEntity(range: aorusOrigLoc ..< aorusOrigEnd, type: .Spoiler))\n"
                 "                        var aorusNewAttrs = currentMessage.attributes.filter { !($0 is TextEntitiesMessageAttribute) }\n"
@@ -5982,6 +6045,22 @@ def patch_status_edit_delete_icons(tg: Path) -> None:
         else:
             print("StatusIcons: text bubble edited anchor not found — skip")
 
+    # --- Interactive media node: pass isDeleted to the photo/video overlay status ---
+    # Media-only messages render the date/status as an overlay on the image (not via
+    # the text bubble), so the trash/pencil icons must be threaded in here too.
+    im_path = tg / "submodules/TelegramUI/Components/Chat/ChatMessageInteractiveMediaNode/Sources/ChatMessageInteractiveMediaNode.swift"
+    if im_path.is_file():
+        im = im_path.read_text(encoding="utf-8")
+        im_anchor = "                    edited: dateAndStatus.edited && !presentationData.isPreview,\n"
+        if "isDeleted: message.text.hasSuffix" in im:
+            print("StatusIcons: media overlay isDeleted already present")
+        elif im_anchor in im:
+            im = im.replace(im_anchor, im_anchor + "                    isDeleted: message.text.hasSuffix(\"\\u{2063}\\u{2064}\"),\n", 1)
+            im_path.write_text(im, encoding="utf-8")
+            print("StatusIcons: media overlay passes isDeleted")
+        else:
+            print("StatusIcons: media overlay edited anchor not found — skip")
+
     # --- Bubble item node: dim the bubble cloud (background) to 50% for deleted; text stays opaque ---
     bi_path = tg / "submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/Sources/ChatMessageBubbleItemNode.swift"
     if bi_path.is_file():
@@ -5999,8 +6078,38 @@ def patch_status_edit_delete_icons(tg: Path) -> None:
                 "        strongSelf.shadowNode.alpha = aorusDeletedCloud ? 0.5 : 1.0\n"
             )
             bi = bi.replace(bi_anchor, bi_inject, 1)
+
+            # (a) Strip the invisible deleted-marker before the "has caption?" test so a
+            #     media-only message doesn't spawn an empty text bubble (which would push
+            #     the time off the photo overlay and hide the trash icon).
+            mt_anchor = "        if !messageText.isEmpty || (message.attributes.contains(where: { $0 is TypingDraftMessageAttribute }) && richText == nil) || isUnsupportedMedia || isStoryWithText {\n"
+            if "AorusGram: strip invisible deleted-marker" not in bi and mt_anchor in bi:
+                bi = bi.replace(
+                    mt_anchor,
+                    "        // AorusGram: strip invisible deleted-marker so a media-only message keeps its photo overlay status (time + trash) instead of an empty text bubble\n"
+                    "        if messageText.hasSuffix(\"\\u{2063}\\u{2064}\") { messageText = String(messageText.dropLast(2)) }\n"
+                    + mt_anchor,
+                    1)
+            else:
+                print("StatusIcons: messageText anchor not found — skip media-only fix")
+
+            # (b) Dim the deleted media content (photo/video) to 50% as well; captions/text stay opaque.
+            ci_anchor = "            strongSelf.contentNodes = sortedContentNodes\n"
+            if "AorusGram: dim deleted media" not in bi and ci_anchor in bi:
+                bi = bi.replace(
+                    ci_anchor,
+                    ci_anchor +
+                    "            // AorusGram: dim deleted media (photo/video) content to 50%; captions stay opaque\n"
+                    "            let aorusDeletedMediaContent = item.message.text.hasSuffix(\"\\u{2063}\\u{2064}\")\n"
+                    "            for aorusContentNode in strongSelf.contentNodes where aorusContentNode is ChatMessageMediaBubbleContentNode {\n"
+                    "                aorusContentNode.alpha = aorusDeletedMediaContent ? 0.5 : 1.0\n"
+                    "            }\n",
+                    1)
+            else:
+                print("StatusIcons: contentNodes anchor not found — skip media dim")
+
             bi_path.write_text(bi, encoding="utf-8")
-            print("StatusIcons: bubble cloud dim injected")
+            print("StatusIcons: bubble cloud dim + media-only fixes injected")
         else:
             print("StatusIcons: bubble shadowNode anchor not found — skip")
 
