@@ -106,14 +106,14 @@ private enum AccountDetailEntry: ItemListNodeEntry {
 
 // MARK: - Estimation helpers
 
-private func aorusDataCenterName(_ dc: Int) -> String {
+private func aorusDataCenterName(_ dc: Int, _ ru: Bool) -> String {
     switch dc {
-    case 1: return "DC1 · Майами, США"
-    case 2: return "DC2 · Амстердам, Нидерланды"
-    case 3: return "DC3 · Майами, США"
-    case 4: return "DC4 · Амстердам, Нидерланды"
-    case 5: return "DC5 · Сингапур"
-    default: return "Неизвестно"
+    case 1: return ru ? "DC1 · Майами, США" : "DC1 · Miami, USA"
+    case 2: return ru ? "DC2 · Амстердам, Нидерланды" : "DC2 · Amsterdam, Netherlands"
+    case 3: return ru ? "DC3 · Майами, США" : "DC3 · Miami, USA"
+    case 4: return ru ? "DC4 · Амстердам, Нидерланды" : "DC4 · Amsterdam, Netherlands"
+    case 5: return ru ? "DC5 · Сингапур" : "DC5 · Singapore"
+    default: return ru ? "Неизвестно" : "Unknown"
     }
 }
 
@@ -259,26 +259,34 @@ private func aorusEstimateRegistration(userId: Int64) -> Date? {
     return nil
 }
 
-private func aorusAccountAge(from date: Date) -> String {
+private func aorusAccountAge(from date: Date, _ ru: Bool) -> String {
     let comps = Calendar.current.dateComponents([.year, .month], from: date, to: Date())
     let years = comps.year ?? 0
     let months = comps.month ?? 0
-    func plural(_ n: Int, _ one: String, _ few: String, _ many: String) -> String {
-        let m10 = n % 10, m100 = n % 100
-        if m10 == 1 && m100 != 11 { return one }
-        if m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) { return few }
-        return many
+    if ru {
+        func plural(_ n: Int, _ one: String, _ few: String, _ many: String) -> String {
+            let m10 = n % 10, m100 = n % 100
+            if m10 == 1 && m100 != 11 { return one }
+            if m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) { return few }
+            return many
+        }
+        if years <= 0 {
+            return "\(months) \(plural(months, "месяц", "месяца", "месяцев"))"
+        }
+        return "\(years) \(plural(years, "год", "года", "лет")) \(months) \(plural(months, "месяц", "месяца", "месяцев"))"
+    } else {
+        func unit(_ n: Int, _ u: String) -> String { return "\(n) \(u)\(n == 1 ? "" : "s")" }
+        if years <= 0 {
+            return unit(months, "month")
+        }
+        return "\(unit(years, "year")) \(unit(months, "month"))"
     }
-    if years <= 0 {
-        return "\(months) \(plural(months, "месяц", "месяца", "месяцев"))"
-    }
-    return "\(years) \(plural(years, "год", "года", "лет")) \(months) \(plural(months, "месяц", "месяца", "месяцев"))"
 }
 
 // MARK: - Entries builder
 
 private func accountDetailEntries(theme: PresentationTheme, entityId: Int64, dcId: Int,
-                                  kind: AorusDetailKind, creationDate: Int32) -> [AccountDetailEntry] {
+                                  kind: AorusDetailKind, creationDate: Int32, ru: Bool) -> [AccountDetailEntry] {
     var entries: [AccountDetailEntry] = []
 
     let sectionTitle: String
@@ -288,19 +296,19 @@ private func accountDetailEntries(theme: PresentationTheme, entityId: Int64, dcI
     let isExact: Bool
     switch kind {
     case .user:
-        sectionTitle = "АККАУНТ"; idLabel = "ID аккаунта"; ageLabel = "Возраст аккаунта"
-        dateLabel = "Дата (примерно)"; isExact = false
+        sectionTitle = ru ? "АККАУНТ" : "ACCOUNT"; idLabel = ru ? "ID аккаунта" : "Account ID"; ageLabel = ru ? "Возраст аккаунта" : "Account Age"
+        dateLabel = ru ? "Дата (примерно)" : "Date (approx.)"; isExact = false
     case .channel:
-        sectionTitle = "КАНАЛ"; idLabel = "ID канала"; ageLabel = "Возраст канала"
-        dateLabel = "Дата создания"; isExact = true
+        sectionTitle = ru ? "КАНАЛ" : "CHANNEL"; idLabel = ru ? "ID канала" : "Channel ID"; ageLabel = ru ? "Возраст канала" : "Channel Age"
+        dateLabel = ru ? "Дата создания" : "Creation Date"; isExact = true
     case .group:
-        sectionTitle = "ГРУППА"; idLabel = "ID чата"; ageLabel = "Возраст чата"
-        dateLabel = "Дата создания"; isExact = true
+        sectionTitle = ru ? "ГРУППА" : "GROUP"; idLabel = ru ? "ID чата" : "Chat ID"; ageLabel = ru ? "Возраст чата" : "Chat Age"
+        dateLabel = ru ? "Дата создания" : "Creation Date"; isExact = true
     }
 
     entries.append(.accountHeader(theme, sectionTitle))
     entries.append(.idRow(theme, idLabel, "\(entityId)"))
-    entries.append(.dcRow(theme, "Дата-центр", dcId > 0 ? aorusDataCenterName(dcId) : "Неизвестно"))
+    entries.append(.dcRow(theme, ru ? "Дата-центр" : "Data Center", dcId > 0 ? aorusDataCenterName(dcId, ru) : (ru ? "Неизвестно" : "Unknown")))
 
     // Users: estimated from the numeric id. Channels / groups: the exact
     // creationDate provided directly by Telegram.
@@ -311,21 +319,22 @@ private func accountDetailEntries(theme: PresentationTheme, entityId: Int64, dcI
         date = aorusEstimateRegistration(userId: entityId)
     }
 
-    entries.append(.regHeader(theme, isExact ? "СОЗДАНИЕ" : "РЕГИСТРАЦИЯ"))
+    entries.append(.regHeader(theme, isExact ? (ru ? "СОЗДАНИЕ" : "CREATION") : (ru ? "РЕГИСТРАЦИЯ" : "REGISTRATION")))
     if let date = date {
         let df = DateFormatter()
-        df.locale = Locale(identifier: "ru_RU")
+        df.locale = Locale(identifier: ru ? "ru_RU" : "en_US")
         df.dateFormat = isExact ? "d MMMM yyyy" : "LLLL yyyy"
         entries.append(.regDateRow(theme, dateLabel, df.string(from: date)))
-        entries.append(.ageRow(theme, ageLabel, aorusAccountAge(from: date)))
+        entries.append(.ageRow(theme, ageLabel, aorusAccountAge(from: date, ru)))
     } else {
-        entries.append(.regDateRow(theme, dateLabel, "Неизвестно"))
+        entries.append(.regDateRow(theme, dateLabel, ru ? "Неизвестно" : "Unknown"))
     }
 
     entries.append(.footer(theme, isExact
-        ? "Дата создания получена напрямую из данных Telegram."
-        : "Дата регистрации не предоставляется Telegram API и вычисляется "
-          + "приблизительно по ID аккаунта. Возможна погрешность в несколько месяцев."))
+        ? (ru ? "Дата создания получена напрямую из данных Telegram."
+              : "The creation date is taken directly from Telegram's data.")
+        : (ru ? "Дата регистрации не предоставляется Telegram API и вычисляется приблизительно по ID аккаунта. Возможна погрешность в несколько месяцев."
+              : "The registration date is not provided by the Telegram API and is estimated from the account ID. It may be off by a few months.")))
 
     return entries
 }
@@ -346,10 +355,11 @@ public func accountDetailsController(context: AccountContext, entityId: Int64, d
         UIPasteboard.general.string = "\(entityId)"
         UINotificationFeedbackGenerator().notificationOccurred(.success)
         guard let controller = weakController else { return }
+        let ru = AorusLang.current == .ru
         let alert = textAlertController(
             context: context,
             title: nil,
-            text: "ID скопирован в буфер обмена",
+            text: ru ? "ID скопирован в буфер обмена" : "ID copied to clipboard",
             actions: [TextAlertAction(type: .defaultAction, title: "OK", action: {})]
         )
         controller.present(alert, in: .window(.root))
@@ -358,10 +368,11 @@ public func accountDetailsController(context: AccountContext, entityId: Int64, d
     let signal: Signal<(ItemListControllerState, (ItemListNodeState, Any)), NoError> = context.sharedContext.presentationData
         |> deliverOnMainQueue
         |> map { presentationData -> (ItemListControllerState, (ItemListNodeState, Any)) in
-            let entries = accountDetailEntries(theme: presentationData.theme, entityId: entityId, dcId: dcId, kind: kind, creationDate: creationDate)
+            let ru = AorusLang.resolve(presentationData.strings.baseLanguageCode) == .ru
+            let entries = accountDetailEntries(theme: presentationData.theme, entityId: entityId, dcId: dcId, kind: kind, creationDate: creationDate, ru: ru)
             let controllerState = ItemListControllerState(
                 presentationData: ItemListPresentationData(presentationData),
-                title: .text(title.isEmpty ? "Подробнее" : title),
+                title: .text(title.isEmpty ? (ru ? "Подробнее" : "Details") : title),
                 leftNavigationButton: nil,
                 rightNavigationButton: nil,
                 backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back)

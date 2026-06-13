@@ -101,6 +101,7 @@ public struct AorusL10n {
     public var accountBackup: String { t("Бэкап аккаунтов", "Account Backup") }
     public var aorusCode: String { t("AorusCode", "AorusCode") }
     public var aorusCodeHint: String { t("Удерживайте кнопку прикрепления чтобы отправить скрытое сообщение", "Hold the attachment button to send a hidden message") }
+    public var accountDetails: String { t("Подробнее", "Details") }
     public var officialChannel: String { t("Официальный канал", "Official channel") }
 
     // MARK: Messages section (tap gestures + local editing)

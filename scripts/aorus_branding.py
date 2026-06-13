@@ -1606,9 +1606,9 @@ def patch_chat_context_menu_translate_transcribe(tg: Path) -> None:
         return
 
     t = path.read_text(encoding="utf-8")
-    sentinel = "// AorusGram: native translate/transcribe v4"
+    sentinel = "// AorusGram: native translate/transcribe v5"
     if sentinel in t:
-        print("ChatContextMenu: v4 already injected")
+        print("ChatContextMenu: v5 already injected")
         return
 
     # Strip any earlier v1/v2/v3 injection (recognisable by the common prefix).
@@ -1660,6 +1660,7 @@ def patch_chat_context_menu_translate_transcribe(tg: Path) -> None:
         "            let aorusSavedType = UserDefaults.standard.string(forKey: aorusKeyType)\n"
         "            let aorusIsTranslated = aorusSavedType == \"translation\"\n"
         "            let aorusIsTranscribed = aorusSavedType == \"transcription\"\n"
+        "            let aorusUiRu = (UserDefaults.standard.string(forKey: \"aorusgram_lang\") ?? (Locale.preferredLanguages.first ?? \"en\")).hasPrefix(\"ru\")\n"
         "            var aorusVoiceFile: TelegramMediaFile?\n"
         "            for aorusMedia in aorusMsg.media {\n"
         "                if let f = aorusMedia as? TelegramMediaFile, f.isVoice {\n"
@@ -1671,7 +1672,7 @@ def patch_chat_context_menu_translate_transcribe(tg: Path) -> None:
         "            // -- Translate / Show Original (gated by translator flag) --\n"
         "            if UserDefaults.standard.bool(forKey: \"aorusgram_feature_translator\") {\n"
         "                if aorusIsTranslated, let aorusOrig = aorusSavedText {\n"
-        "                    actions.append(.action(ContextMenuActionItem(text: \"AorusGram Оригинал\", icon: { theme in\n"
+        "                    actions.append(.action(ContextMenuActionItem(text: aorusUiRu ? \"Оригинал\" : \"Original\", icon: { theme in\n"
         "                        return generateTintedImage(image: UIImage(bundleImageName: \"Chat/Context Menu/Translate\"), color: theme.actionSheet.primaryTextColor)\n"
         "                    }, action: { [weak context] action in\n"
         "                        action.dismissWithResult(.default)\n"
@@ -1687,7 +1688,7 @@ def patch_chat_context_menu_translate_transcribe(tg: Path) -> None:
         "                        UserDefaults.standard.removeObject(forKey: aorusKeyType)\n"
         "                    })))\n"
         "                } else if !aorusBody.isEmpty && !aorusIsTranscribed {\n"
-        "                    actions.append(.action(ContextMenuActionItem(text: \"AorusGram Перевод\", icon: { theme in\n"
+        "                    actions.append(.action(ContextMenuActionItem(text: aorusUiRu ? \"Перевод\" : \"Translate\", icon: { theme in\n"
         "                        return generateTintedImage(image: UIImage(bundleImageName: \"Chat/Context Menu/Translate\"), color: theme.actionSheet.primaryTextColor)\n"
         "                    }, action: { [weak context] action in\n"
         "                        action.dismissWithResult(.default)\n"
@@ -2553,7 +2554,7 @@ def patch_peer_info_account_details(tg: Path) -> None:
             "            let aorusTitle = EnginePeer(" + peer_var + ").compactDisplayTitle\n"
             "            let aorusKind: AorusDetailKind = " + kind_expr + "\n"
             "            let aorusCreation: Int32 = " + creation_expr + "\n"
-            "            items[currentPeerInfoSection]!.append(PeerInfoScreenDisclosureItem(id: " + str(item_id) + ", text: \"Подробнее\", action: {\n"
+            "            items[currentPeerInfoSection]!.append(PeerInfoScreenDisclosureItem(id: " + str(item_id) + ", text: AorusL10n.current.accountDetails, action: {\n"
             "                guard let aorusParent = interaction.getController(),\n"
             "                      let aorusNav = aorusParent.navigationController as? NavigationController else {\n"
             "                    return\n"
