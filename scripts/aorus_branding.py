@@ -5988,7 +5988,7 @@ def patch_status_edit_delete_icons(tg: Path) -> None:
         "            }\n"
     )
     new_edited = (
-        "            var updatedDateText = arguments.dateText\n"
+        "            let updatedDateText = arguments.dateText\n"
         "            // AorusGram: status icons — 'edited' is shown as a pencil icon below, not text\n"
     )
     if old_edited not in t:
