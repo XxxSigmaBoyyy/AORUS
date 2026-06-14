@@ -3192,6 +3192,58 @@ def patch_alternate_icons(tg: Path) -> None:
         else:
             print("AlternateIcons: WARNING default/switch branch not found in ThemeSettingsAppIconItem")
 
+    # Patch ThemeSettingsController.swift: persist & restore the picker selection.
+    # Telegram has no own storage for the chosen app icon — it relies solely on
+    # UIApplication.alternateIconName. With our loose-PNG alternate icons that getter
+    # reads back nil on relaunch / re-entering Appearance (even though the icon is
+    # applied), so the picker fell back to the default. We remember the chosen name
+    # on tap and use it to resolve the selection (system icon-setting is untouched).
+    tsc = tg / "submodules/SettingsUI/Sources/Themes/ThemeSettingsController.swift"
+    if tsc.is_file():
+        t = tsc.read_text(encoding="utf-8")
+
+        # (a) Robust selected-icon resolution: live alternateIconName (if it matches) ->
+        #     our persisted choice -> default.
+        read_anchor = (
+            "    let currentAppIcon: PresentationAppIcon?\n"
+            "    var appIcons = context.sharedContext.applicationBindings.getAvailableAlternateIcons()\n"
+            "    if let alternateIconName = context.sharedContext.applicationBindings.getAlternateIconName() {\n"
+            "        currentAppIcon = appIcons.filter { $0.name == alternateIconName }.first\n"
+            "    } else {\n"
+            "        currentAppIcon = appIcons.filter { $0.isDefault }.first\n"
+            "    }\n"
+        )
+        read_new = (
+            "    let currentAppIcon: PresentationAppIcon?\n"
+            "    var appIcons = context.sharedContext.applicationBindings.getAvailableAlternateIcons()\n"
+            "    // AorusGram: resolve the selected icon robustly (alternateIconName can read nil on relaunch).\n"
+            "    let aorusStoredIcon = UserDefaults.standard.string(forKey: \"aorusgram_selected_app_icon\")\n"
+            "    if let alternateIconName = context.sharedContext.applicationBindings.getAlternateIconName(), let aorusMatch = appIcons.first(where: { $0.name == alternateIconName }) {\n"
+            "        currentAppIcon = aorusMatch\n"
+            "    } else if let aorusStoredIcon = aorusStoredIcon, let aorusMatch = appIcons.first(where: { $0.name == aorusStoredIcon }) {\n"
+            "        currentAppIcon = aorusMatch\n"
+            "    } else {\n"
+            "        currentAppIcon = appIcons.first(where: { $0.isDefault })\n"
+            "    }\n"
+        )
+
+        # (b) Persist the chosen icon name when the user taps one.
+        store_anchor = "                currentAppIconName.set(icon.name)\n"
+        store_new = (
+            "                currentAppIconName.set(icon.name)\n"
+            "                UserDefaults.standard.set(icon.name, forKey: \"aorusgram_selected_app_icon\")\n"
+        )
+
+        if "aorusStoredIcon" in t or "aorusgram_selected_app_icon" in t:
+            print("AppIconSelection: ThemeSettingsController already patched")
+        elif read_anchor in t and store_anchor in t:
+            t = t.replace(read_anchor, read_new, 1)
+            t = t.replace(store_anchor, store_new, 1)
+            tsc.write_text(t, encoding="utf-8")
+            print("AppIconSelection: patched ThemeSettingsController (persist + restore selection)")
+        else:
+            print("AppIconSelection: WARNING ThemeSettingsController anchors not found — skip")
+
 
 def patch_primary_app_icon(tg: Path) -> None:
     """Replace the primary home-screen app icon with the AorusGram brand icon.
