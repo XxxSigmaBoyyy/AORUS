@@ -3044,7 +3044,7 @@ def patch_alternate_icons(tg: Path) -> None:
         ("Duck",       "Утка",         "Duck",        False),
         ("BlueWhite",  "Сине-белая",   "Blue White",  False),
         ("BlackWhite", "Черно-белая",  "Black White", False),
-        ("Black",      "Черный",       "Black",       False),
+        ("Black",      "Черная",       "Black",       False),
         ("White",      "Белая",        "White",       False),
         ("Premium",    "Премиум",      "Premium",     False),
     ]
@@ -6150,6 +6150,37 @@ def patch_status_edit_delete_icons(tg: Path) -> None:
             print("StatusIcons: media overlay passes isDeleted")
         else:
             print("StatusIcons: media overlay edited anchor not found — skip")
+
+    # --- Interactive file node: pass isDeleted to file / voice-message status ---
+    # ChatMessageInteractiveFileNode renders both documents and voice/audio messages;
+    # its status node needs the trash/pencil icons too (message = arguments.message).
+    fn_path = tg / "submodules/TelegramUI/Components/Chat/ChatMessageInteractiveFileNode/Sources/ChatMessageInteractiveFileNode.swift"
+    if fn_path.is_file():
+        fn = fn_path.read_text(encoding="utf-8")
+        fn_anchor = "                        edited: edited && !arguments.presentationData.isPreview,\n"
+        if "isDeleted: arguments.message.text.hasSuffix" in fn:
+            print("StatusIcons: file/voice isDeleted already present")
+        elif fn_anchor in fn:
+            fn = fn.replace(fn_anchor, fn_anchor + "                        isDeleted: arguments.message.text.hasSuffix(\"\\u{2063}\\u{2064}\"),\n", 1)
+            fn_path.write_text(fn, encoding="utf-8")
+            print("StatusIcons: file/voice passes isDeleted")
+        else:
+            print("StatusIcons: file/voice edited anchor not found — skip")
+
+    # --- Interactive instant-video node: pass isDeleted to round-video (circle) status ---
+    # Round video messages build their status here (message = item.message).
+    iv_path = tg / "submodules/TelegramUI/Components/Chat/ChatMessageInteractiveInstantVideoNode/Sources/ChatMessageInteractiveInstantVideoNode.swift"
+    if iv_path.is_file():
+        iv = iv_path.read_text(encoding="utf-8")
+        iv_anchor = "                edited: edited && !sentViaBot && !item.presentationData.isPreview,\n"
+        if "isDeleted: item.message.text.hasSuffix" in iv:
+            print("StatusIcons: round-video isDeleted already present")
+        elif iv_anchor in iv:
+            iv = iv.replace(iv_anchor, iv_anchor + "                isDeleted: item.message.text.hasSuffix(\"\\u{2063}\\u{2064}\"),\n", 1)
+            iv_path.write_text(iv, encoding="utf-8")
+            print("StatusIcons: round-video passes isDeleted")
+        else:
+            print("StatusIcons: round-video edited anchor not found — skip")
 
     # --- Bubble item node: dim the bubble cloud (background) to 50% for deleted; text stays opaque ---
     bi_path = tg / "submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/Sources/ChatMessageBubbleItemNode.swift"
