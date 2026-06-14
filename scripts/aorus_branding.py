@@ -3034,15 +3034,19 @@ def patch_alternate_icons(tg: Path) -> None:
     # (icon_name, display_name_ru, display_name_en, is_default)
     ICONS = [
         ("MainIcon",   "Основная",     "Default",     True),
+        ("Blue",       "Синяя",        "Blue",        False),
         ("Airplane",   "Самолет",      "Airplane",    False),
         ("Sky",        "Небо",         "Sky",         False),
         ("SkyWhite",   "Небо-белый",   "Sky White",   False),
         ("Sunset",     "Закат",        "Sunset",      False),
         ("Cosmos",     "Космос",       "Cosmos",      False),
+        ("Cosmos2",    "Космос 2",     "Cosmos 2",    False),
         ("Duck",       "Утка",         "Duck",        False),
         ("BlueWhite",  "Сине-белая",   "Blue White",  False),
         ("BlackWhite", "Черно-белая",  "Black White", False),
         ("Black",      "Черный",       "Black",       False),
+        ("White",      "Белая",        "White",       False),
+        ("Premium",    "Премиум",      "Premium",     False),
     ]
 
     repo_root = Path(__file__).resolve().parent.parent
