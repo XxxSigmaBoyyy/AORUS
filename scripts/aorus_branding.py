@@ -918,7 +918,10 @@ def patch_deleted_messages_interception(tg: Path) -> None:
     # `transaction.deleteMessagesWithGlobalIds(ids, forEachMedia: ...)`. The previous patch
     # only POSTED a notification (didn't block deletion), so messages still vanished. Now
     # we resolve global IDs to MessageIds via Postbox.Transaction.messageIdsForGlobalIds,
-    # filter to .Incoming, mark with 🗑 prefix, and skip them from the delete call.
+    # preserve them (incoming AND the user's own outgoing — when the other side deletes the
+    # whole conversation our sent messages must survive too) and skip them from the delete
+    # call. Global IDs only ever address already-sent cloud messages, so there is no risk of
+    # catching send-pipeline temporaries.
     utils_path = tg / "submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift"
     new_marker = "__aorusFilteredGlobalIds"
     if utils_path.is_file():
@@ -954,7 +957,7 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 "                            object: nil,\n"
                 "                            userInfo: [\"msgId\": NSNumber(value: gid)])\n"
                 "                        let resolved = transaction.messageIdsForGlobalIds([gid])\n"
-                "                        guard let mid = resolved.first, let msg = transaction.getMessage(mid), msg.flags.contains(.Incoming) else {\n"
+                "                        guard let mid = resolved.first, let msg = transaction.getMessage(mid) else {\n"
                 "                            __aorusFilteredGlobalIds.append(gid)\n"
                 "                            continue\n"
                 "                        }\n"
@@ -998,7 +1001,7 @@ def patch_deleted_messages_interception(tg: Path) -> None:
                 if old_tail in t:
                     t = t.replace(old_tail, new_tail, 1)
                 utils_path.write_text(t, encoding="utf-8")
-                print("AccountStateManagementUtils.swift: global-id preserve hook injected (.Incoming-filtered)")
+                print("AccountStateManagementUtils.swift: global-id preserve hook injected (incoming + outgoing)")
             else:
                 print("AccountStateManagementUtils.swift: deleteMessagesWithGlobalIds anchor not found — skipped")
     else:
